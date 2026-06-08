@@ -12,6 +12,9 @@ Schema is a finite-domain first-order logic language that compiles to propositio
 - `*.cnf` — DIMACS CNF files (input to SAT solver)
 - `*.out` / `*.satout` — SAT solver output
 - `README.md` — Full language reference and user guide
+- `tests/` — Test `.wff` inputs not yet verified (includes new/in-progress tests)
+- `passed/` — Test `.wff` and `.scnf` files for tests that have been verified correct
+- `gold/` — Reference `*_gold.scnf` files for comparing against `instantiate` output
 
 ## Key APIs (in schema.lisp)
 
@@ -30,6 +33,27 @@ Requires SBCL with Quicklisp. The SAT solver defaults to `kissat` (configurable 
 ./run-schema.sh
 ```
 
-## Test Files
+**Important:** SBCL on this system requires `--eval` (long form); `-e` is not recognized and silently drops all eval forms.
 
-Test files follow the pattern `test_*.wff` (input) and `test_*.scnf` (expected symbolic CNF output).
+## Testing
+
+Run a single test with `run-test.sh`:
+
+```sh
+bash run-test.sh <testname>   # e.g. bash run-test.sh test_all_exists
+```
+
+This runs `instantiate` on `tests/<testname>.wff`, writes `tests/<testname>.scnf`, and cats the output.
+
+Compare output against gold:
+```sh
+diff tests/<testname>.scnf gold/<testname>_gold.scnf
+```
+
+Note: `#:XXnnn` gensym numbers will differ across SBCL sessions — compare clause counts and structure rather than exact text when gensyms are present.
+
+### Known issues
+
+- Nested `exists` with `(option compact-encoding 0)` causes exponential clause blowup (cross-product expansion). Keep domains small (≤3 values) or omit the option to use Tseitin encoding.
+- `test_nested_exists_nocompact.wff` uses 3 boys / 2 girls to stay tractable with compact-encoding disabled.
+- `test_nested_exists_compact.wff` uses full 4-boy / 4-girl domains with compact-encoding enabled.
