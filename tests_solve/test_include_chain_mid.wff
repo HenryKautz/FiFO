@@ -1,0 +1,2 @@
+(include "test_include_chain_base.wff")
+(all (x y z) Person true (implies (and (shorter x y) (shorter y z)) (shorter x z)))

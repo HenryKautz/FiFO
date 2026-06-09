@@ -1,0 +1,4 @@
+(domain girls (set mary beth sue))
+(big mary)
+(include "test_include_part.wff")
+(tall sue)

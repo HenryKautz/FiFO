@@ -1,0 +1,3 @@
+(domain Person (set Alice Bob Charlie))
+(shorter Alice Bob)
+(shorter Bob Charlie)

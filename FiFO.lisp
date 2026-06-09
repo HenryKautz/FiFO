@@ -20,6 +20,9 @@
 
 (defvar debugp nil)
 
+;; Directory of the .wff file currently being parsed, used to resolve (include "...") paths
+(defvar *current-wff-directory* nil)
+
 ;;;
 ;;; Utility functions
 ;;;
@@ -53,7 +56,11 @@
     (loop for line = (read-line stream nil nil)
           while line
           collect line)))
-
+(defun make-scratch-file-root ()
+  "Generate a unique scratch file base name for this process."
+  (format nil "scratch-~A-~A"
+          (get-universal-time)
+          (random 1000000000)))
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 
@@ -82,11 +89,12 @@
     (with-open-stream (OBS (if OBSFILE (open OBSFILE :direction :input) (make-concatenated-stream)))
       (with-open-file (OUTS SCNFILE :direction :output :if-exists :supersede)
         (let (CL SCHEMA OBSERVATION)
-          (setq CL (parse
-                    (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
-                          collect SCHEMA)
-                    (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
-                          collect OBSERVATION)))
+          (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
+            (setq CL (parse
+                      (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
+                            collect SCHEMA)
+                      (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
+                            collect OBSERVATION))))
           (loop for C in CL do (format OUTS "~S~%" C)))))))
 
 (defun propositionalize (SCNFFILE &optional CNFFILE MAPFILE)
@@ -162,34 +170,44 @@
         (with-open-file (OBS OBSFILE :direction :input)
           (setq observations (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
                                    collect OBSERVATION))))
-    (multiple-value-bind (result model-or-bindings) (solve-schemas schemas observations)
-      (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
-        (format ANSWER "~a~%" result)
-        (dolist (e model-or-bindings) (format ANSWER "~a~%" e))))))
+    (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
+      (multiple-value-bind (result model-or-bindings) (solve-schemas schemas observations)
+        (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
+          (format ANSWER "~a~%" result)
+          (dolist (e model-or-bindings) (format ANSWER "~a~%" e)))))))
 
 ;;;
 ;;; Lisp API
 ;;;
 
-(defvar scratch-file "scratch")
+(defvar scratch-file (make-scratch-file-root))
 
 ;;; Returns SAT or UNSAT, list of true literals in model
 (defun test-scnf (scnf)
   (let ((scnf-file (format nil "~a.scnf" scratch-file))
         (cnf-file (format nil "~a.cnf" scratch-file))
         (satout-file (format nil "~a.satout" scratch-file))
-        (soln-file (format nil "~a.soln" scratch-file)))
-    (if debugp
-        (format t ";;test-scnf ~S~%" scnf))
-    (when (member debugp '(SAT UNSAT))
-      (return-from test-scnf (values debugp nil)))
-    (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
-      (dolist (c scnf) (format SCNF-STREAM "~S~%" c)))
-    (propositionalize scnf-file)
-    (satisfy cnf-file)
-    (interpret satout-file)
-    (let ((results (read-sexprs-from-file soln-file)))
-      (values (car results) (cdr results)))))
+        (soln-file (format nil "~a.soln" scratch-file))
+        (map-file (format nil "~a.map" scratch-file)))
+    (labels ((cleanup-scratch-files ()
+               (unless tracep
+                 (dolist (file (list scnf-file cnf-file satout-file soln-file map-file))
+                   (when (probe-file file)
+                     (delete-file file))))))
+      (if debugp
+          (format t ";;test-scnf ~S~%" scnf))
+      (when (member debugp '(SAT UNSAT))
+        (return-from test-scnf (values debugp nil)))
+      (unwind-protect
+           (progn
+             (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
+               (dolist (c scnf) (format SCNF-STREAM "~S~%" c)))
+             (propositionalize scnf-file cnf-file map-file)
+             (satisfy cnf-file)
+             (interpret satout-file map-file soln-file)
+             (let ((results (read-sexprs-from-file soln-file)))
+               (values (car results) (cdr results))))
+        (cleanup-scratch-files)))))
 
 (defun lit2prop (CL)
   (let ((cnfdata nil) (mapdata nil) (numvar 0) (numclauses (length CL)) (hash (make-hash-table :test #'equal)))
@@ -464,13 +482,14 @@
   (when tracep
     (cond ((atom SCHEMA)
            (format t "[TRACE] Formula: ~S~%" SCHEMA))
-          ((member (car SCHEMA) '(domain alias option observed)) nil)
+          ((member (car SCHEMA) '(domain alias option observed include)) nil)
           (t (format t "[TRACE] Formula: (~A ...)~%" (car SCHEMA)))))
   (cond ((atom SCHEMA) (parse-formula SCHEMA))
         ((eql (car SCHEMA) 'domain) (parse-domain (cdr SCHEMA)))
         ((eql (car SCHEMA) 'alias) (parse-alias (cdr SCHEMA)))
         ((eql (car SCHEMA) 'option) (parse-option (cdr SCHEMA)))
         ((eql (car SCHEMA) 'observed) (parse-observations (cdr SCHEMA)))
+        ((eql (car SCHEMA) 'include) (parse-include (cadr SCHEMA)))
         (t (parse-formula SCHEMA))))
 
 (defun parse-option (ARGS)
@@ -484,6 +503,14 @@
             (when tracep (format t "[TRACE] Tracing enabled~%")))
           (t (error "Cannot parse option ~S" ARGS)))
     nil))
+
+(defun parse-include (FILENAME)
+  (let* ((resolved (if *current-wff-directory*
+                       (uiop:merge-pathnames* FILENAME *current-wff-directory*)
+                       FILENAME))
+         (*current-wff-directory* (uiop:pathname-directory-pathname resolved)))
+    (when tracep (format t "[TRACE] Include ~S~%" resolved))
+    (parse-schema-list (read-sexprs-from-file resolved))))
 
 (defun parse-domain (DEFINITION)
   (let ((vals (parse-set-expression (cadr DEFINITION))))

@@ -1,0 +1,2 @@
+(include "test_include_chain_mid.wff")
+(prove () true (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
