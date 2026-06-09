@@ -151,7 +151,7 @@
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
   (if (not SOLNFILE)
-      (setq SOLNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".soln")))
+      (setq SOLNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".answer")))
   (if (eq OBSFILE t)
       (setq OBSFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
   (let (schemas observations SCHEMA OBSERVATION)

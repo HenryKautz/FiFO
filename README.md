@@ -61,8 +61,8 @@ Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS
 **(satisfy "test.cnf" &optional "test.out")**
 The solver named by the variable **sat-solver** (default "kissat") is called on "test.cnf" and the output of the solver is captured in the file "test.out".  Satisfy returns 'SAT, 'UNSAT, or nil if the solver fails or its output contains neither the strings SAT nor UNSAT.
 
-**(interpret "test.out" &optional "test.map" "test.soln" sort-by-time)**  
-Reads in the output of a SAT solver "test.out" and a mapping file "test.map", and creates a file "test.soln" containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. The results are sorted alphabetically unless sort-by-time is set to t, in which case the results are sorted by the last argument to each predicate, which is often used to specify a time index.
+**(interpret "test.out" &optional "test.map" "test.answer" sort-by-time)**  
+Reads in the output of a SAT solver "test.out" and a mapping file "test.map", and creates a file "test.answer" containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. The results are sorted alphabetically unless sort-by-time is set to t, in which case the results are sorted by the last argument to each predicate, which is often used to specify a time index.
 
 **(solve "test.wff" &optional "test.answer"  "test.obs")**
 Reads in the Schema file "test.wff" and an optional "test.obs" observation file, solves it using the **sat-solver** and writes the results in symbolic form to "test.answer".  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
@@ -390,8 +390,8 @@ Tests are split into two categories: `instantiate` tests (checking CNF generatio
 | `passed_instantiate/` | `.wff` and `.scnf` files for verified passing instantiate tests |
 | `gold_instantiate/` | Reference `*_gold.scnf` files for instantiate comparison |
 | `tests_solve/` | `.wff` files for solve tests in progress |
-| `passed_solve/` | `.wff` and `.soln` files for verified passing solve tests |
-| `gold_solve/` | Reference `*_gold.soln` files for solve comparison |
+| `passed_solve/` | `.wff` and `.answer` files for verified passing solve tests |
+| `gold_solve/` | Reference `*_gold.answer` files for solve comparison |
 
 ### Running instantiate tests
 
@@ -411,10 +411,10 @@ diff tests_instantiate/<testname>.scnf gold_instantiate/<testname>_gold.scnf
 bash run-test-solve.sh <testname>   # e.g. bash run-test-solve.sh test_simple_deduction
 ```
 
-This runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.soln`, and prints the output. Compare against the gold file:
+This runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.answer`, and prints the output. Compare against the gold file:
 
 ```sh
-diff tests_solve/<testname>.soln gold_solve/<testname>_gold.soln
+diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 ```
 
 **Note:** Gensym symbols (`#:XXnnn`) in instantiate output will have different numbers across SBCL sessions. When gensyms are present, compare clause counts and structure rather than exact text.

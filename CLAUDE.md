@@ -16,8 +16,8 @@ Schema is a finite-domain first-order logic language that compiles to propositio
 - `passed_instantiate/` — Verified passing `.wff` and `.scnf` pairs for `instantiate`
 - `gold_instantiate/` — Reference `*_gold.scnf` files for `instantiate` comparison
 - `tests_solve/` — In-progress `.wff` files for `solve` tests
-- `passed_solve/` — Verified passing `.wff` and `.soln` pairs for `solve`
-- `gold_solve/` — Reference `*_gold.soln` files for `solve` comparison
+- `passed_solve/` — Verified passing `.wff` and `.answer` pairs for `solve`
+- `gold_solve/` — Reference `*_gold.answer` files for `solve` comparison
 
 ## Key APIs (in schema.lisp)
 
@@ -49,12 +49,12 @@ bash run-test-solve.sh <testname>         # e.g. bash run-test-solve.sh test_sim
 
 `run-test-instantiate.sh` runs `instantiate` on `tests_instantiate/<testname>.wff`, writes `tests_instantiate/<testname>.scnf`, and cats the output.
 
-`run-test-solve.sh` runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.soln`, and cats the output.
+`run-test-solve.sh` runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.answer`, and cats the output.
 
 Compare output against gold:
 ```sh
 diff tests_instantiate/<testname>.scnf gold_instantiate/<testname>_gold.scnf
-diff tests_solve/<testname>.soln gold_solve/<testname>_gold.soln
+diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 ```
 
 Note: `#:XXnnn` gensym numbers will differ across SBCL sessions — compare clause counts and structure rather than exact text when gensyms are present.
