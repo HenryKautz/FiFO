@@ -1,0 +1,7 @@
+; float arithmetic used as term arguments; integer-valued results should
+; appear without decimal point in scnf output
+(domain items (set a b c))
+(alias scale 2.5)
+(all x items true (weight x (lisp (* scale 2))))
+(if (> (* 1.5 2.0) 2.0) (heavy a))
+(if (* 0.5 0.0) (impossible a))

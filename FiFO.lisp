@@ -579,7 +579,7 @@
         (t (error "Cannot parse formula ~S" F))))
 
 (defun parse-if (test body)
-  (cond ((is-false (parse-integer-expression test)) nil)
+  (cond ((is-false (parse-numeric-expression test)) nil)
         (t (parse-formula body))))
 
 (defun parse-not (F)
@@ -590,7 +590,7 @@
           ((eql op 'and) (parse-formula (cons 'or (negate-list (cdr F)))))
           ((eql op 'or) (parse-formula (cons 'and (negate-list (cdr F)))))
           ((eql op 'implies) (parse-formula (list 'and (cadr F) (list 'not (caddr F)))))
-          ((eql op 'if) (cond ((is-true (parse-integer-expression (cadr F))) (parse-formula `(not ,(caddr F))))
+          ((eql op 'if) (cond ((is-true (parse-numeric-expression (cadr F))) (parse-formula `(not ,(caddr F))))
                               (t nil)))
           ((eql op 'equiv) (append (parse-formula `(or ,(cadr F) ,(caddr F)))
                              (parse-formula `(or (not ,(cadr F)) (not ,(caddr F))))))
@@ -744,7 +744,7 @@
                    ,(expand-multivar-exists (cdr VARLIST) DOM TEST BODY)))))
 
 (defun is-false (x)
-  (or (null x) (eql x 0)))
+  (or (null x) (and (numberp x) (zerop x))))
 
 (defun is-true (x)
   (not (is-false x)))
@@ -762,14 +762,14 @@
     (if (not (listp answ)) (error "Set expected instead of ~S" EXPR))
     answ))
 
-(defun parse-integer-expression (EXPR)
+(defun parse-numeric-expression (EXPR)
   (let ((answ (parse-expression EXPR)))
-    (if (not (integerp answ)) (error "Integer expected instead of ~S" EXPR))
+    (if (not (numberp answ)) (error "Number expected instead of ~S" EXPR))
     answ))
 
 (defun parse-name (EXPR)
   (if (or (null EXPR)
-          (integerp EXPR)
+          (numberp EXPR)
           (listp EXPR)
           (member EXPR reserved-words))
       (error "Symbol expected instead of ~S" EXPR))
@@ -840,8 +840,9 @@
           (t (error "Parser error at ~S" op)))))
 
 (defun parse-range (LOW HIGH)
-  (cond ((> LOW HIGH) nil)
-        (t (cons LOW (parse-range (+ 1 LOW) HIGH)))))
+  (let ((low (ceiling LOW)) (high (ceiling HIGH)))
+    (cond ((> low high) nil)
+          (t (cons low (parse-range (1+ low) high))))))
 
 (defun parse-observed-literal-expression (EXPR)
   (let* ((name (car EXPR))
@@ -870,8 +871,14 @@
   (cond ((null TERMS) nil)
         (t (cons (parse-term (car TERMS)) (parse-terms (cdr TERMS))))))
 
+(defun normalize-numeric (x)
+  ;; Coerce float-valued integers (e.g. 2.0) to plain integers for clean output.
+  (if (and (floatp x) (= x (floor x)))
+      (floor x)
+      x))
+
 (defun parse-term (TERM)
   (cond ((or (atom TERM) (member (car TERM) interpreted-functions))
-          (parse-expression TERM))
+          (normalize-numeric (parse-expression TERM)))
         (t (cons (parse-name (car TERM))
                  (parse-terms (cdr TERM))))))

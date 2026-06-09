@@ -1,0 +1,4 @@
+; range with non-integer bounds should ceiling to next integer
+; range 1.2 3.7  ->  (2 3 4)
+(domain steps (range 1.2 3.7))
+(all s steps true (active s))
