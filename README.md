@@ -382,10 +382,10 @@ The input to FiFO may include the following options, which should appear before 
 
 When tracing is enabled, the interpreter prints diagnostic output to standard output as it works:
 
-- `[TRACE] Domain NAME = (val ...)` — each domain as it is defined
-- `[TRACE] Formula: (OP ...)` — each top-level formula entering the parser
-- `[TRACE] ALL/EXISTS/FOR VAR = VAL` — each variable binding tried by a quantifier
-- `[TRACE] Multiply: N x M -> K clauses` — clause counts at each OR-distribution step
+- `[TRACE] Domain NAME = (val ...)` -- each domain as it is defined
+- `[TRACE] Formula: (OP ...)` -- each top-level formula entering the parser
+- `[TRACE] ALL/EXISTS/FOR VAR = VAL` -- each variable binding tried by a quantifier
+- `[TRACE] Multiply: N x M -> K clauses` -- clause counts at each OR-distribution step
 
 The multiply trace is especially useful for diagnosing exponential clause blowup. When compact encoding is disabled, each multiply step performs a full cross-product; the clause count shown will grow multiplicatively. With compact encoding enabled, auxiliary propositions are introduced and the count grows only linearly.
 
@@ -454,7 +454,7 @@ diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 
 ### Known limitation: compact-encoding and nested exists
 
-With `(option compact-encoding 0)`, the OR-distribution step performs a full cross-product of clauses instead of introducing auxiliary Tseitin propositions. Nested `exists` quantifiers over large domains can cause exponential clause blowup. Keep domains small (≤ 3 values) when using `compact-encoding 0` with nested quantifiers, or omit the option to use the default Tseitin encoding.
+With `(option compact-encoding 0)`, the OR-distribution step performs a full cross-product of clauses instead of introducing auxiliary Tseitin propositions. Nested `exists` quantifiers over large domains can cause exponential clause blowup. Keep domains small (<= 3 values) when using `compact-encoding 0` with nested quantifiers, or omit the option to use the default Tseitin encoding.
 
 ## Implementing SatPlan in FiFO
 
@@ -475,43 +475,43 @@ Schema BNF
     
     <formula> = <proposition> | (not <formula>) | 
     		(and <formula>*) | (or <formula>*) |  
-        (implies <formula> <formula>) | (equiv <formula> <formula>) |  
-        (all <variable> <set expression> <test> <formula>) |  
-        (all (<variable>+) <set expression> <test> <formula>) |  
-        (exists <variable> <set expression> <test> <formula>) |  
-        (exists (<variable>+) <set expression> <test> <formula>) |  
-        (if <test> <formula>) |  
-        (prove ((<variable> <set expression>)*) <test> <formula>)
+        (implies <formula> <formula>) | (equiv <formula> <formula>) |  
+        (all <variable> <set expression> <test> <formula>) |  
+        (all (<variable>+) <set expression> <test> <formula>) |  
+        (exists <variable> <set expression> <test> <formula>) |  
+        (exists (<variable>+) <set expression> <test> <formula>) |  
+        (if <test> <formula>) |  
+        (prove ((<variable> <set expression>)*) <test> <formula>)
     
     <proposition> = <predicate symbol> | true | false | 
     		(<predicate symbol> <term>*) |
     
     <set expression> = <domain name> | (set <term>+) | 
     		(range <numeric expression> <numeric expression>) |  
-        (union <set expression> <set expression>) | 
-        (intersection <set expression> <set expression>) |  
-        (set-difference <set expression> <set expression>) | 
-        (for <variable> <set expression> <test> <set expression>) |
-        (for (<variable>+) <set expression> <test> <set expression>) |
-        (lisp <lisp list valued expression>)
+        (union <set expression> <set expression>) | 
+        (intersection <set expression> <set expression>) |  
+        (set-difference <set expression> <set expression>) | 
+        (for <variable> <set expression> <test> <set expression>) |
+        (for (<variable>+) <set expression> <test> <set expression>) |
+        (lisp <lisp list valued expression>)
     
     <test> = <numeric expression>
     
     <term> = <constant symbol> | <numeric expression> | 
     		<variable> | <term name> |
-        (<uninterpreted function symbol> <term>*)
+        (<uninterpreted function symbol> <term>*)
     
     <numeric expression> = <number> | 
     		true | false |
     		<variable ranging over a numeric domain> | 
     		(<observed predicate symbol> <term>*) |  
-        (member <term> <set expression>) | 
-        (alldiff <term> <term>+) |  
-        (not <numeric expression>) | 
-        (and <numeric expression>\*) | 
-        (or <numeric expression>\*) |  
-        (<operator> <numeric expression> <numeric expression>) |  
-        (lisp <lisp number valued expression>)
+        (member <term> <set expression>) | 
+        (alldiff <term> <term>+) |  
+        (not <numeric expression>) | 
+        (and <numeric expression>\*) | 
+        (or <numeric expression>\*) |  
+        (<operator> <numeric expression> <numeric expression>) |  
+        (lisp <lisp number valued expression>)
     
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
@@ -519,9 +519,9 @@ Schema BNF
     
     <observed-formula> = <proposition> |
     		(and <observed-formula>*) | 
-        (all <variable> <set expression> <test> <observed-formula>) |  
-        (all (<variable>+) <set expression> <test> <observed-formula>) |  
-        (if <test> <observed-formula>) 
+        (all <variable> <set expression> <test> <observed-formula>) |  
+        (all (<variable>+) <set expression> <test> <observed-formula>) |  
+        (if <test> <observed-formula>) 
 
 ## Using FiFO with Python
 
