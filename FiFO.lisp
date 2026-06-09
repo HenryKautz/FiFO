@@ -707,7 +707,7 @@
         ;; a list of variables is specified
         (t
          (when tracep (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
-         (parse-formula (expand-multivar-for VAR DOM TEST BODY)))))
+         (parse-expression (expand-multivar-for VAR DOM TEST BODY)))))
 
 (defun parse-expression-binding (VAR VAL TEST BODY FAILED-TEST-RESULT)
   (let ((RESULT FAILED-TEST-RESULT))
@@ -792,7 +792,7 @@
 (defun all-different (symbols)
   (cond ((null symbols) t)
         ((null (cdr symbols)) t)
-        (t (and (not (member (car symbols) (cdr symbols)))
+        (t (and (not (member (car symbols) (cdr symbols) :test #'equalp))
                 (all-different (cdr symbols))))))
 
 (defun parse-expression (EXPR)
@@ -818,7 +818,7 @@
 
 (defun parse-binary-expression (op LEFT RIGHT)
   (let ((e1 (parse-expression LEFT)) (e2 (parse-expression RIGHT)))
-    (cond ((eql op 'member) (if (member e1 e2) 1 0))
+    (cond ((eql op 'member) (if (member e1 e2 :test #'equalp) 1 0))
           ((or (eql op 'eq) (eql op '=)) (if (equalp E1 E2) 1 0))
           ((eql op 'neq) (if (equalp E1 E2) 0 1))
           ((eql op '<) (if (< e1 e2) 1 0))
@@ -834,9 +834,9 @@
           ((eql op 'rem) (- e1 (* e2 (floor (/ e1 e2)))))
           ((eql op 'mod) (mod e1 e2))
           ((eql op 'range) (parse-range e1 e2))
-          ((eql op 'union) (union e1 e2))
-          ((eql op 'intersection) (intersection e1 e2))
-          ((eql op 'set-difference) (set-difference e1 e2))
+          ((eql op 'union) (union e1 e2 :test #'equalp))
+          ((eql op 'intersection) (intersection e1 e2 :test #'equalp))
+          ((eql op 'set-difference) (set-difference e1 e2 :test #'equalp))
           (t (error "Parser error at ~S" op)))))
 
 (defun parse-range (LOW HIGH)

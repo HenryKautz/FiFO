@@ -1,7 +1,7 @@
 ;; SatPlan Logistics Problem
 
 ;; Time horizon
-(alias numslices 5)
+(alias numslices 6)
 (domain slices (range 1 numslices))
 (domain actslices (range 1 (- numslices 1)))
 

@@ -2,41 +2,41 @@
 ;; Parallel Execution Semantics
 
 (all s actslices true
-   ;; Actions imply their preconditions
-   (all act actions true
-      (all flu fluents (Pre act flu)
-         (implies (Occurs act s)
-            (Holds flu s))))
+   (and
+      ;; Actions imply their preconditions
+      (all act actions true
+         (all flu fluents (Pre act flu)
+            (implies (Occurs act s)
+               (Holds flu s))))
 
-   ;; Actions imply their effects
-   (all act actions true
-      (all flu fluents (Add act flu)
-         (implies (Occurs act s)
-            (Holds flu (+ s 1)))))
-   (all act actions true
-      (all flu fluents (Del act flu)
-         (implies (Occurs act s)
-            (not (Holds flu (+ s 1))))))
+      ;; Actions imply their effects
+      (all act actions true
+         (all flu fluents (Add act flu)
+            (implies (Occurs act s)
+               (Holds flu (+ s 1)))))
+      (all act actions true
+         (all flu fluents (Del act flu)
+            (implies (Occurs act s)
+               (not (Holds flu (+ s 1))))))
 
-   ;; Interfering actions are mutually exclusive.
-   ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
-   ;;   where a1 and a2 are not equal.  Inequality is required because an action
-   ;;   may delete its own precondition.
-   (all (a1 a2) actions (neq a1 a2)
-      (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
-         (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+      ;; Interfering actions are mutually exclusive.
+      ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
+      ;;   where a1 and a2 are not equal.  Inequality is required because an action
+      ;;   may delete its own precondition.
+      (all (a1 a2) actions (neq a1 a2)
+         (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
 
-   ;; Frame axioms
-   (all flu fluents true
-      (implies (and (Holds flu s) (not (Holds flu (+ s 1))))
-         (exists a actions (Del a flu)
-            (Occurs a s))))
+      ;; Frame axioms
+      (all flu fluents true
+         (implies (and (Holds flu s) (not (Holds flu (+ s 1))))
+            (exists a actions (Del a flu)
+               (Occurs a s))))
 
-   (all flu fluents true
-      (implies (and (not (Holds flu s)) (Holds flu (+ s 1)))
-         (exists a actions (Add a flu)
-            (Occurs a s))))
-   )
+      (all flu fluents true
+         (implies (and (not (Holds flu s)) (Holds flu (+ s 1)))
+            (exists a actions (Add a flu)
+               (Occurs a s))))))
 
 ;; Initial state is completely specified
 (all f initial-state true

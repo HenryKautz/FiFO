@@ -1,0 +1,6 @@
+(domain girls (set mary beth sue))
+(big mary)
+(exists g girls true (happy g))
+(blond beth)
+(all h girls true (sad h))
+(tall sue)
