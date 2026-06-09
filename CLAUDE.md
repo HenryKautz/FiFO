@@ -1,27 +1,20 @@
-# Schema 2.0
+# FiFO
 
-Schema is a finite-domain first-order logic language that compiles to propositional CNF for SAT solving. The interpreter is written in Common Lisp (SBCL).
+FiFO is a finite-domain first-order logic language that compiles to propositional CNF for SAT solving. The interpreter is written in Common Lisp (SBCL).
 
 ## Project Structure
 
-- `schema.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
-- `satplan.lisp` — SatPlan implementation using Schema
-- `run-schema.sh` / `run-schema-script.lisp` — Shell/Lisp scripts to run Schema
-- `*.wff` — Schema formula input files
+- `FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
+- `*.wff` — FiFO formula input files
 - `*.scnf` — Symbolic CNF output files (intermediate)
 - `*.cnf` — DIMACS CNF files (input to SAT solver)
-- `*.out` / `*.satout` — SAT solver output
+- `*.satout` — SAT solver output
 - `README.md` — Full language reference and user guide
-- `tests_instantiate/` — In-progress `.wff` files for `instantiate` tests
-- `passed_instantiate/` — Verified passing `.wff` and `.scnf` pairs for `instantiate`
-- `gold_instantiate/` — Reference `*_gold.scnf` files for `instantiate` comparison
-- `tests_solve/` — In-progress `.wff` files for `solve` tests
-- `passed_solve/` — Verified passing `.wff` and `.answer` pairs for `solve`
-- `gold_solve/` — Reference `*_gold.answer` files for `solve` comparison
+- `tests/` — All test infrastructure (see below)
 
-## Key APIs (in schema.lisp)
+## Key APIs (in FiFO.lisp)
 
-- `(parse schemas &optional observations)` — Parse Schema forms to ground clauses
+- `(parse schemas &optional observations)` — Parse FiFO forms to ground clauses
 - `(instantiate "file.wff")` — File-based: wff -> scnf
 - `(propositionalize "file.scnf")` — File-based: scnf -> DIMACS cnf + map
 - `(satisfy "file.cnf")` — Run SAT solver (default: kissat)
@@ -32,17 +25,14 @@ Schema is a finite-domain first-order logic language that compiles to propositio
 
 Requires SBCL with Quicklisp. The SAT solver defaults to `kissat` (configurable via `sat-solver` variable).
 
-```sh
-./run-schema.sh
-```
-
 **Important:** SBCL on this system requires `--eval` (long form); `-e` is not recognized and silently drops all eval forms.
 
 ## Testing
 
-Two test runners:
+All test files and scripts live under `tests/`. Two test runners (must be run from inside `tests/`):
 
 ```sh
+cd tests
 bash run-test-instantiate.sh <testname>   # e.g. bash run-test-instantiate.sh test_all_exists
 bash run-test-solve.sh <testname>         # e.g. bash run-test-solve.sh test_simple_deduction
 ```
@@ -56,6 +46,17 @@ Compare output against gold:
 diff tests_instantiate/<testname>.scnf gold_instantiate/<testname>_gold.scnf
 diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 ```
+
+Test directories under `tests/`:
+
+| Directory | Purpose |
+|---|---|
+| `tests_instantiate/` | In-progress `.wff` files for `instantiate` tests |
+| `passed_instantiate/` | Verified passing `.wff` and `.scnf` pairs for `instantiate` |
+| `gold_instantiate/` | Reference `*_gold.scnf` files for `instantiate` comparison |
+| `tests_solve/` | In-progress `.wff` files for `solve` tests |
+| `passed_solve/` | Verified passing `.wff` and `.answer` pairs for `solve` |
+| `gold_solve/` | Reference `*_gold.answer` files for `solve` comparison |
 
 Note: `#:XXnnn` gensym numbers will differ across SBCL sessions — compare clause counts and structure rather than exact text when gensyms are present.
 

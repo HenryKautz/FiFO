@@ -84,7 +84,7 @@ FiFO is a language for specifying logical theories using finite-domain first-ord
 
 Formulas are composed, as in first-order logic, of predicates, variables, constants, function symbols, logical connections, and quantifiers. The basic function of the FiFO interpreter is to instantiate the variables in each formula and convert the result to CNF.
 
-Formulas and terms are specified in prefix (LISP) notation. The quantifiers, all and exists, iterate over sets of Herbrand terms. Terms are integers, constants, or complex terms built using uninterpreted function symbols. A quantified formula is represented by a list containing the quantifier, a variable, a set of terms, a test (integer valued) expression, and the subformula to which the quantification is applied. The subformula is instantiated only for bindings of the variable for which the test is true. For example,
+Formulas and terms are specified in prefix (LISP) notation. The quantifiers, all and exists, iterate over sets of Herbrand terms. Terms are numbers, constants, or complex terms built using uninterpreted function symbols. A quantified formula is represented by a list containing the quantifier, a variable, a set of terms, a test (numeric) expression, and the subformula to which the quantification is applied. The subformula is instantiated only for bindings of the variable for which the test is true. For example,
 
 ```
 (all x (range 1 10) (= 0 (mod x 2)) (p x))
@@ -100,7 +100,7 @@ Propositions are expressed in FiFO as either atomic symbols or complex propositi
 
 where "winner" is a predicate, "john" is a simple term, "round" is an uninterpreted function symbol, and "(round 24)" is a complex term.
 
-The integer values 1 and 0 are used to represent true and false respectively in integer expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in integer expressions. Integer expressions may include arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges of integers, union, intersection, set-difference), logical functions (and, or, not), and observed predicates. Non-observed predicates may not appear in an integer expression. Note that logical operators in integer expressions are evaluated by the FiFO interpreter and do not appear in the final CNF, unlike the logical operators that have the same names.
+Any non-zero numeric value is treated as true and zero (0 or 0.0) is treated as false in numeric expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in numeric expressions. Numeric expressions may include integer or floating-point literals, arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges, union, intersection, set-difference), logical functions (and, or, not), and observed predicates. Non-observed predicates may not appear in a numeric expression. Note that logical operators in numeric expressions are evaluated by the FiFO interpreter and do not appear in the final CNF, unlike the logical operators that have the same names. When a numeric value is a whole number (e.g. 2.0), it is written as a plain integer (2) in the scnf output.
 
 Comments can appear in the input.  They begin with ;; (double semicolon) and extend to the end of the line.
 
@@ -411,20 +411,23 @@ sbcl --eval "(load \"FiFO.lisp\")" \
 
 ## Testing
 
-Tests are split into two categories: `instantiate` tests (checking CNF generation) and `solve` tests (checking end-to-end SAT solving and answer extraction). Each category has three directories:
+Tests are split into two categories: `instantiate` tests (checking CNF generation) and `solve` tests (checking end-to-end SAT solving and answer extraction). All test files live under `tests/`. Each category has three directories:
 
 | Directory | Purpose |
 |---|---|
-| `tests_instantiate/` | `.wff` files for instantiate tests in progress |
-| `passed_instantiate/` | `.wff` and `.scnf` files for verified passing instantiate tests |
-| `gold_instantiate/` | Reference `*_gold.scnf` files for instantiate comparison |
-| `tests_solve/` | `.wff` files for solve tests in progress |
-| `passed_solve/` | `.wff` and `.answer` files for verified passing solve tests |
-| `gold_solve/` | Reference `*_gold.answer` files for solve comparison |
+| `tests/tests_instantiate/` | `.wff` files for instantiate tests in progress |
+| `tests/passed_instantiate/` | `.wff` and `.scnf` files for verified passing instantiate tests |
+| `tests/gold_instantiate/` | Reference `*_gold.scnf` files for instantiate comparison |
+| `tests/tests_solve/` | `.wff` files for solve tests in progress |
+| `tests/passed_solve/` | `.wff` and `.answer` files for verified passing solve tests |
+| `tests/gold_solve/` | Reference `*_gold.answer` files for solve comparison |
+
+The run scripts must be invoked from inside the `tests/` directory.
 
 ### Running instantiate tests
 
 ```sh
+cd tests
 bash run-test-instantiate.sh <testname>   # e.g. bash run-test-instantiate.sh test_all_exists
 ```
 
@@ -437,6 +440,7 @@ diff tests_instantiate/<testname>.scnf gold_instantiate/<testname>_gold.scnf
 ### Running solve tests
 
 ```sh
+cd tests
 bash run-test-solve.sh <testname>   # e.g. bash run-test-solve.sh test_simple_deduction
 ```
 
@@ -461,7 +465,7 @@ Schema BNF
 
     <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <observations>
     
-    <option> = (option <option name> <integer expression>)
+    <option> = (option <option name> <numeric expression>)
     
     <option name> = compact-encoding | trace
     
@@ -483,7 +487,7 @@ Schema BNF
     		(<predicate symbol> <term>*) |
     
     <set expression> = <domain name> | (set <term>+) | 
-    		(range <integer expression> <integer expression>) |  
+    		(range <numeric expression> <numeric expression>) |  
         (union <set expression> <set expression>) | 
         (intersection <set expression> <set expression>) |  
         (set-difference <set expression> <set expression>) | 
@@ -491,23 +495,23 @@ Schema BNF
         (for (<variable>+) <set expression> <test> <set expression>) |
         (lisp <lisp list valued expression>)
     
-    <test> = <integer expression>
+    <test> = <numeric expression>
     
-    <term> = <constant symbol> | <integer expression> | 
+    <term> = <constant symbol> | <numeric expression> | 
     		<variable> | <term name> |
         (<uninterpreted function symbol> <term>*)
     
-    <integer expression> = <integer> | 
+    <numeric expression> = <number> | 
     		true | false |
-    		<variable ranging over an integer domain> | 
+    		<variable ranging over a numeric domain> | 
     		(<observed predicate symbol> <term>*) |  
         (member <term> <set expression>) | 
         (alldiff <term> <term>+) |  
-        (not <integer expression>) | 
-        (and <integer expression>\*) | 
-        (or <integer expression>\*) |  
-        (<operator> <integer expression> <integer expression>) |  
-        (lisp <lisp integer valued expression>)
+        (not <numeric expression>) | 
+        (and <numeric expression>\*) | 
+        (or <numeric expression>\*) |  
+        (<operator> <numeric expression> <numeric expression>) |  
+        (lisp <lisp number valued expression>)
     
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
