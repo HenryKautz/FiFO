@@ -1,0 +1,74 @@
+;; SatPlan Logistics Problem
+
+;; Time horizon
+(alias numslices 5)
+(domain slices (range 1 numslices))
+(domain actslices (range 1 (- numslices 1)))
+
+;; Simple Logistics Domain - packages, trucks, places
+;;    Truck can move in one step from and to any place
+
+(alias numpackages 3)
+(alias numtrucks 2)
+(alias numplaces 3)
+
+(domain packages (for i (range 1 numpackages) true (set (package i))))
+(domain trucks   (for i (range 1 numtrucks)   true (set (truck i))))
+(domain places   (for i (range 1 numplaces)   true (set (place i))))
+
+(domain actions
+   (union
+      (for tr trucks true
+         (for pk packages true
+            (for pl places true
+               (set (load pk tr pl) (unload pk tr pl)))))
+      (for tr trucks true
+         (for (pl1 pl2) places (neq pl1 pl2)
+            (set (drive tr pl1 pl2))))))
+
+(domain fluents
+   (union
+      (for pl places true
+         (for pktr (union packages trucks) true
+            (set (at pktr pl))))
+      (for tr trucks true
+         (for pk packages true
+            (set (in pk tr))))))
+
+(observed
+   (all tr trucks true
+      (all pl places true
+         (all pk packages true
+            (and (Pre (load pk tr pl) (at tr pl))
+               (Pre (load pk tr pl) (at pk pl))
+               (Pre (unload pk tr pl) (in pk tr))
+               (Pre (unload pk tr pl) (at tr pl))
+               (Add (load pk tr pl) (in pk tr))
+               (Add (unload pk tr pl) (at pk pl))
+               (Del (load pk tr pl) (at pk pl))
+               (Del (unload pk tr pl) (in pk tr))))))
+
+   (all tr trucks true
+      (all (pl1 pl2) places (neq pl1 pl2)
+         (and (Pre (drive tr pl1 pl2) (at tr pl1))
+            (Add (drive tr pl1 pl2) (at tr pl2))
+            (Del (drive tr pl1 pl2) (at tr pl1)))))
+   )
+
+;; Initial and goal states
+
+(domain initial-state
+   (set
+      (at (package 1) (place 1))
+      (at (package 2) (place 2))
+      (at (package 3) (place 3))
+      (at (truck 1) (place 1))
+      (at (truck 2) (place 2))))
+
+(domain goal-state
+   (set
+      (at (package 1) (place 2))
+      (at (package 3) (place 2))
+      (at (package 2) (place 1))))
+
+(include "satplan.wff")
