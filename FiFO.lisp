@@ -1,4 +1,4 @@
-;;; Schema.lisp
+;;; FiFO.lisp
 
 (ql:quickload :cl-ppcre :silent t)
 

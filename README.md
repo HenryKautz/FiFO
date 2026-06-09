@@ -1,15 +1,15 @@
-# SCHEMA 2.0 USERS GUIDE
+# FiFO 2.0 Users Guide
 
 henry.kautz@gmail.com
 ---------------------
 
 [GitHub Repository](https://github.com/HenryKautz/Schema2)
 
-Schema is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The Schema interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
+FiFO is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The FiFO interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
 
-The Schema interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use Schema.
+The FiFO interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use FiFO.
 
-## Examples of Schema
+## Examples of FiFO
 
 ```
 ;; Define set domains boy, girl, and child
@@ -47,13 +47,13 @@ The Schema interpreter is written in Common Lisp, but it is not necessary to kno
 Common Lisp API
 ------------
 
-Invoke any implementation of Common Lisp, and load the file "schema.lisp". The following Lisp functions are available:
+Invoke any implementation of Common Lisp, and load the file "FiFO.lisp". The following Lisp functions are available:
 
 **(parse '(SCHEMA+) &optional '(OBSERVATION+)) returns ((OR LITERAL+)\*)**  
 Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each OBSERVATION is a positive ground literal or a observed quantified formula as described below. When the schemas are expanded, they are simplified by replacing observed atoms by true and all non-observed atoms that employ the same predicates by false.
 
 **(instantiate "test.wff" &optional "test.scnf" "test.obs")**  
-Reads the Schema file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file "test.scnf". The optional file "test.obs" contains a sequence of observed ground atoms.
+Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file "test.scnf". The optional file "test.obs" contains a sequence of observed ground atoms.
 
 **(propositionalize "test.scnf" &optional "test.cnf" "test.map")**  
 Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS format CNF file3 "test.cnf". In DIMACS format (the standard input language for all modern SAT solvers), propositions are represented by positive and negative integers. The mapping from symbolic ground atoms to integers is written to the file "test.map". The file "test.cnf" may then be sent to a SAT solver.
@@ -65,7 +65,7 @@ The solver named by the variable **sat-solver** (default "kissat") is called on 
 Reads in the output of a SAT solver "test.out" and a mapping file "test.map", and creates a file "test.answer" containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. The results are sorted alphabetically unless sort-by-time is set to t, in which case the results are sorted by the last argument to each predicate, which is often used to specify a time index.
 
 **(solve "test.wff" &optional "test.answer"  "test.obs")**
-Reads in the Schema file "test.wff" and an optional "test.obs" observation file, solves it using the **sat-solver** and writes the results in symbolic form to "test.answer".  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
+Reads in the FiFO file "test.wff" and an optional "test.obs" observation file, solves it using the **sat-solver** and writes the results in symbolic form to "test.answer".  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
 
 - If the formula does not contain a prove form and:
   - Is satisfiable: SAT followed by the positive ground literals in a satisying model.
@@ -80,9 +80,9 @@ Reads in the Schema file "test.wff" and an optional "test.obs" observation file,
 Language
 --------
 
-Schema is a language for specifying logical theories using finite-domain first-order logic syntax.  Because domains are finite, the Schema interpreter compiles its input into propositional logic for solution by any SAT solver. A Schema program consists of a sequence of options, domain declarations, and formulas. Options control certain details of the intrepreter. Domain declarations bind domain names to sets of Herbrand terms.  Domains may share elements.  No domain declarations are associated with predicates; every predicate may accept terms of any domain as arguments.  It is also permissible for different instances of predicates to take different number of arguments.
+FiFO is a language for specifying logical theories using finite-domain first-order logic syntax.  Because domains are finite, the FiFO interpreter compiles its input into propositional logic for solution by any SAT solver. A FiFO program consists of a sequence of options, domain declarations, and formulas. Options control certain details of the interpreter. Domain declarations bind domain names to sets of Herbrand terms.  Domains may share elements.  No domain declarations are associated with predicates; every predicate may accept terms of any domain as arguments.  It is also permissible for different instances of predicates to take different number of arguments.
 
-Formulas are composed, as in first-order logic, of predicates, variables, constants, function symbols, logical connections, and quantifiers. The basic function of the Schema interpreter is to instantiate the variables in each formula and convert the result to CNF.
+Formulas are composed, as in first-order logic, of predicates, variables, constants, function symbols, logical connections, and quantifiers. The basic function of the FiFO interpreter is to instantiate the variables in each formula and convert the result to CNF.
 
 Formulas and terms are specified in prefix (LISP) notation. The quantifiers, all and exists, iterate over sets of Herbrand terms. Terms are integers, constants, or complex terms built using uninterpreted function symbols. A quantified formula is represented by a list containing the quantifier, a variable, a set of terms, a test (integer valued) expression, and the subformula to which the quantification is applied. The subformula is instantiated only for bindings of the variable for which the test is true. For example,
 
@@ -92,7 +92,7 @@ Formulas and terms are specified in prefix (LISP) notation. The quantifiers, all
 
 can be read, "for all x in the range 1 through 10, such that x is even, assert (p x)".
 
-Propositions are expressed in Schema as either atomic symbols or complex propositions specified by a list beginning with a predicate followed by zero or more terms.  The special proposition "true" and "false" have the expected meaning.  Terms can be built from interpreted functions such as + and uninterpreted function symbols. For example, the literal expression (winner john (round (\* 3 8))) is instantiated as
+Propositions are expressed in FiFO as either atomic symbols or complex propositions specified by a list beginning with a predicate followed by zero or more terms.  The special proposition "true" and "false" have the expected meaning.  Terms can be built from interpreted functions such as + and uninterpreted function symbols. For example, the literal expression (winner john (round (\* 3 8))) is instantiated as
 
 ```
 (winner john (round 24))
@@ -100,7 +100,7 @@ Propositions are expressed in Schema as either atomic symbols or complex proposi
 
 where "winner" is a predicate, "john" is a simple term, "round" is an uninterpreted function symbol, and "(round 24)" is a complex term.
 
-The integer values 1 and 0 are used to represent true and false respectively in integer expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in integer expressions. Integer expressions may include arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges of integers, union, intersection, set-difference), logical functions (and, or, not), and observed predicates. Non-observed predicates may not appear in an integer expression. Note that logical operators in integer expressions are evaluated by the Schema interpreter and do not appear in the final CNF, unlike the logical operators that have the same names.
+The integer values 1 and 0 are used to represent true and false respectively in integer expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in integer expressions. Integer expressions may include arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges of integers, union, intersection, set-difference), logical functions (and, or, not), and observed predicates. Non-observed predicates may not appear in an integer expression. Note that logical operators in integer expressions are evaluated by the FiFO interpreter and do not appear in the final CNF, unlike the logical operators that have the same names.
 
 Comments can appear in the input.  They begin with ;; (double semicolon) and extend to the end of the line.
 
@@ -157,7 +157,7 @@ This formula is satisfiable, so the unwanted conclusion does not hold.
 
 ## Functions and Equality
 
-Schema includes both interpreted an uninterpreted functions.  Interpreted functions include mathematical operations and set operations.  A term that does note begin with the name of an interpreted function is taken to be an uninterpreted function.  Thus, the formula using the interpreted function + and the uninterpreted function symbol node
+FiFO includes both interpreted and uninterpreted functions.  Interpreted functions include mathematical operations and set operations.  A term that does not begin with the name of an interpreted function is taken to be an uninterpreted function.  Thus, the formula using the interpreted function + and the uninterpreted function symbol node
 
 ```
 (all i (range 1 3) true (edge (vertex x) (vertex (+ x 1))))
@@ -175,7 +175,7 @@ As in logic programming, ground terms refer to themselves, or in other words, fo
 
 ## Observed Predicates
 
-Observed predicates are useful for describing fixed relationships in a problem instance. The true ground literals for such predicates are specified in a list provided to the Schema interpreter.  The interpreter will then assume that all other literals for the predicates that appear in that list are asserted to be false.
+Observed predicates are useful for describing fixed relationships in a problem instance. The true ground literals for such predicates are specified in a list provided to the FiFO interpreter.  The interpreter will then assume that all other literals for the predicates that appear in that list are asserted to be false.
 
 For example, consider representing problems about a graph. The observations would specify edges in the graph, for example:
 
@@ -217,11 +217,11 @@ Quantified formulas can appear as observations with the restriction that only th
  )
 ```
 
-Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* in the innermost **all**.  Recall that this is valid because observed literals can appear in a test.  Evaluating the form can add additional pairs to the observed predicate "smaller".  The Schema program therefore re-evaluates *every* observed quantified formula if *any* such formula adds a *new* observed literal.  
+Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* in the innermost **all**.  Recall that this is valid because observed literals can appear in a test.  Evaluating the form can add additional pairs to the observed predicate "smaller".  The FiFO program therefore re-evaluates *every* observed quantified formula if *any* such formula adds a *new* observed literal.  
 
 ## Constraint Satisfaction
 
-Discrete constraint satisfaction problems (CSPs) can easily be represented in Schema.  The answer can be read off from the symbolic form of the SAT solution generated by the interpret function.
+Discrete constraint satisfaction problems (CSPs) can easily be represented in FiFO.  The answer can be read off from the symbolic form of the SAT solution generated by the interpret function.
 
 As an example, consider graph 3-coloring: assign one of three colors to each node of a graph so that no two adjacent nodes share a color.  The graph is specified using an observed predicate `edge`, giving the closed-world assumption that unlisted edges do not exist.  Nodes are given colors using a predicate `color`, and two schemas assert (1) every node gets exactly one color and (2) adjacent nodes get different colors.
 
@@ -263,7 +263,7 @@ SAT
 Deduction 
 ---------------------------------------
 
-Satisfiability testing can be used for deduction by negating the conclusion to be drawn from a set of assumptions. For example, suppose that Bob is shorter than Alice, Alice is shorter than Charlie, and shorter is transitive. Can you conclude that there is someone who is shorter than two other people? This problem could be encoded in Schema as follows for proof by refutation.  The (unnegated) conclusion holds if the formula is unsatisfiable.
+Satisfiability testing can be used for deduction by negating the conclusion to be drawn from a set of assumptions. For example, suppose that Bob is shorter than Alice, Alice is shorter than Charlie, and shorter is transitive. Can you conclude that there is someone who is shorter than two other people? This problem could be encoded in FiFO as follows for proof by refutation.  The (unnegated) conclusion holds if the formula is unsatisfiable.
 
 ```
 (domain Person (set Alice Bob Charlie))  
@@ -273,17 +273,17 @@ Satisfiability testing can be used for deduction by negating the conclusion to b
 (not (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
 ```
 
-Schema provides an alternative way of encoding a deduction problem by using the **prove** construct.  In this case, the last line above would be replaced by:
+FiFO provides an alternative way of encoding a deduction problem by using the **prove** construct.  In this case, the last line above would be replaced by:
 
 ```
 (prove () true (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
 ```
 
-Note that the formula to be deduced is not negated.  Use of prove makes makes the goal of the Schema problem clearer to a user.  
+Note that the formula to be deduced is not negated.  Use of prove makes the goal of the FiFO problem clearer to a user.  
 
 ## Answer Extraction for Deduction
 
- Suppose we want to also *derive* the constant for person who is shorter than two other people. Schema provides the operator "prove" to support answer extraction from proofs of unsatisfiability. A single prove operation may appear as the last schema in the list of input schemas. The last schema in previous example would be changed to:
+ Suppose we want to also *derive* the constant for person who is shorter than two other people. FiFO provides the operator "prove" to support answer extraction from proofs of unsatisfiability. A single prove operation may appear as the last schema in the list of input schemas. The last schema in previous example would be changed to:
 
 ```
 (prove ((x Person)) true (exists (y z) Person (neq y z) (and (shorter x y) (shorter x z))))
@@ -353,7 +353,7 @@ We say that a relationship over domains E and V is a mapping if (1) R is functio
 Compact Encodings
 -----------------
 
-The input formulas need not be in conjunctive normal form. Converting a formula to CNF using only the user-defined propositions can cause its size to increase exponentially. By creating new propositions, the Schema interpreter can guarantee the size of the output CNF formula is only exponential in the nesting of quantifiers. Specifically, where
+The input formulas need not be in conjunctive normal form. Converting a formula to CNF using only the user-defined propositions can cause its size to increase exponentially. By creating new propositions, the FiFO interpreter can guarantee the size of the output CNF formula is only exponential in the nesting of quantifiers. Specifically, where
 
 > M = number of input formulas  
 > L = length of the longest input formula  
@@ -366,7 +366,7 @@ When new propositions are introduced in this manner, the relationship between th
 
 ## Options
 
-The input to Schema may include the following options, which should appear before any formulas.
+The input to FiFO may include the following options, which should appear before any formulas.
 
 ```
 ; Allow new propositions to be created to reduce the size of the instantiated formula (default).
@@ -389,20 +389,20 @@ When tracing is enabled, the interpreter prints diagnostic output to standard ou
 
 The multiply trace is especially useful for diagnosing exponential clause blowup. When compact encoding is disabled, each multiply step performs a full cross-product; the clause count shown will grow multiplicatively. With compact encoding enabled, auxiliary propositions are introduced and the count grows only linearly.
 
-## Running Schema
+## Running FiFO
 
-Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable via the `sat-solver` variable in `schema.lisp`).
+Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable via the `sat-solver` variable in `FiFO.lisp`).
 
 Load the interpreter interactively:
 
 ```sh
-sbcl --eval "(load \"schema.lisp\")"
+sbcl --eval "(load \"FiFO.lisp\")"
 ```
 
 Run end-to-end on a `.wff` file:
 
 ```sh
-sbcl --eval "(load \"schema.lisp\")" \
+sbcl --eval "(load \"FiFO.lisp\")" \
      --eval "(solve \"myfile.wff\")" \
      --eval "(quit)"
 ```
@@ -452,7 +452,7 @@ diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 
 With `(option compact-encoding 0)`, the OR-distribution step performs a full cross-product of clauses instead of introducing auxiliary Tseitin propositions. Nested `exists` quantifiers over large domains can cause exponential clause blowup. Keep domains small (≤ 3 values) when using `compact-encoding 0` with nested quantifiers, or omit the option to use the default Tseitin encoding.
 
-## Implementing SatPlan in Schema
+## Implementing SatPlan in FiFO
 
 To be written.
 
@@ -519,6 +519,6 @@ Schema BNF
         (all (<variable>+) <set expression> <test> <observed-formula>) |  
         (if <test> <observed-formula>) 
 
-## Using Schema with Python
+## Using FiFO with Python
 
-## Using Schema as an LLM Tool
+## Using FiFO as an LLM Tool
