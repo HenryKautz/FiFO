@@ -11,6 +11,7 @@
 ;; Default values of options
 (defvar compact-encoding t)
 (defvar tracep nil)
+(defvar Weights nil)
 (defvar binary-functions '(eq neq = > < >= <= member
                               union intersection set-difference + - * div rem mod ** bit
                               range))
@@ -95,7 +96,8 @@
                             collect SCHEMA)
                       (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
                             collect OBSERVATION))))
-          (loop for C in CL do (format OUTS "~S~%" C)))))))
+          (loop for C in CL do (format OUTS "~S~%" C))
+          (loop for W in Weights do (format OUTS "~S~%" W)))))))
 
 (defun propositionalize (SCNFFILE &optional CNFFILE MAPFILE)
   (if (null (cl-ppcre:scan "\\.." SCNFFILE))
@@ -375,6 +377,7 @@
 (defvar Bind)
 (defvar ObservedPredicates)
 (defvar ObservedLiterals)
+(defvar Weights)
 ;; When true, parse-formula treats observed predicates as plain literals to assert
 ;; (used when processing observation form bodies so newly derived pairs get added).
 (defvar observation-body-mode nil)
@@ -384,6 +387,7 @@
   (setq Bind (make-hash-table :test #'eql))
   (setq ObservedPredicates (make-hash-table :test #'eql))
   (setq ObservedLiterals (make-hash-table :test #'equal))
+  (setq Weights nil)
   (setf (gethash 'TRUE ObservedPredicates) 1)
   (setf (gethash 'TRUE ObservedLiterals) 1)
   (setf (gethash 'FALSE ObservedPredicates) 1)
@@ -482,7 +486,7 @@
   (when tracep
     (cond ((atom SCHEMA)
            (format t "[TRACE] Formula: ~S~%" SCHEMA))
-          ((member (car SCHEMA) '(domain alias option observed include)) nil)
+          ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
           (t (format t "[TRACE] Formula: (~A ...)~%" (car SCHEMA)))))
   (cond ((atom SCHEMA) (parse-formula SCHEMA))
         ((eql (car SCHEMA) 'domain) (parse-domain (cdr SCHEMA)))
@@ -490,7 +494,14 @@
         ((eql (car SCHEMA) 'option) (parse-option (cdr SCHEMA)))
         ((eql (car SCHEMA) 'observed) (parse-observations (cdr SCHEMA)))
         ((eql (car SCHEMA) 'include) (parse-include (cadr SCHEMA)))
+        ((eql (car SCHEMA) 'weight) (parse-weight (cdr SCHEMA)))
         (t (parse-formula SCHEMA))))
+
+(defun parse-weight (ARGS)
+  (let ((lit (parse-literal (car ARGS)))
+        (num (normalize-numeric (parse-numeric-expression (cadr ARGS)))))
+    (setq Weights (append Weights (list (list 'WEIGHT lit num))))
+    nil))
 
 (defun parse-option (ARGS)
   (let ((opt (car ARGS))
@@ -580,7 +591,7 @@
 
 (defun parse-if (test body)
   (cond ((is-false (parse-numeric-expression test)) nil)
-        (t (parse-formula body))))
+        (t (parse-schema body))))
 
 (defun parse-not (F)
   ;; F is not a literal, that case is handled in parse-formula

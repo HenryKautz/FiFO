@@ -260,6 +260,55 @@ SAT
 (COLOR E RED)
 ```
 
+## Optimization (Weighted MaxSAT)
+
+FiFO supports weighted optimization problems via the **weight** form:
+
+```
+(weight <literal> <number>)
+```
+
+This asserts that if `<literal>` is true in a satisfying assignment, it contributes `<number>` to the objective. A MaxSAT or pseudo-Boolean optimizer can then minimize the total weight of true literals subject to satisfying all clauses.
+
+Unlike clauses, weight assertions are not wrapped in `OR` in the `.scnf` file — they appear as bare `(WEIGHT literal number)` lines after all clause lines.
+
+A simple example:
+
+```
+(domain item (set banana steak milk))
+(weight (buy banana) 1.25)
+(weight (buy steak) 15.50)
+(weight (buy milk) 3.10)
+;; Must buy at least one item
+(or (buy banana) (buy steak) (buy milk))
+```
+
+The `.scnf` output separates clauses from weights:
+
+```
+(OR (BUY BANANA) (BUY STEAK) (BUY MILK))
+(WEIGHT (BUY BANANA) 1.25)
+(WEIGHT (BUY STEAK) 15.5)
+(WEIGHT (BUY MILK) 3.1)
+```
+
+**Placement rules.** A `weight` form may appear:
+
+- At the top level of a `.wff` file.
+- In the body of `and`, `all`, `exists`, or `if` — nested arbitrarily. For example, the following assigns a weight to every member of a domain:
+
+```
+(all x items true (weight (cost x) 5.0))
+```
+
+And conditional weights work too:
+
+```
+(if (observed-predicate arg) (weight (option arg) 2.5))
+```
+
+`weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses.
+
 Deduction 
 ---------------------------------------
 
@@ -463,7 +512,7 @@ To be written.
 Schema BNF
 ----------
 
-    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <observations>
+    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <observations> | <weight>
     
     <option> = (option <option name> <numeric expression>)
     
@@ -474,14 +523,16 @@ Schema BNF
     <alias declaration> = (alias <term name> <term>)
     
     <formula> = <proposition> | (not <formula>) | 
-    		(and <formula>*) | (or <formula>*) |  
+    		(and <body>*) | (or <formula>*) |  
         (implies <formula> <formula>) | (equiv <formula> <formula>) |  
-        (all <variable> <set expression> <test> <formula>) |  
-        (all (<variable>+) <set expression> <test> <formula>) |  
-        (exists <variable> <set expression> <test> <formula>) |  
-        (exists (<variable>+) <set expression> <test> <formula>) |  
-        (if <test> <formula>) |  
+        (all <variable> <set expression> <test> <body>) |  
+        (all (<variable>+) <set expression> <test> <body>) |  
+        (exists <variable> <set expression> <test> <body>) |  
+        (exists (<variable>+) <set expression> <test> <body>) |  
+        (if <test> <body>) |  
         (prove ((<variable> <set expression>)*) <test> <formula>)
+    
+    <body> = <formula> | <weight>
     
     <proposition> = <predicate symbol> | true | false | 
     		(<predicate symbol> <term>*) |
@@ -515,6 +566,10 @@ Schema BNF
     
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
+    <weight> = (weight <literal> <numeric expression>)
+    
+    <literal> = <proposition> | (not <proposition>)
+
     <observations> = (observed <observed-formula>+)
     
     <observed-formula> = <proposition> |

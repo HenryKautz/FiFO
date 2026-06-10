@@ -1,4 +1,4 @@
 (OR (HEAVY A))
-(OR (WEIGHT C 5))
-(OR (WEIGHT B 5))
-(OR (WEIGHT A 5))
+(OR (WT C 5))
+(OR (WT B 5))
+(OR (WT A 5))

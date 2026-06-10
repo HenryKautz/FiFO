@@ -35,6 +35,8 @@
          (for pk packages true
             (set (in pk tr))))))
 
+(domain costs (set 0.7 0.5 4.5))
+
 (observed
    (all tr trucks true
       (all pl places true
@@ -46,13 +48,16 @@
                (Add (load pk tr pl) (in pk tr))
                (Add (unload pk tr pl) (at pk pl))
                (Del (load pk tr pl) (at pk pl))
-               (Del (unload pk tr pl) (in pk tr))))))
+               (Del (unload pk tr pl) (in pk tr))
+               (Cost (load pk tr pl) 0.7)
+               (Cost (unload pk tr pl) 0.5)))))
 
    (all tr trucks true
       (all (pl1 pl2) places (neq pl1 pl2)
          (and (Pre (drive tr pl1 pl2) (at tr pl1))
             (Add (drive tr pl1 pl2) (at tr pl2))
-            (Del (drive tr pl1 pl2) (at tr pl1)))))
+            (Del (drive tr pl1 pl2) (at tr pl1))
+            (Cost (drive tr pl1 pl2) 4.5))))
    )
 
 ;; Initial and goal states
@@ -70,5 +75,16 @@
       (at (package 1) (place 2))
       (at (package 3) (place 2))
       (at (package 2) (place 1))))
+
+;; Action costs
+(domain actions
+   (union
+      (for tr trucks true
+         (for pk packages true
+            (for pl places true
+               (set (load pk tr pl) (unload pk tr pl)))))
+      (for tr trucks true
+         (for (pl1 pl2) places (neq pl1 pl2)
+            (set (drive tr pl1 pl2))))))
 
 (include "satplan.wff")

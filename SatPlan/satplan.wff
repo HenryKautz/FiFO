@@ -36,7 +36,12 @@
       (all flu fluents true
          (implies (and (not (Holds flu s)) (Holds flu (+ s 1)))
             (exists a actions (Add a flu)
-               (Occurs a s))))))
+               (Occurs a s))))
+
+      ;; Actions have costs
+       (all a actions true
+            (all c costs (Cost a c)
+                (Weight (Occurs a s) c)))))
 
 ;; Initial state is completely specified
 (all f initial-state true

@@ -1,0 +1,25 @@
+; weight in if, and, exists, all, arbitrarily nested
+(domain items (set a b c))
+
+; direct: weight in if body
+(if true (weight (p a) 1.0))
+
+; weight in and body (already worked, verify still works)
+(and (weight (p b) 2.0) (weight (p c) 3.0))
+
+; weight in if inside and
+(and (if true (weight (q a) 4.0))
+     (if false (weight (q b) 99.0)))
+
+; weight in all body
+(all x items true (weight (r x) 5.0))
+
+; weight in exists body
+(exists x items true (weight (s x) 6.0))
+
+; deeply nested: if -> and -> if -> weight
+(if true (and (if true (weight (t1 a) 7.0))
+              (all x items true (if true (weight (t2 x) 8.0)))))
+
+; a plain clause so the scnf has at least one OR line
+(or (p a) (p b) (p c))

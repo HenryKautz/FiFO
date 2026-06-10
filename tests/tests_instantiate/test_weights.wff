@@ -1,0 +1,3 @@
+(weight (buy banana) 1.25)
+(or (buy banana) (buy steak) (buy milk))
+(and (weight (buy steak) 15.50) (weight (buy milk) 3.10))
