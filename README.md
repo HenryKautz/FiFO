@@ -122,6 +122,39 @@ The for operator is used to compactly create a set of non-atomic ground terms.  
 
 This defines Node as a set containing the terms (n 2), (n 4), and so on up to (n 100).
 
+The **collect** operator builds a domain by pattern-matching against observed predicates:
+
+```
+(collect <variable> (<observed-predicate> <term-pattern>+))
+```
+
+A `<term-pattern>` is like a term but may contain the variable itself or the wildcard symbol `*`. Both are treated as wildcards when matching against the set of observed propositions. The form returns the set of ground terms that the variable matched across all observed literals that fit the pattern. The result never contains duplicates.
+
+For example, given observations `(edge n1 n2)`, `(edge n2 n3)`, `(edge n3 n4)`:
+
+```
+;; Collect all source nodes of observed edges
+(domain sources (collect x (edge x *)))   ; {n1 n2 n3}
+
+;; Collect all target nodes
+(domain targets (collect x (edge * x)))   ; {n2 n3 n4}
+
+;; Self-loops only (variable appears twice — both must agree)
+(domain self-loops (collect x (edge x x)))   ; {} — no self-loops observed
+```
+
+The variable can be nested inside a compound term pattern. In that case the term at that position (not the outer compound) is what gets collected:
+
+```
+;; Given (at (truck 1) (place 1)) and (at (truck 2) (place 2)) are observed:
+(domain truck-ids (collect i (at (truck i) *)))   ; {1 2}
+
+;; Collect whole compound terms that fill a pattern position:
+(domain trucks-at-p1 (collect x (at x (place 1))))   ; {(truck 1)}
+```
+
+`collect` is especially useful in SatPlan-style encodings for deriving action sets directly from observed `Pre`/`Add`/`Del` facts rather than enumerating them manually.
+
 While **domain** gives a name to a set of terms, **alias** gives a name to a single term, as in the following example.
 
 ```
@@ -544,7 +577,10 @@ Schema BNF
         (set-difference <set expression> <set expression>) | 
         (for <variable> <set expression> <test> <set expression>) |
         (for (<variable>+) <set expression> <test> <set expression>) |
+        (collect <variable> (<observed predicate symbol> <term-pattern>+)) |
         (lisp <lisp list valued expression>)
+    
+    <term-pattern> = <variable> | * | <term>
     
     <test> = <numeric expression>
     

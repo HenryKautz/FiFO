@@ -1,0 +1,12 @@
+(domain items (set a b c))
+
+; positive weight
+(weight (p a) 2.0)
+; negative weight on same predicate
+(weight (not (p b)) 3.0)
+; quantified negative weights
+(all x items true (weight (not (q x)) 1.5))
+
+; clauses so p and q appear in the cnf variable table
+(or (p a) (p b))
+(or (q a) (q b) (q c))

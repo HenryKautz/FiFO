@@ -1,0 +1,28 @@
+;; Tests for collect with compound term patterns
+
+(domain places (for i (range 1 3) true (set (place i))))
+(domain trucks (for i (range 1 2) true (set (truck i))))
+
+(observed
+   (at (truck 1) (place 1))
+   (at (truck 1) (place 3))
+   (at (truck 2) (place 2))
+   (Pre (drive (truck 1) (place 1) (place 2)) (at (truck 1) (place 1)))
+   (Pre (drive (truck 2) (place 2) (place 3)) (at (truck 2) (place 2))))
+
+;; Collect whole terms matching a compound pattern
+(domain trucks-at-p1 (collect x (at x (place 1))))
+;; Should be {(truck 1)}
+
+;; Collect the index nested inside a compound pattern
+(domain truck-ids (collect i (at (truck i) *)))
+;; Should be {1 2}
+
+;; Collect all drive actions (variable at top level, wildcard for precondition)
+(domain drive-actions (collect a (Pre a *)))
+;; Should be {(drive (truck 1) (place 1) (place 2))
+;;            (drive (truck 2) (place 2) (place 3))}
+
+(all x trucks-at-p1 true (near-home x))
+(all i truck-ids true (known-truck i))
+(all a drive-actions true (is-drive a))

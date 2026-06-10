@@ -1,0 +1,25 @@
+;; Tests for (collect VAR (pred pat+))
+
+(domain node (set n1 n2 n3 n4))
+
+(observed
+   (edge n1 n2)
+   (edge n2 n3)
+   (edge n3 n4))
+
+;; Collect all sources of edges (first argument)
+(domain sources (collect x (edge x *)))
+;; Should be {n1 n2 n3}
+
+;; Collect all targets of edges (second argument)
+(domain targets (collect x (edge * x)))
+;; Should be {n2 n3 n4}
+
+;; Self-loops: variable appears twice, both positions must agree
+(domain self-loops (collect x (edge x x)))
+;; Should be empty (no self-loops observed)
+
+;; Use the collected domains
+(all s sources true (has-out s))
+(all t targets true (has-in t))
+(all x self-loops true (self-loop x))

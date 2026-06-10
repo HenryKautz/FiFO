@@ -15,7 +15,7 @@
 (defvar binary-functions '(eq neq = > < >= <= member
                               union intersection set-difference + - * div rem mod ** bit
                               range))
-(defvar interpreted-functions (append '(not and or lisp set alldiff) binary-functions))
+(defvar interpreted-functions (append '(not and or lisp set alldiff collect) binary-functions))
 (defvar logical-connectives '(not and or implies if equiv all exists))
 (defvar reserved-words (append interpreted-functions logical-connectives))
 
@@ -735,6 +735,67 @@
          (when tracep (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
          (parse-expression (expand-multivar-for VAR DOM TEST BODY)))))
 
+(defun collect-match-term (VAR pat term)
+  ;; Match pattern PAT against ground TERM.
+  ;; VAR is the wildcard to capture; * is an anonymous wildcard.
+  ;; Returns: term bound to VAR, :no-binding (matched without VAR), or :fail.
+  (cond
+    ((eq pat VAR)
+     term)
+    ((eq pat '*)
+     :no-binding)
+    ((or (atom pat) (member (car pat) interpreted-functions))
+     ;; Constant or interpreted expression: evaluate and compare
+     (if (equal (parse-term pat) term) :no-binding :fail))
+    ((and (listp term)
+          (eq (parse-name (car pat)) (car term))
+          (= (length (cdr pat)) (length (cdr term))))
+     ;; Uninterpreted compound term: recurse into arguments
+     (let ((var-val :unset))
+       (loop for p in (cdr pat) and t2 in (cdr term) do
+         (let ((result (collect-match-term VAR p t2)))
+           (cond
+             ((eq result :fail) (return-from collect-match-term :fail))
+             ((not (eq result :no-binding))
+              (if (eq var-val :unset)
+                  (setq var-val result)
+                  (unless (equal var-val result)
+                    (return-from collect-match-term :fail)))))))
+       (if (eq var-val :unset) :no-binding var-val)))
+    (t :fail)))
+
+(defun parse-collect (VAR PATTERN)
+  ;; (collect VAR (pred pat+))
+  ;; Iterates over all true observed literals matching PATTERN and returns the
+  ;; set of ground terms that VAR binds to.  Both VAR and * are wildcards;
+  ;; other atoms/compounds are evaluated as terms and compared exactly.
+  (let ((pred (parse-name (car PATTERN)))
+        (pat-args (cdr PATTERN))
+        (results nil))
+    (maphash
+      (lambda (key val)
+        (when (and (= val 1)
+                   (listp key)
+                   (eq (car key) pred)
+                   (= (length (cdr key)) (length pat-args)))
+          (let ((var-val :unset)
+                (match-ok t))
+            (loop for pat in pat-args and term in (cdr key)
+                  while match-ok do
+              (let ((result (collect-match-term VAR pat term)))
+                (cond
+                  ((eq result :fail) (setq match-ok nil))
+                  ((not (eq result :no-binding))
+                   (if (eq var-val :unset)
+                       (setq var-val result)
+                       (unless (equal var-val result)
+                         (setq match-ok nil)))))))
+            (when (and match-ok (not (eq var-val :unset)))
+              (pushnew var-val results :test #'equal)))))
+      ObservedLiterals)
+    (when tracep (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
+    results))
+
 (defun parse-expression-binding (VAR VAL TEST BODY FAILED-TEST-RESULT)
   (let ((RESULT FAILED-TEST-RESULT))
     (with-binding VAR VAL
@@ -833,6 +894,7 @@
                    ((eql op 'set) (parse-enumerated-set (cdr EXPR)))
                    ((eql op 'for) (parse-for (cadr EXPR) (parse-set-expression (caddr EXPR))
                                              (cadddr EXPR) (car (cddddr EXPR))))
+                   ((eql op 'collect) (parse-collect (cadr EXPR) (caddr EXPR)))
                    ((eql op 'alldiff) (all-different (mapcar #'parse-expression (cdr EXPR))))
                    ((gethash op ObservedPredicates)
                      (parse-observed-literal-expression EXPR))
