@@ -540,7 +540,213 @@ With `(option compact-encoding 0)`, the OR-distribution step performs a full cro
 
 ## Implementing SatPlan in FiFO
 
-To be written.
+Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's observed predicates and quantified formulas make the encoding concise and readable.
+
+### Representation
+
+A planning problem consists of:
+
+- **Fluents** — state variables that are true or false at each time step (e.g., `(at (package 1) (place 2))`)
+- **Actions** — things that can happen at each time step (e.g., `(load (package 1) (truck 1) (place 1))`)
+- **Initial state** — the set of fluents that are true at time 1 (all others are false)
+- **Goal state** — a set of fluents that must be true at the final time step
+
+Action schemas are described using four PDDL-style observed predicates:
+
+| Predicate | Meaning |
+|-----------|---------|
+| `(Pre action fluent)` | *fluent* is a precondition of *action* |
+| `(Add action fluent)` | *action* adds *fluent* (makes it true) |
+| `(Del action fluent)` | *action* deletes *fluent* (makes it false) |
+| `(Cost action value)` | *action* has numeric cost *value* |
+
+The FiFO propositions used in the encoding are:
+
+| Proposition | Meaning |
+|-------------|---------|
+| `(Holds fluent s)` | *fluent* is true at time step *s* |
+| `(Occurs action s)` | *action* happens at time step *s* |
+
+### Domain-Independent SatPlan Axioms
+
+The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to any planning problem expressed using the predicates above. It assumes the following domains are already defined by the problem file: `actions`, `fluents`, `costs`, `slices`, `actslices`, `initial-state`, `goal-state`, `numslices`.
+
+```lisp
+;; Domain Independent SatPlan axioms
+;; Parallel Execution Semantics
+
+(all s actslices true
+   (and
+      ;; Actions imply their preconditions
+      (all act actions true
+         (all flu fluents (Pre act flu)
+            (implies (Occurs act s)
+               (Holds flu s))))
+
+      ;; Actions imply their effects
+      (all act actions true
+         (all flu fluents (Add act flu)
+            (implies (Occurs act s)
+               (Holds flu (+ s 1)))))
+      (all act actions true
+         (all flu fluents (Del act flu)
+            (implies (Occurs act s)
+               (not (Holds flu (+ s 1))))))
+
+      ;; Interfering actions are mutually exclusive.
+      ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
+      ;;   where a1 and a2 are not equal.  Inequality is required because an action
+      ;;   may delete its own precondition.
+      (all (a1 a2) actions (neq a1 a2)
+         (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+
+      ;; Frame axioms
+      (all flu fluents true
+         (implies (and (Holds flu s) (not (Holds flu (+ s 1))))
+            (exists a actions (Del a flu)
+               (Occurs a s))))
+
+      (all flu fluents true
+         (implies (and (not (Holds flu s)) (Holds flu (+ s 1)))
+            (exists a actions (Add a flu)
+               (Occurs a s))))
+
+      ;; Actions have costs
+       (all a actions true
+            (all c costs (Cost a c)
+                (Weight (Occurs a s) c)))))
+
+;; Initial state is completely specified
+(all f initial-state true
+   (Holds f 1))
+(all f (set-difference fluents initial-state) true
+   (not (Holds f 1)))
+
+;; Goal state is partially specified
+(all f goal-state true
+   (Holds f numslices))
+```
+
+The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other.
+
+The **frame axioms** ensure that fluents persist across time steps unless an action explicitly changes them. They are encoded as explanatory frame axioms: if a fluent changes value, some action must be responsible.
+
+The **cost axioms** use `Weight` (FiFO's weighted MaxSAT mechanism) to assign a cost to each action occurrence. Minimizing total weight then yields a minimum-cost plan.
+
+### Example: Logistics Domain
+
+The file `SatPlan/logistics.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
+
+```lisp
+;; SatPlan Logistics Problem
+
+;; Time horizon
+(alias numslices 6)
+(domain slices (range 1 numslices))
+(domain actslices (range 1 (- numslices 1)))
+
+;; Simple Logistics Domain - packages, trucks, places
+;;    Truck can move in one step from and to any place
+
+(alias numpackages 3)
+(alias numtrucks 2)
+(alias numplaces 3)
+
+(domain packages (for i (range 1 numpackages) true (set (package i))))
+(domain trucks   (for i (range 1 numtrucks)   true (set (truck i))))
+(domain places   (for i (range 1 numplaces)   true (set (place i))))
+
+(domain actions
+   (union
+      (for tr trucks true
+         (for pk packages true
+            (for pl places true
+               (set (load pk tr pl) (unload pk tr pl)))))
+      (for tr trucks true
+         (for (pl1 pl2) places (neq pl1 pl2)
+            (set (drive tr pl1 pl2))))))
+
+(domain fluents
+   (union
+      (for pl places true
+         (for pktr (union packages trucks) true
+            (set (at pktr pl))))
+      (for tr trucks true
+         (for pk packages true
+            (set (in pk tr))))))
+
+(domain costs (set 0.7 0.5 4.5))
+
+(observed
+   (all tr trucks true
+      (all pl places true
+         (all pk packages true
+            (and (Pre (load pk tr pl) (at tr pl))
+               (Pre (load pk tr pl) (at pk pl))
+               (Pre (unload pk tr pl) (in pk tr))
+               (Pre (unload pk tr pl) (at tr pl))
+               (Add (load pk tr pl) (in pk tr))
+               (Add (unload pk tr pl) (at pk pl))
+               (Del (load pk tr pl) (at pk pl))
+               (Del (unload pk tr pl) (in pk tr))
+               (Cost (load pk tr pl) 0.7)
+               (Cost (unload pk tr pl) 0.5)))))
+
+   (all tr trucks true
+      (all (pl1 pl2) places (neq pl1 pl2)
+         (and (Pre (drive tr pl1 pl2) (at tr pl1))
+            (Add (drive tr pl1 pl2) (at tr pl2))
+            (Del (drive tr pl1 pl2) (at tr pl1))
+            (Cost (drive tr pl1 pl2) 4.5))))
+   )
+
+;; Initial and goal states
+
+(domain initial-state
+   (set
+      (at (package 1) (place 1))
+      (at (package 2) (place 2))
+      (at (package 3) (place 3))
+      (at (truck 1) (place 1))
+      (at (truck 2) (place 2))))
+
+(domain goal-state
+   (set
+      (at (package 1) (place 2))
+      (at (package 3) (place 2))
+      (at (package 2) (place 1))))
+
+(include "satplan.wff")
+```
+
+The `observed` block defines the action schemas. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the SatPlan axioms in `satplan.wff` can use them as tests in quantified filters (e.g., `(all flu fluents (Pre act flu) ...)`), which generate clauses only for the relevant fluent–action pairs rather than all combinations.
+
+### Using `collect` to Derive Domains Automatically
+
+An alternative encoding, `SatPlan/logistics-with-collect.wff`, derives the `actions`, `fluents`, and `costs` domains automatically from the observed action schemas using the `collect` set expression, eliminating the need to enumerate them manually:
+
+```lisp
+(domain actions (collect act (Pre act *)))
+(domain fluents (collect f (Pre * f)))
+(domain costs   (collect c (Cost * c)))
+```
+
+`collect` scans all true observed literals matching the pattern and returns the set of ground terms bound to the variable. The `*` wildcard matches any term without capturing it. The `collect` forms must appear *after* the `observed` block so that `ObservedLiterals` is fully populated when they are evaluated.
+
+### Running the Logistics Example
+
+To instantiate (expand to symbolic CNF):
+
+```sh
+sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/logistics.wff")' --eval '(quit)'
+```
+
+To solve end-to-end:
+
+```sh
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/logistics.wff")' --eval '(quit)'
+```
 
 Schema BNF
 ----------
