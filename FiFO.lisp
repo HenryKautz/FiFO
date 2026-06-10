@@ -109,13 +109,19 @@
   (with-open-file (WS SCNFFILE :direction :input)
     (with-open-file (CS CNFFILE :direction :output :if-exists :supersede)
       (with-open-file (MS MAPFILE :direction :output :if-exists :supersede)
-        (multiple-value-bind (cnfdata mapdata numvar numclauses)
-            (lit2prop (loop with clause while (not (eql :EOF (setq clause (read WS nil :EOF))))
-                            collect clause))
-          (format CS "p cnf ~S ~S~%" numvar numclauses)
-          (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
-          (format MS "map ~S~%" numvar)
-          (loop for m in mapdata do (format MS "~{~D ~S~}~%" m)))))))
+        (let* ((all-forms (loop with clause
+                                while (not (eql :EOF (setq clause (read WS nil :EOF))))
+                                collect clause))
+               (clauses (remove-if (lambda (f) (eql (car f) 'weight)) all-forms))
+               (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms)))
+          (multiple-value-bind (cnfdata mapdata numvar numclauses weightdata)
+              (lit2prop clauses weights)
+            (format CS "p cnf ~S ~S~%" numvar numclauses)
+            (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
+            (loop for w in weightdata do (format CS "cw ~D ~A~%" (first w) (second w)))
+            (format MS "map ~S~%" numvar)
+            (loop for m in mapdata do (format MS "~{~D ~S~}~%" m))))))))
+
 
 (defun interpret (SATOUTFILE &optional MAPFILE SOLNFILE SORT_BY_LAST_ARGUMENT)
   (if (null (cl-ppcre:scan "\\.." SATOUTFILE))
@@ -203,7 +209,8 @@
       (unwind-protect
            (progn
              (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
-               (dolist (c scnf) (format SCNF-STREAM "~S~%" c)))
+               (dolist (c scnf) (format SCNF-STREAM "~S~%" c))
+               (dolist (w Weights) (format SCNF-STREAM "~S~%" w)))
              (propositionalize scnf-file cnf-file map-file)
              (satisfy cnf-file)
              (interpret satout-file map-file soln-file)
@@ -211,27 +218,35 @@
                (values (car results) (cdr results))))
         (cleanup-scratch-files)))))
 
-(defun lit2prop (CL)
-  (let ((cnfdata nil) (mapdata nil) (numvar 0) (numclauses (length CL)) (hash (make-hash-table :test #'equal)))
-    ;; Build hash table
-    (loop for clause in CL do
-            (loop for lit in (cdr clause) do
-                    (let ((prop (if (is-proposition lit) lit (cadr lit))))
-                      (cond ((not (nth-value 1 (gethash prop hash)))
-                              (incf numvar)
-                              (setf (gethash prop hash) numvar))))))
-    ;; Translate clauses
-    (setq cnfdata (loop for clause in CL
-                        collect
-                          (loop for lit in (cdr clause)
-                                collect (if (is-proposition lit)
-                                            (gethash lit hash)
-                                            (- (gethash (cadr lit) hash))))))
-    ;; Build map table
-    (maphash #'(lambda (key val) (push (list val key) mapdata)) hash)
-    (setq mapdata (sort mapdata #'< :key #'car))
-    ;; Return multiple values
-    (values cnfdata mapdata numvar numclauses)))
+(defun lit2prop (CL &optional weights)
+  (let ((cnfdata nil) (mapdata nil) (weightdata nil)
+        (numvar 0) (numclauses (length CL))
+        (hash (make-hash-table :test #'equal)))
+    (flet ((ensure-prop (lit)
+             (let ((prop (if (is-proposition lit) lit (cadr lit))))
+               (unless (nth-value 1 (gethash prop hash))
+                 (incf numvar)
+                 (setf (gethash prop hash) numvar))))
+           (lit-to-int (lit)
+             (if (is-proposition lit)
+                 (gethash lit hash)
+                 (- (gethash (cadr lit) hash)))))
+      ;; Index all propositions from clauses
+      (loop for clause in CL do
+              (loop for lit in (cdr clause) do (ensure-prop lit)))
+      ;; Index propositions from weight literals (may not appear in any clause)
+      (loop for w in weights do (ensure-prop (cadr w)))
+      ;; Translate clauses
+      (setq cnfdata (loop for clause in CL
+                          collect (loop for lit in (cdr clause)
+                                        collect (lit-to-int lit))))
+      ;; Translate weights to (integer number) pairs
+      (setq weightdata (loop for w in weights
+                             collect (list (lit-to-int (cadr w)) (caddr w))))
+      ;; Build map table
+      (maphash #'(lambda (key val) (push (list val key) mapdata)) hash)
+      (setq mapdata (sort mapdata #'< :key #'car))
+      (values cnfdata mapdata numvar numclauses weightdata))))
 
 
 (defun soln2lit (mapdata solndata &optional sort-by-time)
