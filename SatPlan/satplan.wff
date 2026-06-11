@@ -1,6 +1,17 @@
 ;; Domain Independent SatPlan axioms
 ;; Parallel Execution Semantics
 
+;; Register all observed predicates used in tests below, so that they are
+;; recognized even when a problem asserts no facts for some of them.
+;; The dummy constants never appear in any actions/fluents/costs domain,
+;; so these facts generate no clauses.
+(observed
+   (Pre dummy-action dummy-fluent)
+   (PreNeg dummy-action dummy-fluent)
+   (Add dummy-action dummy-fluent)
+   (Del dummy-action dummy-fluent)
+   (Cost dummy-action 0))
+
 (all s actslices true
    (and
       ;; Actions imply their preconditions
@@ -8,6 +19,13 @@
          (all flu fluents (Pre act flu)
             (implies (Occurs act s)
                (Holds flu s))))
+
+      ;; Actions imply their negative preconditions are false.
+      ;;   (PreNeg act flu) asserts that act requires flu to be false.
+      (all act actions true
+         (all flu fluents (PreNeg act flu)
+            (implies (Occurs act s)
+               (not (Holds flu s)))))
 
       ;; Actions imply their effects
       (all act actions true
@@ -21,10 +39,14 @@
 
       ;; Interfering actions are mutually exclusive.
       ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
-      ;;   where a1 and a2 are not equal.  Inequality is required because an action
-      ;;   may delete its own precondition.
+      ;;   or if a2 adds a negative precondition of a1, where a1 and a2 are not
+      ;;   equal.  Inequality is required because an action may delete its own
+      ;;   precondition or add its own negative precondition.
       (all (a1 a2) actions (neq a1 a2)
          (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+      (all (a1 a2) actions (neq a1 a2)
+         (all flu fluents (and (PreNeg a1 flu) (Add a2 flu))
             (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
 
       ;; Frame axioms

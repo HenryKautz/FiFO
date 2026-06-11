@@ -556,6 +556,7 @@ Action schemas are described using four PDDL-style observed predicates:
 | Predicate | Meaning |
 |-----------|---------|
 | `(Pre action fluent)` | *fluent* is a precondition of *action* |
+| `(PreNeg action fluent)` | *action* requires *fluent* to be false (negative precondition) |
 | `(Add action fluent)` | *action* adds *fluent* (makes it true) |
 | `(Del action fluent)` | *action* deletes *fluent* (makes it false) |
 | `(Cost action value)` | *action* has numeric cost *value* |
@@ -575,6 +576,17 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
 ;; Domain Independent SatPlan axioms
 ;; Parallel Execution Semantics
 
+;; Register all observed predicates used in tests below, so that they are
+;; recognized even when a problem asserts no facts for some of them.
+;; The dummy constants never appear in any actions/fluents/costs domain,
+;; so these facts generate no clauses.
+(observed
+   (Pre dummy-action dummy-fluent)
+   (PreNeg dummy-action dummy-fluent)
+   (Add dummy-action dummy-fluent)
+   (Del dummy-action dummy-fluent)
+   (Cost dummy-action 0))
+
 (all s actslices true
    (and
       ;; Actions imply their preconditions
@@ -582,6 +594,13 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
          (all flu fluents (Pre act flu)
             (implies (Occurs act s)
                (Holds flu s))))
+
+      ;; Actions imply their negative preconditions are false.
+      ;;   (PreNeg act flu) asserts that act requires flu to be false.
+      (all act actions true
+         (all flu fluents (PreNeg act flu)
+            (implies (Occurs act s)
+               (not (Holds flu s)))))
 
       ;; Actions imply their effects
       (all act actions true
@@ -595,10 +614,14 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
 
       ;; Interfering actions are mutually exclusive.
       ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
-      ;;   where a1 and a2 are not equal.  Inequality is required because an action
-      ;;   may delete its own precondition.
+      ;;   or if a2 adds a negative precondition of a1, where a1 and a2 are not
+      ;;   equal.  Inequality is required because an action may delete its own
+      ;;   precondition or add its own negative precondition.
       (all (a1 a2) actions (neq a1 a2)
          (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+      (all (a1 a2) actions (neq a1 a2)
+         (all flu fluents (and (PreNeg a1 flu) (Add a2 flu))
             (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
 
       ;; Frame axioms
@@ -628,7 +651,11 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
    (Holds f numslices))
 ```
 
-The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other.
+The `observed` block at the top registers the five observed predicates so that the quantified tests below parse even when a problem asserts no facts for some of them (for example, a problem with no negative preconditions or no action costs). The dummy constants never appear in any domain, so the registration generates no clauses.
+
+The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other, or if one adds a negative precondition of the other.
+
+**Negative preconditions** are expressed with `(PreNeg action fluent)`, meaning the action requires the fluent to be false. An action occurrence implies its negative preconditions are false at that time step, and an action may add its own negative precondition, just as an action may delete its own positive precondition. Fluents appearing in `PreNeg` facts must be included in the `fluents` domain.
 
 The **frame axioms** ensure that fluents persist across time steps unless an action explicitly changes them. They are encoded as explanatory frame axioms: if a fluent changes value, some action must be responsible.
 
@@ -746,6 +773,49 @@ To solve end-to-end:
 
 ```sh
 sbcl --load FiFO.lisp --eval '(solve "SatPlan/logistics.wff")' --eval '(quit)'
+```
+
+### Translating PDDL to FiFO with pddl2fifo
+
+The program `pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
+
+To run from the shell:
+
+```sh
+sbcl --script pddl2fifo.lisp <problem.pddl> [<domain.pddl>]
+```
+
+Or from a Lisp listener:
+
+```lisp
+(load "pddl2fifo.lisp")
+(pddl2fifo "problem.pddl")                ; domain file found automatically
+(pddl2fifo "problem.pddl" "domain.pddl")  ; domain file given explicitly
+```
+
+If the domain file is not given, the root of its file name is taken from the `(:domain <name>)` form in the problem file, and `<name>.pddl` is looked up in the directory of the problem file.
+
+The translation is written to `<problem-root>.wff` in the directory of the problem file. The output:
+
+- Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `observed` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
+- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics-with-collect.wff`.
+- Emits a default time horizon `(alias numslices 6)`; edit this line in the output to change the plan length.
+- Ends with `(include "satplan.wff")`, so `satplan.wff` must be reachable from the directory containing the output file.
+
+Negative preconditions are translated into `PreNeg` observed facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
+
+Two example problems are provided. The untyped pair `SatPlan/switches.pddl` (domain) and `SatPlan/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs:
+
+```sh
+sbcl --script pddl2fifo.lisp SatPlan/switchprob.pddl
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/switchprob.wff")' --eval '(quit)'
+```
+
+The typed pair `SatPlan/trucklog.pddl` and `SatPlan/trucklogprob.pddl` encodes the same logistics task as `SatPlan/logistics.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
+
+```sh
+sbcl --script pddl2fifo.lisp SatPlan/trucklogprob.pddl
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/trucklogprob.wff")' --eval '(quit)'
 ```
 
 Schema BNF
