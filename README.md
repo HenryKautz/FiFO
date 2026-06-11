@@ -246,7 +246,7 @@ Quantified formulas can appear as observations with the restriction that only th
 (observed
  (all i num (< num limit) (smaller (cell i) (cell (+ 1 i))))
  (all (a b c) cell (and (smaller a b) (smaller b c)) 
- 			(smaller a c))
+      (smaller a c))
  )
 ```
 
@@ -832,7 +832,7 @@ Schema BNF
     <alias declaration> = (alias <term name> <term>)
     
     <formula> = <proposition> | (not <formula>) | 
-    		(and <body>*) | (or <formula>*) |  
+        (and <body>*) | (or <formula>*) |  
         (implies <formula> <formula>) | (equiv <formula> <formula>) |  
         (all <variable> <set expression> <test> <body>) |  
         (all (<variable>+) <set expression> <test> <body>) |  
@@ -844,10 +844,10 @@ Schema BNF
     <body> = <formula> | <weight>
     
     <proposition> = <predicate symbol> | true | false | 
-    		(<predicate symbol> <term>*) |
+        (<predicate symbol> <term>*) |
     
     <set expression> = <domain name> | (set <term>+) | 
-    		(range <numeric expression> <numeric expression>) |  
+        (range <numeric expression> <numeric expression>) |  
         (union <set expression> <set expression>) | 
         (intersection <set expression> <set expression>) |  
         (set-difference <set expression> <set expression>) | 
@@ -861,13 +861,13 @@ Schema BNF
     <test> = <numeric expression>
     
     <term> = <constant symbol> | <numeric expression> | 
-    		<variable> | <term name> |
+        <variable> | <term name> |
         (<uninterpreted function symbol> <term>*)
     
     <numeric expression> = <number> | 
-    		true | false |
-    		<variable ranging over a numeric domain> | 
-    		(<observed predicate symbol> <term>*) |  
+        true | false |
+        <variable ranging over a numeric domain> | 
+        (<observed predicate symbol> <term>*) |  
         (member <term> <set expression>) | 
         (alldiff <term> <term>+) |  
         (not <numeric expression>) | 
@@ -885,11 +885,71 @@ Schema BNF
     <observations> = (observed <observed-formula>+)
     
     <observed-formula> = <proposition> |
-    		(and <observed-formula>*) | 
+        (and <observed-formula>*) | 
         (all <variable> <set expression> <test> <observed-formula>) |  
         (all (<variable>+) <set expression> <test> <observed-formula>) |  
         (if <test> <observed-formula>) 
 
 ## Using FiFO with Python
 
-## Using FiFO as an LLM Tool
+There are two good ways to drive FiFO from Python: calling SBCL as a subprocess, which requires no extra libraries and matches FiFO's file-based design, or using the `cl4py` library, which keeps a persistent Lisp session and converts data between the two languages.
+
+### The subprocess method
+
+Since `instantiate` and `solve` read and write files, the simplest bridge is to invoke SBCL directly and read the output file:
+
+```python
+import subprocess
+
+def fifo_solve(wff_path):
+    subprocess.run(
+        ["sbcl", "--non-interactive", "--load", "FiFO.lisp",
+         "--eval", f'(solve "{wff_path}")'],
+        check=True, capture_output=True)
+    answer_path = wff_path.rsplit(".", 1)[0] + ".answer"
+    with open(answer_path) as f:
+        lines = f.read().splitlines()
+    return lines[0], lines[1:]     # "SAT"/"UNSAT"/..., literals
+
+status, literals = fifo_solve("SatPlan/logistics.wff")
+```
+
+Each literal line is an s-expression such as `(OCCURS (LOAD (PACKAGE 1) (TRUCK 1) (PLACE 1)) 1)`. The small `sexpdata` library (`pip install sexpdata`) parses these into nested Python lists:
+
+```python
+import sexpdata
+parsed = [sexpdata.loads(lit) for lit in literals]
+```
+
+This method pays SBCL's startup time (under a second) on every call, which is negligible for one-shot solves.
+
+### The cl4py method
+
+The `cl4py` library (`pip install cl4py`) starts an SBCL subprocess once and exchanges s-expressions with it, so FiFO loads a single time and repeated calls are fast. On recent Python versions cl4py also needs `pip install "setuptools<81"` for its `pkg_resources` dependency. Because cl4py starts SBCL with `--script`, the init file is skipped, so Quicklisp must be loaded explicitly before FiFO:
+
+```python
+import cl4py
+
+lisp = cl4py.Lisp()
+lisp.eval(('load', '"~/quicklisp/setup.lisp"'))
+lisp.eval(('load', '"FiFO.lisp"'))
+
+clauses = lisp.eval(('parse', ('quote',
+    (('domain', 'd', ('set', 'a', 'b')),
+     ('all', 'x', 'd', 'true', ('p', 'x'))))))
+# => List(List(Symbol("OR"), List(Symbol("P"), Symbol("B"))),
+#         List(Symbol("OR"), List(Symbol("P"), Symbol("A"))))
+
+lisp.eval(('solve', '"SatPlan/logistics.wff"'))
+```
+
+cl4py converts data between the languages automatically, but note which Python type maps to which Lisp type:
+
+| Python | Lisp |
+|--------|------|
+| tuple `(1, 2, 3)` | list `(1 2 3)` |
+| list `[1, 2, 3]` | vector `#(1 2 3)` |
+| `'name'` (string) | raw Lisp source text, so `'a'` is the symbol `a` and `'"a"'` is the string `"a"` |
+| int, float | number |
+
+So FiFO formulas and schemas should be built as nested **tuples**, with bare strings for symbols. Results return as `cl4py.List` and `cl4py.Symbol` objects; a `List` behaves as a Python sequence and can be converted with `list(...)`.
