@@ -374,12 +374,14 @@ RC2 ships inside the package — from pysat.examples.rc2 import RC2 plus from py
 **MaxHS**
 
 - Source: https://github.com/fbacchus/MaxHS
-- One important caveat: MaxHS uses CPLEX from IBM as its MIP solver, so you need the CPLEX static libraries to link against; CPLEX is free to faculty and graduate students through the IBM Academic Initiative (https://www.ibm.com/academic), and you set the CPLEX library/include paths in the Makefile before building. If the CPLEX dependency is a blocker for you, precompiled MaxHS binaries from past MaxSAT Evaluations are available on the evaluation sites (e.g., https://maxsat-evaluations.github.io/ → pick a year → "Descriptions/Downloads"), and an alternative IHS solver without that build step is worth knowing about.
+
+One important caveat: MaxHS uses CPLEX from IBM as its MIP solver, so you need the CPLEX static libraries to link against; CPLEX is free to faculty and graduate students through the IBM Academic Initiative (https://www.ibm.com/academic), and you set the CPLEX library/include paths in the Makefile before building. If the CPLEX dependency is a blocker for you, precompiled MaxHS binaries from past MaxSAT Evaluations are available on the evaluation sites (e.g., https://maxsat-evaluations.github.io/ → pick a year → "Descriptions/Downloads"), and an alternative IHS solver without that build step is worth knowing about.
 
 **TT-Open-WBO-Inc**
 
 - Source: https://github.com/alexander-nadel-academic/tt-open-wbo-inc (the GitHub version corresponds to the MaxSAT Evaluation 2023 submission)
-- Standard C++ build (make), no commercial dependencies; reads WCNF and prints improving solutions as it finds them (o lines), with the best model on the v line.
+
+Standard C++ build (make), no commercial dependencies; reads WCNF and prints improving solutions as it finds them (o lines), with the best model on the v line.
 
 **CP-SAT (Google OR-Tools)**
 
@@ -755,9 +757,6 @@ The file `SatPlan/logistics.wff` encodes a logistics planning problem: packages 
 (domain slices (range 1 numslices))
 (domain actslices (range 1 (- numslices 1)))
 
-;; Simple Logistics Domain - packages, trucks, places
-;;    Truck can move in one step from and to any place
-
 (alias numpackages 3)
 (alias numtrucks 2)
 (alias numplaces 3)
@@ -765,27 +764,6 @@ The file `SatPlan/logistics.wff` encodes a logistics planning problem: packages 
 (domain packages (for i (range 1 numpackages) true (set (package i))))
 (domain trucks   (for i (range 1 numtrucks)   true (set (truck i))))
 (domain places   (for i (range 1 numplaces)   true (set (place i))))
-
-(domain actions
-   (union
-      (for tr trucks true
-         (for pk packages true
-            (for pl places true
-               (set (load pk tr pl) (unload pk tr pl)))))
-      (for tr trucks true
-         (for (pl1 pl2) places (neq pl1 pl2)
-            (set (drive tr pl1 pl2))))))
-
-(domain fluents
-   (union
-      (for pl places true
-         (for pktr (union packages trucks) true
-            (set (at pktr pl))))
-      (for tr trucks true
-         (for pk packages true
-            (set (in pk tr))))))
-
-(domain costs (set 0.7 0.5 4.5))
 
 (observed
    (all tr trucks true
@@ -807,8 +785,7 @@ The file `SatPlan/logistics.wff` encodes a logistics planning problem: packages 
          (and (Pre (drive tr pl1 pl2) (at tr pl1))
             (Add (drive tr pl1 pl2) (at tr pl2))
             (Del (drive tr pl1 pl2) (at tr pl1))
-            (Cost (drive tr pl1 pl2) 4.5))))
-   )
+            (Cost (drive tr pl1 pl2) 4.5)))))
 
 ;; Initial and goal states
 
@@ -826,22 +803,17 @@ The file `SatPlan/logistics.wff` encodes a logistics planning problem: packages 
       (at (package 3) (place 2))
       (at (package 2) (place 1))))
 
+;; Derive action, fluent, and cost domains from the observed schemas
+(domain actions (collect act (Pre act *)))
+(domain fluents (collect fl  (Pre * fl)))
+(domain costs   (collect c   (Cost * c)))
+
 (include "satplan.wff")
 ```
 
-The `observed` block defines the action schemas. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the SatPlan axioms in `satplan.wff` can use them as tests in quantified filters (e.g., `(all flu fluents (Pre act flu) ...)`), which generate clauses only for the relevant fluent–action pairs rather than all combinations.
+The `observed` block defines the action schemas. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the SatPlan axioms in `satplan.wff` can use them as tests in quantified filters (e.g., `(all flu fluents (Pre act flu) ...)`), generating clauses only for relevant fluent–action pairs rather than all combinations.
 
-### Using `collect` to Derive Domains Automatically
-
-An alternative encoding, `SatPlan/logistics-with-collect.wff`, derives the `actions`, `fluents`, and `costs` domains automatically from the observed action schemas using the `collect` set expression, eliminating the need to enumerate them manually:
-
-```lisp
-(domain actions (collect act (Pre act *)))
-(domain fluents (collect f (Pre * f)))
-(domain costs   (collect c (Cost * c)))
-```
-
-`collect` scans all true observed literals matching the pattern and returns the set of ground terms bound to the variable. The `*` wildcard matches any term without capturing it. The `collect` forms must appear *after* the `observed` block so that `ObservedLiterals` is fully populated when they are evaluated.
+The `collect` forms derive the `actions`, `fluents`, and `costs` domains directly from the observed schemas, so there is no need to enumerate them manually. They must appear *after* the `observed` block so that `ObservedLiterals` is fully populated when they are evaluated. `collect` scans all true observed literals matching the pattern and returns the set of ground terms bound to the variable; `*` is an anonymous wildcard.
 
 ### Running the Logistics Example
 
@@ -880,7 +852,7 @@ If the domain file is not given, the root of its file name is taken from the `(:
 The translation is written to `<problem-root>.wff` in the directory of the problem file. The output:
 
 - Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `observed` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
-- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics-with-collect.wff`.
+- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics.wff`.
 - Emits a default time horizon `(alias numslices 6)`; edit this line in the output to change the plan length.
 - Ends with `(include "satplan.wff")`, so `satplan.wff` must be reachable from the directory containing the output file.
 

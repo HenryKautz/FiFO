@@ -16,26 +16,6 @@
 (domain trucks   (for i (range 1 numtrucks)   true (set (truck i))))
 (domain places   (for i (range 1 numplaces)   true (set (place i))))
 
-(domain actions
-   (union
-      (for tr trucks true
-         (for pk packages true
-            (for pl places true
-               (set (load pk tr pl) (unload pk tr pl)))))
-      (for tr trucks true
-         (for (pl1 pl2) places (neq pl1 pl2)
-            (set (drive tr pl1 pl2))))))
-
-(domain fluents
-   (union
-      (for pl places true
-         (for pktr (union packages trucks) true
-            (set (at pktr pl))))
-      (for tr trucks true
-         (for pk packages true
-            (set (in pk tr))))))
-
-(domain costs (set 0.7 0.5 4.5))
 
 (observed
    (all tr trucks true
@@ -76,5 +56,9 @@
       (at (package 3) (place 2))
       (at (package 2) (place 1))))
 
+;; Action costs
+(domain actions (collect act (Pre act *)))
+(domain fluents (collect fl (Pre * fl)))
+(domain costs (collect c (Cost * c)))
 
 (include "satplan.wff")
