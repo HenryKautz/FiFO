@@ -12,6 +12,9 @@
 (defvar compact-encoding t)
 (defvar tracep nil)
 (defvar Weights nil)
+;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
+;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
+(defvar weights-format 'CNF)
 (defvar binary-functions '(eq neq = > < >= <= member
                               union intersection set-difference + - * div rem mod ** bit
                               range))
@@ -47,9 +50,10 @@
 (defun read-sexprs-from-file (filename)
   "Reads all s-expressions from the file and returns them as a list."
   (with-open-file (stream filename :direction :input)
-    (loop for sexpr = (read stream nil nil)
-          while sexpr
-          collect sexpr)))
+    (let ((*read-eval* nil))
+      (loop for sexpr = (read stream nil nil)
+            while sexpr
+            collect sexpr))))
 
 (defun read-lines (filename)
   ;; Read a text file and return a list of its lines
@@ -57,6 +61,29 @@
     (loop for line = (read-line stream nil nil)
           while line
           collect line)))
+
+;;; Error handling for the file-based API.  Malformed input files (missing
+;;; files, unbalanced parentheses, unparseable forms, corrupt map files, ...)
+;;; print a message and return NIL instead of crashing into the debugger.
+;;; The dynamic variable ensures that nested calls (e.g. solve calling
+;;; propositionalize) report a single message at the outermost level.
+
+(defvar *fifo-error-context* nil)
+
+(defmacro with-clean-errors ((operation file) &body body)
+  `(if *fifo-error-context*
+       (progn ,@body)
+       (let ((*fifo-error-context* t))
+         (handler-case (progn ,@body)
+           (end-of-file ()
+             (format *error-output*
+                     "FiFO error while ~A ~A: unexpected end of file (unbalanced parentheses or truncated file)~%"
+                     ,operation ,file)
+             nil)
+           ((or error storage-condition) (c)
+             (format *error-output* "FiFO error while ~A ~A: ~A~%"
+                     ,operation ,file c)
+             nil)))))
 (defun make-scratch-file-root ()
   "Generate a unique scratch file base name for this process."
   (format nil "scratch-~A-~A"
@@ -70,14 +97,20 @@
       (setq CNFFILE (concatenate 'string CNFFILE ".cnf")))
   (if (not SATOUTFILE)
       (setq SATOUTFILE (replace-suffix-with-regex CNFFILE "\\..*?$" ".satout")))
-  (handler-case
-      (uiop:run-program (list sat-solver CNFFILE)
-                        :output SATOUTFILE :ignore-error-status t)
-    (error () (return-from satisfy nil)))
-  ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
-  (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
-        ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
-        (t nil)))
+  (with-clean-errors ("running the SAT solver on" CNFFILE)
+    (unless (probe-file CNFFILE)
+      (error "cnf file ~A does not exist" CNFFILE))
+    (handler-case
+        (uiop:run-program (list sat-solver CNFFILE)
+                          :output SATOUTFILE :ignore-error-status t)
+      (error (c)
+        (format *error-output* "FiFO error: could not run SAT solver ~A: ~A~%"
+                sat-solver c)
+        (return-from satisfy nil)))
+    ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
+    (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
+          ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
+          (t nil))))
 
 (defun instantiate (WFFFILE &optional SCNFILE OBSFILE)
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
@@ -86,18 +119,23 @@
       (setq OBSFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
   (if (not SCNFILE)
       (setq SCNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".scnf")))
-  (with-open-file (INS WFFFILE :direction :input)
-    (with-open-stream (OBS (if OBSFILE (open OBSFILE :direction :input) (make-concatenated-stream)))
-      (with-open-file (OUTS SCNFILE :direction :output :if-exists :supersede)
-        (let (CL SCHEMA OBSERVATION)
-          (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
-            (setq CL (parse
-                      (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
-                            collect SCHEMA)
-                      (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
-                            collect OBSERVATION))))
-          (loop for C in CL do (format OUTS "~S~%" C))
-          (loop for W in Weights do (format OUTS "~S~%" W)))))))
+  (with-clean-errors ("instantiating" WFFFILE)
+    (with-open-file (INS WFFFILE :direction :input)
+      (with-open-stream (OBS (if OBSFILE (open OBSFILE :direction :input) (make-concatenated-stream)))
+        (with-open-file (OUTS SCNFILE :direction :output :if-exists :supersede)
+          (let (CL SCHEMA OBSERVATION)
+            (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE)))
+                  (*read-eval* nil))
+              (setq CL (parse
+                        (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
+                              collect SCHEMA)
+                        (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
+                              collect OBSERVATION))))
+            (loop for C in CL do (format OUTS "~S~%" C))
+            (loop for W in Weights do (format OUTS "~S~%" W))
+            (when (and Weights (not (eql weights-format 'CNF)))
+              (format OUTS "(OPTION WEIGHTS ~S)~%" weights-format))))))
+    t))
 
 (defun propositionalize (SCNFFILE &optional CNFFILE MAPFILE)
   (if (null (cl-ppcre:scan "\\.." SCNFFILE))
@@ -106,21 +144,38 @@
       (setq CNFFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" ".cnf")))
   (if (not MAPFILE)
       (setq MAPFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" ".map")))
-  (with-open-file (WS SCNFFILE :direction :input)
+  (with-clean-errors ("propositionalizing" SCNFFILE)
+   (with-open-file (WS SCNFFILE :direction :input)
     (with-open-file (CS CNFFILE :direction :output :if-exists :supersede)
       (with-open-file (MS MAPFILE :direction :output :if-exists :supersede)
-        (let* ((all-forms (loop with clause
-                                while (not (eql :EOF (setq clause (read WS nil :EOF))))
-                                collect clause))
-               (clauses (remove-if (lambda (f) (eql (car f) 'weight)) all-forms))
-               (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms)))
+        (let* ((all-forms (let ((*read-eval* nil))
+                            (loop with clause
+                                  while (not (eql :EOF (setq clause (read WS nil :EOF))))
+                                  do (unless (and (consp clause)
+                                                  (member (car clause) '(or weight option)))
+                                       (error "malformed scnf form (expected (OR ...), (WEIGHT ...), or (OPTION ...)): ~S"
+                                              clause))
+                                  collect clause)))
+               (clauses (remove-if (lambda (f) (member (car f) '(weight option))) all-forms))
+               (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms))
+               (wformat (or (loop for f in all-forms
+                                  when (and (eql (car f) 'option) (eql (cadr f) 'weights))
+                                    return (caddr f))
+                            'CNF)))
           (multiple-value-bind (cnfdata mapdata numvar numclauses weightdata)
               (lit2prop clauses weights)
-            (format CS "p cnf ~S ~S~%" numvar numclauses)
-            (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
-            (loop for w in weightdata do (format CS "cw ~D ~A~%" (first w) (second w)))
+            (cond ((or (null weightdata) (eql wformat 'CNF))
+                    (format CS "p cnf ~S ~S~%" numvar numclauses)
+                    (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
+                    (loop for w in weightdata do (format CS "cw ~D ~A~%" (first w) (second w))))
+                  ((eql wformat 'WCNF-OLD)
+                    (write-wcnf-old CS cnfdata weightdata numvar))
+                  ((eql wformat 'WCNF)
+                    (write-wcnf CS cnfdata weightdata))
+                  (t (error "Unknown weights format ~S in ~A" wformat SCNFFILE)))
             (format MS "map ~S~%" numvar)
-            (loop for m in mapdata do (format MS "~{~D ~S~}~%" m))))))))
+            (loop for m in mapdata do (format MS "~{~D ~S~}~%" m)))))))
+   t))
 
 
 (defun interpret (SATOUTFILE &optional MAPFILE SOLNFILE SORT_BY_LAST_ARGUMENT)
@@ -130,7 +185,8 @@
       (setq MAPFILE (replace-suffix-with-regex SATOUTFILE "\\..*?$" ".map")))
   (if (not SOLNFILE)
       (setq SOLNFILE (replace-suffix-with-regex SATOUTFILE "\\..*?$" ".soln")))
-  (let (solndata mapdata litdata)
+  (with-clean-errors ("interpreting" SATOUTFILE)
+   (let (solndata mapdata litdata)
     ;; Read solnfile to create solution list.  Ignore any non-integers and negative integers in solnfile.
     ;; Get list of lines of the solution
     (setq solndata (read-lines SATOUTFILE))
@@ -150,18 +206,20 @@
               (setq solndata (remove-if (lambda (x) (<= x 0)) solndata))
               ;; Read mapfile to create mapdata list
               (with-open-file (MS MAPFILE :direction :input)
-                (if (not (eql (read MS) 'map)) (error "Bad map file"))
-                (if (not (integerp (read MS))) (error "Bad map file"))
-                (setq mapdata (loop with i with p
-                                    while (not (eql :EOF (setq i (read MS nil :EOF))))
-                                    do (setq p (read MS)) (if (not (integerp i)) (error "Bad map file"))
-                                    collect (list i p))))
+                (let ((*read-eval* nil))
+                  (if (not (eql (read MS) 'map)) (error "Bad map file ~A" MAPFILE))
+                  (if (not (integerp (read MS))) (error "Bad map file ~A" MAPFILE))
+                  (setq mapdata (loop with i with p
+                                      while (not (eql :EOF (setq i (read MS nil :EOF))))
+                                      do (setq p (read MS)) (if (not (integerp i)) (error "Bad map file ~A" MAPFILE))
+                                      collect (list i p)))))
               ;; call soln2lit to create sorted list of true literals
               (setq litdata (soln2lit mapdata solndata sort_by_last_argument))
               ;; Print list of true literals to outfile
               (with-open-file (OS SOLNFILE :direction :output :if-exists :supersede)
                 (format OS "SAT~%")
-                (format OS "~{~S~%~}" litdata))))))
+                (format OS "~{~S~%~}" litdata)))))
+   t))
 
 (defun solve (WFFFILE &optional SOLNFILE OBSFILE)
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
@@ -170,19 +228,22 @@
       (setq SOLNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".answer")))
   (if (eq OBSFILE t)
       (setq OBSFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
-  (let (schemas observations SCHEMA OBSERVATION)
-    (with-open-file (INS WFFFILE :direction :input)
-      (setq schemas (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
-                          collect SCHEMA)))
-    (if OBSFILE
-        (with-open-file (OBS OBSFILE :direction :input)
-          (setq observations (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
-                                   collect OBSERVATION))))
-    (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
-      (multiple-value-bind (result model-or-bindings) (solve-schemas schemas observations)
-        (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
-          (format ANSWER "~a~%" result)
-          (dolist (e model-or-bindings) (format ANSWER "~a~%" e)))))))
+  (with-clean-errors ("solving" WFFFILE)
+    (let (schemas observations SCHEMA OBSERVATION)
+      (let ((*read-eval* nil))
+        (with-open-file (INS WFFFILE :direction :input)
+          (setq schemas (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
+                              collect SCHEMA)))
+        (if OBSFILE
+            (with-open-file (OBS OBSFILE :direction :input)
+              (setq observations (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
+                                       collect OBSERVATION)))))
+      (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
+        (multiple-value-bind (result model-or-bindings) (solve-schemas schemas observations)
+          (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
+            (format ANSWER "~a~%" result)
+            (dolist (e model-or-bindings) (format ANSWER "~a~%" e)))
+          result)))))
 
 ;;;
 ;;; Lisp API
@@ -210,9 +271,13 @@
            (progn
              (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
                (dolist (c scnf) (format SCNF-STREAM "~S~%" c))
-               (dolist (w Weights) (format SCNF-STREAM "~S~%" w)))
+               (dolist (w Weights) (format SCNF-STREAM "~S~%" w))
+               (when (and Weights (not (eql weights-format 'CNF)))
+                 (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" weights-format)))
              (propositionalize scnf-file cnf-file map-file)
-             (satisfy cnf-file)
+             (unless (satisfy cnf-file)
+               (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
+                      sat-solver cnf-file))
              (interpret satout-file map-file soln-file)
              (let ((results (read-sexprs-from-file soln-file)))
                (values (car results) (cdr results))))
@@ -247,6 +312,68 @@
       (maphash #'(lambda (key val) (push (list val key) mapdata)) hash)
       (setq mapdata (sort mapdata #'< :key #'car))
       (values cnfdata mapdata numvar numclauses weightdata))))
+
+(defun shift-and-scale-weights (weightdata)
+  ;; weightdata is a list of (signed-integer-literal weight) pairs, where a
+  ;; weight is the cost incurred when the literal is true.  DIMACS wcnf
+  ;; weights must be positive integers, so two transformations are applied:
+  ;; 1. Shift: for each atom, subtract the minimum of its total weight when
+  ;;    true and total weight when false from both, leaving at most one
+  ;;    polarity with a positive weight.  The discarded total is returned as
+  ;;    the offset (a constant added to every assignment's cost).
+  ;; 2. Scale: multiply all weights by the smallest positive integer that
+  ;;    makes them integral.
+  ;; A weight w on literal L becomes the soft unit clause (not L) with weight
+  ;; w, which is falsified exactly when L is true.
+  ;; Returns (values soft-clauses offset scale), where each soft clause is a
+  ;; (unit-literal integer-weight) pair.
+  (let ((wtrue (make-hash-table)) (wfalse (make-hash-table))
+        (atoms nil) (offset 0) (soft nil))
+    ;; Convert weights to exact rationals up front so the shift arithmetic
+    ;; below is exact (e.g. 0.7 - 0.3 is 2/5, not a float rounding artifact)
+    (loop for (l w) in weightdata do
+      (let ((v (abs l)))
+        (pushnew v atoms)
+        (if (plusp l)
+            (incf (gethash v wtrue 0) (rationalize w))
+            (incf (gethash v wfalse 0) (rationalize w)))))
+    (dolist (v (sort atoms #'<))
+      (let* ((wt (gethash v wtrue 0))
+             (wf (gethash v wfalse 0))
+             (m (min wt wf)))
+        (incf offset m)
+        (when (> wt m) (push (list (- v) (- wt m)) soft))
+        (when (> wf m) (push (list v (- wf m)) soft))))
+    (setq soft (nreverse soft))
+    (let ((scale (reduce #'lcm (mapcar (lambda (s) (denominator (cadr s))) soft)
+                         :initial-value 1)))
+      (values (mapcar (lambda (s) (list (car s) (* (cadr s) scale))) soft)
+              offset scale))))
+
+(defun write-weight-comments (CS offset scale)
+  (when (/= scale 1)
+    (format CS "c weights scaled by ~A: true cost = solver cost / ~A~%" scale scale))
+  (when (/= offset 0)
+    (format CS "c weight shift offset ~A: add to unscaled cost~%" offset)))
+
+(defun write-wcnf-old (CS cnfdata weightdata numvar)
+  ;; Old DIMACS wcnf format: "p wcnf <vars> <clauses> <top>"; every clause
+  ;; line begins with its weight, and hard clauses use the weight top, which
+  ;; must exceed the sum of all soft weights.
+  (multiple-value-bind (soft offset scale) (shift-and-scale-weights weightdata)
+    (let ((top (1+ (reduce #'+ soft :key #'cadr :initial-value 0))))
+      (write-weight-comments CS offset scale)
+      (format CS "p wcnf ~S ~S ~S~%" numvar (+ (length cnfdata) (length soft)) top)
+      (loop for c in cnfdata do (format CS "~D ~{~D ~}0~%" top c))
+      (loop for s in soft do (format CS "~D ~D 0~%" (cadr s) (car s))))))
+
+(defun write-wcnf (CS cnfdata weightdata)
+  ;; New (2022) DIMACS wcnf format: no p line; hard clauses begin with "h",
+  ;; soft clauses begin with their positive integer weight.
+  (multiple-value-bind (soft offset scale) (shift-and-scale-weights weightdata)
+    (write-weight-comments CS offset scale)
+    (loop for c in cnfdata do (format CS "h ~{~D ~}0~%" c))
+    (loop for s in soft do (format CS "~D ~D 0~%" (cadr s) (car s)))))
 
 
 (defun soln2lit (mapdata solndata &optional sort-by-time)
@@ -527,6 +654,10 @@
           ((eql opt 'trace)
             (setq tracep val)
             (when tracep (format t "[TRACE] Tracing enabled~%")))
+          ((eql opt 'weights)
+            (unless (member val '(CNF WCNF-OLD WCNF))
+              (error "Unknown weights format ~S; must be CNF, WCNF-OLD, or WCNF" val))
+            (setq weights-format val))
           (t (error "Cannot parse option ~S" ARGS)))
     nil))
 
@@ -593,11 +724,15 @@
         ((eql (car F) 'if) (parse-if (cadr F) (caddr F)))
         ((eql (car F) 'equiv) (parse-equiv (cdr F)))
         ((eql (car F) 'all)
+          (unless (= (length F) 5)
+            (error "Malformed all (expected (all <var> <domain> <test> <body>)): ~S" F))
           (parse-all (cadr F)
                      (parse-set-expression (caddr F))
                      (cadddr F)
                      (car (cddddr F))))
         ((eql (car F) 'exists)
+          (unless (= (length F) 5)
+            (error "Malformed exists (expected (exists <var> <domain> <test> <body>)): ~S" F))
           (parse-exists (cadr F)
                         (parse-set-expression (caddr F))
                         (cadddr F)

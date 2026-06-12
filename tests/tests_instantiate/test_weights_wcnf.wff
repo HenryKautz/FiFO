@@ -1,0 +1,17 @@
+(domain items (set a b))
+(option weights wcnf)
+
+; both polarities weighted: shift subtracts min(0.7, 0.3), leaving 0.4 on (p a)
+(weight (p a) 0.7)
+(weight (not (p a)) 0.3)
+; negative weight: shift converts to weight 2 on (not (p b))
+(weight (p b) -2)
+
+(or (p a) (p b))
+
+; Expected cnf output (weights scaled by 5, offset -17/10):
+;   c weights scaled by 5: true cost = solver cost / 5
+;   c weight shift offset -17/10: add to unscaled cost
+;   h 1 2 0
+;   2 -1 0
+;   10 2 0

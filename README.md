@@ -342,6 +342,23 @@ And conditional weights work too:
 
 `weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses.
 
+### Weighted CNF output formats
+
+The option `(option weights <format>)` controls how weights appear in the DIMACS `.cnf` file produced by `propositionalize`. It has no effect when the problem contains no weights.
+
+**`cnf`** (the default) writes a standard `p cnf` file followed by one `cw <literal> <weight>` line per weight. Since these lines begin with the letter `c`, ordinary SAT solvers treat them as comments, so the file remains valid input for solvers like kissat (which simply ignore the weights).
+
+**`wcnf-old`** writes the classic DIMACS weighted CNF format used by MaxSAT solvers: a header `p wcnf <vars> <clauses> <top>`, where every clause line begins with its weight. Hard clauses (the ordinary clauses of the problem) carry the weight `top`, which exceeds the sum of all soft weights.
+
+**`wcnf`** writes the new DIMACS format adopted by the MaxSAT Evaluation in 2022: no `p` header; hard clauses begin with `h`, and soft clauses begin with their weight.
+
+In both wcnf formats, a weight *w* on literal *L* (the cost of making *L* true) becomes the soft unit clause ¬*L* with weight *w*, which a MaxSAT solver pays for exactly when *L* is true. Because these formats require weights to be positive integers, two transformations are applied:
+
+- **Shift**: for each atom, the minimum of its total weight when true and its total weight when false is subtracted from both, so at most one polarity retains a (positive) weight. This also eliminates negative weights: a reward for making a literal true becomes a cost for making it false. The discarded total is a constant offset on the objective, reported in a comment line `c weight shift offset <n>`.
+- **Scale**: all weights are multiplied by the smallest positive integer making them integral (e.g., weights 0.4 and 2 are scaled by 5 to 2 and 10), reported in a comment line `c weights scaled by <n>`.
+
+The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that the built-in `solve` pipeline runs an ordinary SAT solver, which will not accept wcnf files; the wcnf formats are intended for `.cnf` files handed to an external MaxSAT solver.
+
 Deduction 
 ---------------------------------------
 
@@ -460,6 +477,12 @@ The input to FiFO may include the following options, which should appear before 
 (option trace 1)
 ; Disable tracing (default).
 (option trace 0)
+
+; Format used for the DIMACS cnf file when the problem contains weighted literals (see
+; the Optimization section): cnf (default), wcnf-old, or wcnf.
+(option weights cnf)
+(option weights wcnf-old)
+(option weights wcnf)
 ```
 
 When tracing is enabled, the interpreter prints diagnostic output to standard output as it works:
@@ -470,6 +493,29 @@ When tracing is enabled, the interpreter prints diagnostic output to standard ou
 - `[TRACE] Multiply: N x M -> K clauses` -- clause counts at each OR-distribution step
 
 The multiply trace is especially useful for diagnosing exponential clause blowup. When compact encoding is disabled, each multiply step performs a full cross-product; the clause count shown will grow multiplicatively. With compact encoding enabled, auxiliary propositions are introduced and the count grows only linearly.
+
+### Setting options from the command line
+
+Each option is stored in an ordinary Lisp global variable, so options can also be set with `setq` on the command line that invokes Lisp (or at the REPL), without editing the `.wff` file. The variable names and values differ slightly from the option forms:
+
+| Option form | Lisp variable | Values |
+|-------------|---------------|--------|
+| `(option compact-encoding 1/0)` | `compact-encoding` | `t` / `nil` |
+| `(option trace 1/0)` | `tracep` | `t` / `nil` |
+| `(option weights <format>)` | `weights-format` | `'CNF` / `'WCNF-OLD` / `'WCNF` |
+| (no option form) | `sat-solver` | solver program name as a string |
+
+For example, to solve a problem with tracing enabled and weighted output in the new DIMACS format:
+
+```sh
+sbcl --load FiFO.lisp \
+     --eval '(setq tracep t)' \
+     --eval '(setq weights-format (quote WCNF))' \
+     --eval '(solve "problem.wff")' \
+     --eval '(quit)'
+```
+
+Settings made this way persist for the whole Lisp session. An `(option ...)` form inside a `.wff` file sets the same variable, so it overrides a command-line setting when the file is processed — and, like any option, remains in effect for subsequent runs in the same session.
 
 ## Running FiFO
 
@@ -823,9 +869,11 @@ Schema BNF
 
     <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <observations> | <weight>
     
-    <option> = (option <option name> <numeric expression>)
+    <option> = (option <option name> <option value>)
     
-    <option name> = compact-encoding | trace
+    <option name> = compact-encoding | trace | weights
+    
+    <option value> = <numeric expression> | cnf | wcnf-old | wcnf
     
     <domain declaration> = (domain <domain name> <set expression>)
     

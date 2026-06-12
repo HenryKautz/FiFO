@@ -1,0 +1,16 @@
+(domain items (set a b))
+(option weights wcnf-old)
+
+(weight (p a) 0.7)
+(weight (not (p a)) 0.3)
+(weight (p b) -2)
+
+(or (p a) (p b))
+
+; Expected cnf output (top = 13 = sum of soft weights + 1):
+;   c weights scaled by 5: true cost = solver cost / 5
+;   c weight shift offset -17/10: add to unscaled cost
+;   p wcnf 2 3 13
+;   13 1 2 0
+;   2 -1 0
+;   10 2 0
