@@ -359,6 +359,36 @@ In both wcnf formats, a weight *w* on literal *L* (the cost of making *L* true) 
 
 The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that the built-in `solve` pipeline runs an ordinary SAT solver, which will not accept wcnf files; the wcnf formats are intended for `.cnf` files handed to an external MaxSAT solver.
 
+### Weighted CNF solvers
+
+Solvers for weighted CNF include:
+
+**RC2 via PySAT**
+
+- pip install python-sat (PyPI: https://pypi.org/project/python-sat/)
+- Source: https://github.com/pysathq/pysat
+- Docs: https://pysathq.github.io/
+
+RC2 ships inside the package — from pysat.examples.rc2 import RC2 plus from pysat.formula import WCNF and you're solving in about five lines. There's also a command-line entry point (rc2.py).
+
+**MaxHS**
+
+- Source: https://github.com/fbacchus/MaxHS
+- One important caveat: MaxHS uses CPLEX from IBM as its MIP solver, so you need the CPLEX static libraries to link against; CPLEX is free to faculty and graduate students through the IBM Academic Initiative (https://www.ibm.com/academic), and you set the CPLEX library/include paths in the Makefile before building. If the CPLEX dependency is a blocker for you, precompiled MaxHS binaries from past MaxSAT Evaluations are available on the evaluation sites (e.g., https://maxsat-evaluations.github.io/ → pick a year → "Descriptions/Downloads"), and an alternative IHS solver without that build step is worth knowing about.
+
+**TT-Open-WBO-Inc**
+
+- Source: https://github.com/alexander-nadel-academic/tt-open-wbo-inc (the GitHub version corresponds to the MaxSAT Evaluation 2023 submission)
+- Standard C++ build (make), no commercial dependencies; reads WCNF and prints improving solutions as it finds them (o lines), with the best model on the v line.
+
+**CP-SAT (Google OR-Tools)**
+
+- Easiest: pip install ortools (PyPI: https://pypi.org/project/ortools/)
+- Source and binaries: https://github.com/google/or-tools
+- Docs: https://developers.google.com/optimization/cp/cp_solver
+
+No license hassle, no compilation, and the Python API is pleasant. Note CP-SAT takes its own model format rather than WCNF, so you'd build the model programmatically (clauses as AddBoolOr, objective as Minimize).  Utilities for converting wcnf files to Python code for CP-SAT are included in [wcnfsolvers](https://github.com/HenryKautz/wcnfsolvers).
+
 Deduction 
 ---------------------------------------
 
@@ -465,24 +495,29 @@ When new propositions are introduced in this manner, the relationship between th
 
 ## Options
 
-The input to FiFO may include the following options, which should appear before any formulas.
+The input to FiFO may include the following options, which should appear before any formulas.  Each option name is also the name of the corresponding Lisp global variable, so the same name works in both `(option ...)` forms and `setq` on the command line.
 
 ```
 ; Allow new propositions to be created to reduce the size of the instantiated formula (default).
-(option compact-encoding 1) 
-; Do not create new propositions 
-(option compact-encoding 0) 
+(option compact-encoding 1)
+; Do not create new propositions.
+(option compact-encoding 0)
 
 ; Enable tracing: prints [TRACE] lines showing domains, variable bindings, and clause counts.
-(option trace 1)
+(option tracing 1)
 ; Disable tracing (default).
-(option trace 0)
+(option tracing 0)
 
 ; Format used for the DIMACS cnf file when the problem contains weighted literals (see
-; the Optimization section): cnf (default), wcnf-old, or wcnf.
-(option weights cnf)
-(option weights wcnf-old)
-(option weights wcnf)
+; the Optimization section): CNF (default), WCNF-OLD, or WCNF.
+(option weights-format CNF)
+(option weights-format WCNF-OLD)
+(option weights-format WCNF)
+
+; SAT solver to use (default: kissat).  Quotation marks may be omitted when the
+; solver name contains only letters, digits, hyphens, and underscores.
+(option solver kissat)
+(option solver "my-solver")
 ```
 
 When tracing is enabled, the interpreter prints diagnostic output to standard output as it works:
@@ -496,30 +531,31 @@ The multiply trace is especially useful for diagnosing exponential clause blowup
 
 ### Setting options from the command line
 
-Each option is stored in an ordinary Lisp global variable, so options can also be set with `setq` on the command line that invokes Lisp (or at the REPL), without editing the `.wff` file. The variable names and values differ slightly from the option forms:
+Because every option name matches its Lisp variable name exactly, options can be set with `setq` on the command line (or at the REPL) without editing the `.wff` file.  The only difference is that boolean options use `t`/`nil` on the command line while the `(option ...)` form uses `1`/`0`.
 
-| Option form | Lisp variable | Values |
-|-------------|---------------|--------|
-| `(option compact-encoding 1/0)` | `compact-encoding` | `t` / `nil` |
-| `(option trace 1/0)` | `tracep` | `t` / `nil` |
-| `(option weights <format>)` | `weights-format` | `'CNF` / `'WCNF-OLD` / `'WCNF` |
-| (no option form) | `sat-solver` | solver program name as a string |
+| Option / variable | Type | Default |
+|---|---|---|
+| `compact-encoding` | boolean (`t`/`nil`) | `t` |
+| `tracing` | boolean (`t`/`nil`) | `nil` |
+| `weights-format` | symbol: `CNF` `WCNF-OLD` `WCNF` | `CNF` |
+| `solver` | string | `"kissat"` |
 
-For example, to solve a problem with tracing enabled and weighted output in the new DIMACS format:
+For example, to solve a problem with tracing enabled, a different solver, and weighted output in the new DIMACS format:
 
 ```sh
 sbcl --load FiFO.lisp \
-     --eval '(setq tracep t)' \
+     --eval '(setq tracing t)' \
+     --eval '(setq solver "glucose")' \
      --eval '(setq weights-format (quote WCNF))' \
      --eval '(solve "problem.wff")' \
      --eval '(quit)'
 ```
 
-Settings made this way persist for the whole Lisp session. An `(option ...)` form inside a `.wff` file sets the same variable, so it overrides a command-line setting when the file is processed — and, like any option, remains in effect for subsequent runs in the same session.
+Settings made this way persist for the whole Lisp session. An `(option ...)` form inside a `.wff` file sets the same variable, so it overrides a command-line setting when the file is processed.
 
 ## Running FiFO
 
-Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable via the `sat-solver` variable in `FiFO.lisp`).
+Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable via `(option solver <name>)` in a `.wff` file or `(setq solver "<name>")` on the command line).
 
 Load the interpreter interactively:
 
@@ -871,7 +907,7 @@ Schema BNF
     
     <option> = (option <option name> <option value>)
     
-    <option name> = compact-encoding | trace | weights
+    <option name> = compact-encoding | tracing | weights-format | solver
     
     <option value> = <numeric expression> | cnf | wcnf-old | wcnf
     
@@ -929,7 +965,7 @@ Schema BNF
     <weight> = (weight <literal> <numeric expression>)
     
     <literal> = <proposition> | (not <proposition>)
-
+    
     <observations> = (observed <observed-formula>+)
     
     <observed-formula> = <proposition> |

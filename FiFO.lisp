@@ -3,14 +3,14 @@
 (ql:quickload :cl-ppcre :silent t)
 
 ;; SAT program used by satisfy
-(defvar sat-solver "kissat")
+(defvar solver "kissat")
 
 ;; Muffle warnings about common lisp style
 (declaim (sb-ext:muffle-conditions cl:style-warning))
 
 ;; Default values of options
 (defvar compact-encoding t)
-(defvar tracep nil)
+(defvar tracing nil)
 (defvar Weights nil)
 ;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
 ;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
@@ -101,11 +101,11 @@
     (unless (probe-file CNFFILE)
       (error "cnf file ~A does not exist" CNFFILE))
     (handler-case
-        (uiop:run-program (list sat-solver CNFFILE)
+        (uiop:run-program (list solver CNFFILE)
                           :output SATOUTFILE :ignore-error-status t)
       (error (c)
         (format *error-output* "FiFO error: could not run SAT solver ~A: ~A~%"
-                sat-solver c)
+                solver c)
         (return-from satisfy nil)))
     ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
     (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
@@ -259,7 +259,7 @@
         (soln-file (format nil "~a.soln" scratch-file))
         (map-file (format nil "~a.map" scratch-file)))
     (labels ((cleanup-scratch-files ()
-               (unless tracep
+               (unless tracing
                  (dolist (file (list scnf-file cnf-file satout-file soln-file map-file))
                    (when (probe-file file)
                      (delete-file file))))))
@@ -277,7 +277,7 @@
              (propositionalize scnf-file cnf-file map-file)
              (unless (satisfy cnf-file)
                (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
-                      sat-solver cnf-file))
+                      solver cnf-file))
              (interpret satout-file map-file soln-file)
              (let ((results (read-sexprs-from-file soln-file)))
                (values (car results) (cdr results))))
@@ -625,7 +625,7 @@
              (parse-schema-list (cdr SCHEMA-LIST))))))
 
 (defun parse-schema (SCHEMA)
-  (when tracep
+  (when tracing
     (cond ((atom SCHEMA)
            (format t "[TRACE] Formula: ~S~%" SCHEMA))
           ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
@@ -651,14 +651,19 @@
     (if (eql val 0) (setq val nil))
     (cond ((eql opt 'compact-encoding)
             (set opt val))
-          ((eql opt 'trace)
-            (setq tracep val)
-            (when tracep (format t "[TRACE] Tracing enabled~%")))
-          ((eql opt 'weights)
+          ((eql opt 'tracing)
+            (setq tracing val)
+            (when tracing (format t "[TRACE] Tracing enabled~%")))
+          ((eql opt 'weights-format)
             (unless (member val '(CNF WCNF-OLD WCNF))
-              (error "Unknown weights format ~S; must be CNF, WCNF-OLD, or WCNF" val))
+              (error "Unknown weights-format ~S; must be CNF, WCNF-OLD, or WCNF" val))
             (setq weights-format val))
-          (t (error "Cannot parse option ~S" ARGS)))
+          ((eql opt 'solver)
+            (setq solver
+                  (cond ((stringp val) val)
+                        ((symbolp val) (string-downcase (symbol-name val)))
+                        (t (error "solver must be a symbol or string, not ~S" val)))))
+          (t (error "Unknown option ~S" opt)))
     nil))
 
 (defun parse-include (FILENAME)
@@ -666,12 +671,12 @@
                        (uiop:merge-pathnames* FILENAME *current-wff-directory*)
                        FILENAME))
          (*current-wff-directory* (uiop:pathname-directory-pathname resolved)))
-    (when tracep (format t "[TRACE] Include ~S~%" resolved))
+    (when tracing (format t "[TRACE] Include ~S~%" resolved))
     (parse-schema-list (read-sexprs-from-file resolved))))
 
 (defun parse-domain (DEFINITION)
   (let ((vals (parse-set-expression (cadr DEFINITION))))
-    (when tracep (format t "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals))
+    (when tracing (format t "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals))
     (setf (gethash (car DEFINITION) Bind) vals)
     nil))
 
@@ -798,7 +803,7 @@
               (let ((g (gensym "XX"))) ;; g selects whether L or R must be true
                 (append (mapcar #'(lambda (c) (cons g c)) R)
                         (mapcar #'(lambda (c) (cons (list 'not g) c)) L))))))
-    (when tracep
+    (when tracing
       (format t "[TRACE] Multiply: ~D x ~D -> ~D clauses~%"
               (length L) (length R) (length result)))
     result))
@@ -836,12 +841,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracep (format t "[TRACE] ALL ~S = ~S~%" VAR (car DOM)))
+         (when tracing (format t "[TRACE] ALL ~S = ~S~%" VAR (car DOM)))
          (append (parse-binding VAR (car DOM) TEST BODY nil)
                  (parse-all VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracep (format t "[TRACE] ALL ~S over ~S~%" VAR DOM))
+         (when tracing (format t "[TRACE] ALL ~S over ~S~%" VAR DOM))
          (parse-formula (expand-multivar-all VAR DOM TEST BODY)))))
 
 
@@ -849,12 +854,12 @@
   (cond ((NULL Dom) (list nil)) ;; the empty clause
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracep (format t "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM)))
+         (when tracing (format t "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM)))
          (multiply-clauses (parse-binding VAR (car DOM) TEST BODY (list nil))
                            (parse-exists VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracep (format t "[TRACE] EXISTS ~S over ~S~%" VAR DOM))
+         (when tracing (format t "[TRACE] EXISTS ~S over ~S~%" VAR DOM))
          (parse-formula (expand-multivar-exists VAR DOM TEST BODY)))))
 
 
@@ -862,12 +867,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracep (format t "[TRACE] FOR ~S = ~S~%" VAR (car DOM)))
+         (when tracing (format t "[TRACE] FOR ~S = ~S~%" VAR (car DOM)))
          (append (parse-expression-binding VAR (car DOM) TEST BODY nil)
                  (parse-for VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracep (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
+         (when tracing (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
          (parse-expression (expand-multivar-for VAR DOM TEST BODY)))))
 
 (defun collect-match-term (VAR pat term)
@@ -928,7 +933,7 @@
             (when (and match-ok (not (eq var-val :unset)))
               (pushnew var-val results :test #'equal)))))
       ObservedLiterals)
-    (when tracep (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
+    (when tracing (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
     results))
 
 (defun parse-expression-binding (VAR VAL TEST BODY FAILED-TEST-RESULT)
