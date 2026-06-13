@@ -771,7 +771,7 @@ The **cost axioms** use `Weight` (FiFO's weighted MaxSAT mechanism) to assign a 
 
 ### Example: Logistics Domain
 
-The file `SatPlan/Examples/logistics.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
+The file `SatPlan/Examples/logistics-hand-encoding.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
 
 ```lisp
 ;; SatPlan Logistics Problem
@@ -844,13 +844,13 @@ The `collect` forms derive the `actions`, `fluents`, and `costs` domains directl
 To instantiate (expand to symbolic CNF):
 
 ```sh
-sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/Examples/logistics.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/Examples/logistics-hand-encoding.wff")' --eval '(quit)'
 ```
 
 To solve end-to-end:
 
 ```sh
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/logistics.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/logistics-hand-encoding.wff")' --eval '(quit)'
 ```
 
 ### Translating PDDL to FiFO with pddl2fifo
@@ -879,7 +879,7 @@ If the domain file is not given, the root of its file name is taken from the `(:
 The translation is written to `<problem-root>.wff` in the directory of the problem file. The output:
 
 - Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `observed` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
-- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics.wff`.
+- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics-hand-encoding.wff`.
 - Emits the time horizon as `(alias numslices (lisp ...))`, which evaluates to the Lisp variable `*satplan-numslices*` when it is bound to an integer and otherwise to `2`. Set the horizon without editing the output by binding `*satplan-numslices*` — e.g. `(setq *satplan-numslices* 10)` on the command line before `solve`/`instantiate`, or `(option *satplan-numslices* 10)` ahead of the alias — or edit the alias line directly.
 - Ends with `(include "satplan.wff")` (or whatever `:satplan-path` was given), so the SatPlan axiom file must be reachable from the directory containing the output file.
 
@@ -892,7 +892,7 @@ sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/switchpr
 sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/switchprob.wff")' --eval '(quit)'
 ```
 
-The typed pair `SatPlan/Examples/trucklog.pddl` and `SatPlan/Examples/trucklogprob.pddl` encodes the same logistics task as `SatPlan/Examples/logistics.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
+The typed pair `SatPlan/Examples/trucklog.pddl` and `SatPlan/Examples/trucklogprob.pddl` encodes the same logistics task as `SatPlan/Examples/logistics-hand-encoding.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
 
 ```sh
 sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/trucklogprob.pddl" :satplan-path "../satplan.wff")' --eval '(quit)'
@@ -995,7 +995,7 @@ def fifo_solve(wff_path):
         lines = f.read().splitlines()
     return lines[0], lines[1:]     # "SAT"/"UNSAT"/..., literals
 
-status, literals = fifo_solve("SatPlan/Examples/logistics.wff")
+status, literals = fifo_solve("SatPlan/Examples/logistics-hand-encoding.wff")
 ```
 
 Each literal line is an s-expression such as `(OCCURS (LOAD (PACKAGE 1) (TRUCK 1) (PLACE 1)) 1)`. The small `sexpdata` library (`pip install sexpdata`) parses these into nested Python lists:
@@ -1024,7 +1024,7 @@ clauses = lisp.eval(('parse', ('quote',
 # => List(List(Symbol("OR"), List(Symbol("P"), Symbol("B"))),
 #         List(Symbol("OR"), List(Symbol("P"), Symbol("A"))))
 
-lisp.eval(('solve', '"SatPlan/Examples/logistics.wff"'))
+lisp.eval(('solve', '"SatPlan/Examples/logistics-hand-encoding.wff"'))
 ```
 
 cl4py converts data between the languages automatically, but note which Python type maps to which Lisp type:
