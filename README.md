@@ -771,7 +771,7 @@ The **cost axioms** use `Weight` (FiFO's weighted MaxSAT mechanism) to assign a 
 
 ### Example: Logistics Domain
 
-The file `SatPlan/Examples/logistics-hand-encoding.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
+The file `SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
 
 ```lisp
 ;; SatPlan Logistics Problem
@@ -844,13 +844,13 @@ The `collect` forms derive the `actions`, `fluents`, and `costs` domains directl
 To instantiate (expand to symbolic CNF):
 
 ```sh
-sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/Examples/logistics-hand-encoding.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")' --eval '(quit)'
 ```
 
 To solve end-to-end:
 
 ```sh
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/logistics-hand-encoding.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")' --eval '(quit)'
 ```
 
 ### Translating PDDL to FiFO with pddl2fifo
@@ -869,10 +869,10 @@ Or from a Lisp listener:
 (load "SatPlan/pddl2fifo.lisp")
 (pddl2fifo "problem.pddl")                            ; domain file found automatically
 (pddl2fifo "problem.pddl" :domain-file "domain.pddl") ; domain file given explicitly
-(pddl2fifo "problem.pddl" :satplan-path "../satplan.wff") ; custom include path
+(pddl2fifo "problem.pddl" :satplan-path "../../satplan.wff") ; custom include path
 ```
 
-The `:satplan-path` keyword (default `"satplan.wff"`) sets the path written into the generated `(include ...)` form for the SatPlan axioms. It is resolved relative to the directory of the generated wff, so pass `"../satplan.wff"` when the problem file lives in a subdirectory one level below `satplan.wff` (as the bundled examples do).
+The `:satplan-path` keyword (default `"satplan.wff"`) sets the path written into the generated `(include ...)` form for the SatPlan axioms. It is resolved relative to the directory of the generated wff, so pass the appropriate relative path when the problem file lives in a subdirectory below `satplan.wff` — e.g. `"../../satplan.wff"` for the bundled examples, which sit two levels down in `SatPlan/Examples/<Category>/`.
 
 If the domain file is not given, the root of its file name is taken from the `(:domain <name>)` form in the problem file, and `<name>.pddl` is looked up in the directory of the problem file.
 
@@ -885,18 +885,18 @@ The translation is written to `<problem-root>.wff` in the directory of the probl
 
 Negative preconditions are translated into `PreNeg` observed facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
 
-Two example problems are provided. The untyped pair `SatPlan/Examples/switches.pddl` (domain) and `SatPlan/Examples/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs:
+Two example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs:
 
 ```sh
-sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/switchprob.pddl" :satplan-path "../satplan.wff")' --eval '(quit)'
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/switchprob.wff")' --eval '(quit)'
+sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/Switch/switchprob.pddl" :satplan-path "../../satplan.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/Switch/switchprob.wff")' --eval '(quit)'
 ```
 
-The typed pair `SatPlan/Examples/trucklog.pddl` and `SatPlan/Examples/trucklogprob.pddl` encodes the same logistics task as `SatPlan/Examples/logistics-hand-encoding.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
+The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` encodes the same logistics task as `SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
 
 ```sh
-sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/trucklogprob.pddl" :satplan-path "../satplan.wff")' --eval '(quit)'
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/trucklogprob.wff")' --eval '(quit)'
+sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/TruckLog/trucklogprob.pddl" :satplan-path "../../satplan.wff")' --eval '(quit)'
+sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/TruckLog/trucklogprob.wff")' --eval '(quit)'
 ```
 
 Schema BNF
@@ -995,7 +995,7 @@ def fifo_solve(wff_path):
         lines = f.read().splitlines()
     return lines[0], lines[1:]     # "SAT"/"UNSAT"/..., literals
 
-status, literals = fifo_solve("SatPlan/Examples/logistics-hand-encoding.wff")
+status, literals = fifo_solve("SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")
 ```
 
 Each literal line is an s-expression such as `(OCCURS (LOAD (PACKAGE 1) (TRUCK 1) (PLACE 1)) 1)`. The small `sexpdata` library (`pip install sexpdata`) parses these into nested Python lists:
@@ -1024,7 +1024,7 @@ clauses = lisp.eval(('parse', ('quote',
 # => List(List(Symbol("OR"), List(Symbol("P"), Symbol("B"))),
 #         List(Symbol("OR"), List(Symbol("P"), Symbol("A"))))
 
-lisp.eval(('solve', '"SatPlan/Examples/logistics-hand-encoding.wff"'))
+lisp.eval(('solve', '"SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff"'))
 ```
 
 cl4py converts data between the languages automatically, but note which Python type maps to which Lisp type:

@@ -61,4 +61,4 @@
 (domain fluents (collect fl (Pre * fl)))
 (domain costs (collect c (Cost * c)))
 
-(include "../satplan.wff")
+(include "../../satplan.wff")
