@@ -82,8 +82,11 @@ get the universal type OBJECT."
       (let ((x (pop lst)))
         (cond ((sym-name= x "-")
                (let ((type (pop lst)))
-                 (unless (and type (symbolp type))
-                   (error "Expected a type name after '-' in ~a; got ~s" context type))
+                 (unless (and type
+                              (or (symbolp type)
+                                  (and (consp type) (sym-name= (first type) "EITHER"))))
+                   (error "Expected a type name or (either ...) after '-' in ~a; got ~s"
+                          context type))
                  (dolist (p (nreverse pending)) (push (cons p type) pairs))
                  (setq pending '())))
               (t (push x pending)))))
@@ -115,15 +118,43 @@ supertype.  Supertypes that are not themselves declared default to OBJECT."
         when (member tp seen :test #'string-equal) return nil
         do (push tp seen)))
 
+(defun either-type-p (type)
+  "True if TYPE is a disjunctive (either t1 t2 ...) PDDL type."
+  (and (consp type) (sym-name= (first type) "EITHER")))
+
+(defun type-components (type)
+  "The member types of an (either ...) type, or the type itself as a singleton."
+  (if (either-type-p type) (rest type) (list type)))
+
+(defun object-has-type-p (declared-type query-type type-table)
+  "True if an object DECLARED with DECLARED-TYPE (a type name or an
+(either ...) type) is of QUERY-TYPE -- i.e. some component of the declared
+type is QUERY-TYPE or one of its subtypes."
+  (some (lambda (component) (subtype-p component query-type type-table))
+        (type-components declared-type)))
+
 (defun objects-of-type (type object-pairs type-table)
-  "All objects whose declared type is TYPE or one of its subtypes."
+  "All objects whose declared type is TYPE, one of its subtypes, or an
+(either ...) type that includes such a type."
   (loop for (obj . tp) in object-pairs
-        when (subtype-p tp type type-table)
+        when (object-has-type-p tp type type-table)
           collect obj))
 
 (defun type-domain-name (type)
   "FiFO domain name for a PDDL type; the universal type maps to OBJECTS."
   (if (sym-name= type "OBJECT") 'objects type))
+
+(defun nested-union (set-expressions)
+  (if (rest set-expressions)
+      (list 'union (first set-expressions) (nested-union (rest set-expressions)))
+      (first set-expressions)))
+
+(defun type-set-expression (type)
+  "FiFO set expression for a PDDL type: a domain name for a simple type, or a
+(union ...) of the member domains for an (either ...) type."
+  (if (either-type-p type)
+      (nested-union (mapcar #'type-domain-name (rest type)))
+      (type-domain-name type)))
 
 ;;; Formula helpers
 
@@ -164,7 +195,7 @@ grouping consecutive parameters that share a domain."
       body
       (let* ((dom (cdr (first pairs)))
              (group (loop for p in pairs
-                          while (string-equal (string (cdr p)) (string dom))
+                          while (equal (cdr p) dom)
                           collect (car p)))
              (inner (wrap-quantifiers (nthcdr (length group) pairs) body)))
         (if (rest group)
@@ -186,7 +217,8 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
              (mapcar (lambda (p)
                        (unless (pddl-variable-p (car p))
                          (error "Parameter ~s of action ~a is not a ?variable" (car p) name))
-                       (unless (and (cdr p) (symbolp (cdr p)))
+                       (unless (and (cdr p)
+                                    (or (symbolp (cdr p)) (either-type-p (cdr p))))
                          (error "Unsupported type ~s for parameter ~s of action ~a"
                                 (cdr p) (car p) name))
                        (cons (car p) (fifo-variable (car p) forbidden)))
@@ -224,7 +256,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                       (when cost (list (list 'cost act cost)))))
              (conj (if (rest facts) (cons 'and facts) (first facts)))
              (quants (mapcar (lambda (b p)
-                               (cons (cdr b) (type-domain-name (cdr p))))
+                               (cons (cdr b) (type-set-expression (cdr p))))
                              bindings param-pairs)))
         (values (wrap-quantifiers quants conj)
                 negp
@@ -253,11 +285,6 @@ object-pairs is an alist of (object . type)."
     (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-))))
 
 ;;; Output
-
-(defun nested-union (set-expressions)
-  (if (rest set-expressions)
-      (list 'union (first set-expressions) (nested-union (rest set-expressions)))
-      (first set-expressions)))
 
 (defun write-form (out form)
   (let ((*print-case* :downcase)
@@ -306,7 +333,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
             (error "No objects: ~a has no :objects and ~a has no :constants"
                    problem-path domain-path))
           (dolist (p all-object-pairs)
-            (pushnew (cdr p) types-used :test #'string-equal))
+            (dolist (tp (type-components (cdr p)))
+              (pushnew tp types-used :test #'string-equal)))
           (dolist (p type-table)
             (pushnew (car p) types-used :test #'string-equal))
           (dolist (s (define-sections domain-def))
@@ -316,7 +344,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (push form action-forms)
                 (when negp (setq any-neg-pre t))
                 (dolist (tp param-types)
-                  (pushnew tp types-used :test #'string-equal)))))
+                  (dolist (c (type-components tp))
+                    (pushnew c types-used :test #'string-equal))))))
           (setq action-forms (nreverse action-forms))
           (unless action-forms
             (error "Domain file ~a defines no actions" domain-path))
