@@ -4,8 +4,8 @@
 # Claude Code local data
 .claude/
 
-# SBCL / alive compiled artifacts
-.vscode/alive/fasl/
+# Editor / SBCL-alive workspace files and compiled artifacts
+.vscode/
 *.fasl
 
 # SatPlan/ is managed manually -- never ignore anything under it
