@@ -14,7 +14,7 @@
 ;;;; Usage from a Lisp listener:
 ;;;;   (load "pddl2fifo.lisp")
 ;;;;   (pddl2fifo "<problem.pddl>")
-;;;;   (pddl2fifo "<problem.pddl>" "<domain.pddl>")
+;;;;   (pddl2fifo "<problem.pddl>" :domain-file "<domain.pddl>")
 ;;;;
 ;;;; If the domain file is not given, the root of its file name is taken from
 ;;;; the (:domain <name>) form in the problem file, and <name>.pddl is looked
@@ -266,7 +266,7 @@ object-pairs is an alist of (object . type)."
     (write form :stream out))
   (terpri out))
 
-(defun pddl2fifo (problem-file &optional domain-file)
+(defun pddl2fifo (problem-file &key domain-file)
   "Translate the PDDL PROBLEM-FILE (and its domain) into a FiFO wff file.
 Returns the pathname of the wff file written."
   (let* ((problem-path (pathname problem-file))
@@ -411,7 +411,9 @@ Returns the pathname of the wff file written."
                       (and (plusp (length a)) (char/= (char a 0) #\-)))
                     args))
     (if (<= 1 (length args) 2)
-        (handler-case (apply #'pddl2fifo args)
+        (handler-case (if (second args)
+                          (pddl2fifo (first args) :domain-file (second args))
+                          (pddl2fifo (first args)))
           (error (e)
             (format *error-output* "pddl2fifo: ~a~%" e)
             (sb-ext:exit :code 1)))

@@ -2,8 +2,14 @@
 ;; Problem trucklog3 from trucklogprob.pddl
 ;; Domain trucklog from trucklog.pddl
 
-;; Time horizon -- adjust numslices as needed
-(alias numslices 6)
+;; Time horizon -- numslices is taken from the Lisp variable
+;; *satplan-numslices* when it is bound to an integer, else 2.
+(alias numslices
+ (lisp
+  (if (and (boundp '*satplan-numslices*)
+           (integerp (symbol-value '*satplan-numslices*)))
+      (symbol-value '*satplan-numslices*)
+      2)))
 (domain slices (range 1 numslices))
 (domain actslices (range 1 (- numslices 1)))
 

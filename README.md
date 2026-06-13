@@ -47,25 +47,27 @@ The FiFO interpreter is written in Common Lisp, but it is not necessary to know 
 Common Lisp API
 ------------
 
-Invoke any implementation of Common Lisp, and load the file "FiFO.lisp". The following Lisp functions are available:
+Invoke any implementation of Common Lisp, and load the file "FiFO.lisp". The following Lisp functions are available. All arguments after the first are Common Lisp keyword arguments, so they are supplied by name, e.g. `(instantiate "test.wff" :scnfile "test.scnf")` or `(interpret "test.out" :sort-by-time nil)`.
 
-**(parse '(SCHEMA+) &optional '(OBSERVATION+)) returns ((OR LITERAL+)\*)**  
+**(parse '(SCHEMA+) &key (observation-list '(OBSERVATION+))) returns ((OR LITERAL+)\*)**  
 Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each OBSERVATION is a positive ground literal or a observed quantified formula as described below. When the schemas are expanded, they are simplified by replacing observed atoms by true and all non-observed atoms that employ the same predicates by false.
 
-**(instantiate "test.wff" &optional "test.scnf" "test.obs")**  
-Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file "test.scnf". The optional file "test.obs" contains a sequence of observed ground atoms.
+**(instantiate "test.wff" &key scnfile obsfile)**  
+Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file given by `:scnfile`. The `:obsfile` file contains a sequence of observed ground atoms.
 
-**(propositionalize "test.scnf" &optional "test.cnf" "test.map")**  
+**(propositionalize "test.scnf" &key cnffile mapfile)**  
 Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS format CNF file3 "test.cnf". In DIMACS format (the standard input language for all modern SAT solvers), propositions are represented by positive and negative integers. The mapping from symbolic ground atoms to integers is written to the file "test.map". The file "test.cnf" may then be sent to a SAT solver. When the output file name is not given explicitly and the problem is written in one of the WCNF formats (see Optimization), the default extension is `.wcnf` instead of `.cnf`. `propositionalize` returns the pathname of the cnf/wcnf file it wrote.
 
-**(satisfy "test.cnf" &optional "test.out")**
+**(satisfy "test.cnf" &key satoutfile)**
 The solver named by the variable **sat-solver** (default "kissat") is called on "test.cnf" and the output of the solver is captured in the file "test.out".  Satisfy returns 'SAT, 'UNSAT, or nil if the solver fails or its output contains neither the strings SAT nor UNSAT.
 
-**(interpret "test.out" &optional "test.map" "test.answer" sort-by-time)**  
-Reads in the output of a SAT solver "test.out" and a mapping file "test.map", and creates a file "test.answer" containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. The results are sorted alphabetically unless sort-by-time is set to t, in which case the results are sorted by the last argument to each predicate, which is often used to specify a time index.
+**(interpret "test.out" &key mapfile solnfile (sort-by-time t))**  
+Reads in the output of a SAT solver "test.out" and a mapping file (`:mapfile`), and creates an answer file (`:solnfile`) containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. By default (`:sort-by-time t`) the results are sorted by the last argument to each predicate, which is often used to specify a time index; pass `:sort-by-time nil` to sort alphabetically instead.
 
-**(solve "test.wff" &optional "test.answer"  "test.obs")**
-Reads in the FiFO file "test.wff" and an optional "test.obs" observation file, solves it using the **sat-solver** and writes the results in symbolic form to "test.answer".  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
+The MaxSAT output format used by solvers such as `tt-open-wbo-inc` is also understood: the satisfiability status is taken from the `s` line, and the model is given as a single `v` line that is a bit string of length *numvar* (one `0`/`1` per variable) rather than a list of signed literals. When the output contains one or more `o <number>` (objective/cost) lines, the value from the last such line is written to "test.answer" as an atom of the form `(*objective* <number>)`, placed before the symbolic atoms.
+
+**(solve "test.wff" &key solnfile obsfile)**
+Reads in the FiFO file "test.wff" and an optional observation file (`:obsfile`), solves it using the **sat-solver** and writes the results in symbolic form to the answer file (`:solnfile`).  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
 
 - If the formula does not contain a prove form and:
   - Is satisfiable: SAT followed by the positive ground literals in a satisying model.

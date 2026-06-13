@@ -1,0 +1,52 @@
+c
+c TT-Open-WBO-Inc:	 an Anytime MaxSAT Solver -- based on Glucose4_1
+c Version:	 Development after MaxSAT Evaluation 2024
+c Author:	 Alexander Nadel
+c Authors of the baseline SAT-based solver Open-WBO-Inc:	 Saurabh Joshi, Prateek Kumar, Ruben Martins, Sukrut Rao
+c Authors of the local search solver NuWLS-c-2023:	 Yi Chu, Shaowei Cai, Chuan Luo
+c Contact:	 alexandernad@technion.ac.il -- http://www.cs.tau.ac.il/research/alexander.nadel/
+c
+c |                                                                                                       |
+c ========================================[ Problem Statistics ]===========================================
+c |                                                                                                       |
+c |  Problem Format:             MaxSAT                                                                   |
+c |  Problem Type:             Weighted                                                                   |
+c |  Number of variables:           366                                                                   |
+c |  Number of hard clauses:       2394                                                                   |
+c |  Number of soft clauses:        240                                                                   |
+c |  Number of cardinality:           0                                                                   |
+c |  Number of PB :                   0                                                                   |
+c |  Parse time:                   0.00 s                                                                 |
+c |                                                                                                       |
+c | best-alg-selector overriden satlikeTimeThr to 30 in Weighted mode, since it hadn't been set by the user |
+c | best-alg-selector overriden ms_model_per_sec_thr to 0, since it hadn't been set by the user |
+c | best-alg-selector overriden ms_prop_per_model_thr to 100000000, since it hadn't been set by the user |
+c Limiting number of clusters to number of weights
+c all_weights = true;
+c #Diff Weights= 3 | #Modified Weights= 3
+o 261
+c timeo 1 261 
+c before build neighbor
+c build instime is 7.7e-05
+c build NuWLS instance done!
+c changing to NuWLS solver!!!
+c max_flips = 10000000; max_non_improve_flip = 10000000
+c problem weighted = 1
+c nuwlsTimeLimit = 20
+o 171
+c timeo 1 171 
+o 171
+c nuwls search done!
+c step 10000013 get_runtime 0.802516 time_limit_for_ls20
+o 171 
+c timeo 1 171 
+c Entering mutation sampling
+c Mutation sampling: epoch 0 < 10000000 starting with 11 remaining literals
+c Created close solutions: (sat,unsat,confthr)=(3,0,0). Creating mutation combination classes
+c Class 0 < 1 starting. 0 mutations.
+c Mutation sampling done
+c Warn: changing to LSU algorithm.
+c GTE auxiliary #clauses = 22285
+s SATISFIABLE
+o 171 
+v 111000000000000000011111000000001000001000000000010000110000100000010000000000000000110000000100000000000000000000000100000000000001000010000000000100000000000100000010000000000000000000100000000000000100000000000000100000000100001000010000000100000100000100000000000000000000000000000001000000100000000010000000100000000000100000000000000000000000000000000100000000

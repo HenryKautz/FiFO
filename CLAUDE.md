@@ -14,7 +14,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 
 ## Key APIs (in FiFO.lisp)
 
-- `(parse schemas &optional observations)` — Parse FiFO forms to ground clauses
+- `(parse schemas &key observation-list)` — Parse FiFO forms to ground clauses (all post-first args are keyword args)
 - `(instantiate "file.wff")` — File-based: wff -> scnf
 - `(propositionalize "file.scnf")` — File-based: scnf -> DIMACS cnf + map
 - `(satisfy "file.cnf")` — Run SAT solver (default: kissat)

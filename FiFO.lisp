@@ -103,7 +103,7 @@
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 
-(defun satisfy (CNFFILE &optional SATOUTFILE)
+(defun satisfy (CNFFILE &key SATOUTFILE)
   (if (null (cl-ppcre:scan "\\." CNFFILE))
       (setq CNFFILE (concatenate 'string CNFFILE ".cnf")))
   (if (not SATOUTFILE)
@@ -123,7 +123,7 @@
           ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
           (t nil))))
 
-(defun instantiate (WFFFILE &optional SCNFILE OBSFILE)
+(defun instantiate (WFFFILE &key SCNFILE OBSFILE)
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
   (if (eq OBSFILE t)
@@ -140,6 +140,7 @@
               (setq CL (parse
                         (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
                               collect SCHEMA)
+                        :observation-list
                         (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
                               collect OBSERVATION))))
             (loop for C in CL do (format OUTS "~S~%" C))
@@ -148,7 +149,7 @@
               (format OUTS "(OPTION WEIGHTS ~S)~%" *cnf-format*))))))
     t))
 
-(defun propositionalize (SCNFFILE &optional CNFFILE MAPFILE)
+(defun propositionalize (SCNFFILE &key CNFFILE MAPFILE)
   (if (null (cl-ppcre:scan "\\.." SCNFFILE))
       (setq SCNFFILE (concatenate 'string SCNFFILE ".scnf")))
   (with-clean-errors ("propositionalizing" SCNFFILE)
@@ -179,7 +180,7 @@
      (with-open-file (CS CNFFILE :direction :output :if-exists :supersede)
        (with-open-file (MS MAPFILE :direction :output :if-exists :supersede)
          (multiple-value-bind (cnfdata mapdata numvar numclauses weightdata)
-             (lit2prop clauses weights)
+             (lit2prop clauses :weights weights)
            (cond ((or (null weightdata) (eql wformat 'CNF))
                    (format CS "p cnf ~S ~S~%" numvar numclauses)
                    (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
@@ -196,7 +197,7 @@
    CNFFILE))
 
 
-(defun interpret (SATOUTFILE &optional MAPFILE SOLNFILE SORT_BY_LAST_ARGUMENT)
+(defun interpret (SATOUTFILE &key MAPFILE SOLNFILE (sort-by-time t))
   (if (null (cl-ppcre:scan "\\.." SATOUTFILE))
       (setq SATOUTFILE (concatenate 'string SATOUTFILE ".satout")))
   (if (not MAPFILE)
@@ -204,42 +205,74 @@
   (if (not SOLNFILE)
       (setq SOLNFILE (replace-suffix-with-regex SATOUTFILE "\\..*?$" ".soln")))
   (with-clean-errors ("interpreting" SATOUTFILE)
-   (let (solndata mapdata litdata)
+   (let (solndata mapdata litdata objective numvar)
     ;; Read solnfile to create solution list.  Ignore any non-integers and negative integers in solnfile.
     ;; Get list of lines of the solution
     (setq solndata (read-lines SATOUTFILE))
-    (if (some (lambda (s) (search "UNSAT" s :test #'char-equal)) solndata)
+    ;; Decide SAT/UNSAT from the DIMACS "s" status line when present (a bare
+    ;; "UNSAT" substring may legitimately appear in solver comment lines); fall
+    ;; back to scanning all lines for free-form output that has no "s" line.
+    (if (let ((sline (find-if (lambda (s) (cl-ppcre:scan "(?i)^s\\s" s)) solndata)))
+          (if sline
+              (cl-ppcre:scan "(?i)UNSAT" sline)
+              (some (lambda (s) (search "UNSAT" s :test #'char-equal)) solndata)))
         (with-open-file (OS SOLNFILE :direction :output :if-exists :supersede)
           (format OS "UNSAT~%"))
         (progn ; satisfiabile case
-              ;; On lines that begin with v, drop the v
-              (setq solndata (mapcar (lambda (s) (if (cl-ppcre:scan "^v" s) (subseq s 1) s)) solndata))
-              ;; Eliminate lines containing anything other than integers
-              (setq solndata (remove-if (lambda (str) (cl-ppcre:scan "[^0-9\\s-]" str)) solndata))
-              ;; Convert to a single string
-              (setq solndata (format nil "~{~a~^ ~}" solndata))
-              ;; Convert to a list of integers
-              (setq solndata (mapcar #'parse-integer (ppcre:all-matches-as-strings "-?\\d+" solndata)))
-              ;; Remove negative integers
-              (setq solndata (remove-if (lambda (x) (<= x 0)) solndata))
-              ;; Read mapfile to create mapdata list
+              ;; Capture the objective from the last "o <number>" line, if any
+              ;; (MaxSAT solvers print an improving o-line per incumbent solution).
+              (let ((ovals (loop for line in solndata
+                                 for m = (nth-value 1 (cl-ppcre:scan-to-strings "^o\\s+(-?\\d+)" line))
+                                 when m collect (parse-integer (aref m 0)))))
+                (when ovals (setq objective (car (last ovals)))))
+              ;; Read mapfile to create mapdata list (numvar is needed to recognize
+              ;; the bit-string solution format below).
               (with-open-file (MS MAPFILE :direction :input)
                 (let ((*read-eval* nil))
                   (if (not (eql (read MS) 'map)) (error "Bad map file ~A" MAPFILE))
-                  (if (not (integerp (read MS))) (error "Bad map file ~A" MAPFILE))
+                  (setq numvar (read MS))
+                  (if (not (integerp numvar)) (error "Bad map file ~A" MAPFILE))
                   (setq mapdata (loop with i with p
                                       while (not (eql :EOF (setq i (read MS nil :EOF))))
                                       do (setq p (read MS)) (if (not (integerp i)) (error "Bad map file ~A" MAPFILE))
                                       collect (list i p)))))
+              ;; Determine the list of true (positive) variable numbers.  Some MaxSAT
+              ;; solvers (e.g. tt-open-wbo-inc) report the model as a single "v" line
+              ;; that is a bit string of length numvar, one 0/1 per variable, rather
+              ;; than the DIMACS list of signed literals.
+              (let* ((vlines (remove-if-not (lambda (s) (cl-ppcre:scan "^v" s)) solndata))
+                     (bits (and (= (length vlines) 1)
+                                (let ((content (string-trim '(#\Space #\Tab) (subseq (car vlines) 1))))
+                                  (and (= (length content) numvar)
+                                       (cl-ppcre:scan "^[01]+$" content)
+                                       content)))))
+                (if bits
+                    ;; Bit-string format: character i (1-based) is the truth value of variable i.
+                    (setq solndata (loop for ch across bits
+                                         for v from 1
+                                         when (char= ch #\1) collect v))
+                    ;; DIMACS / free-form: parse the positive integers out of the v/number lines.
+                    (progn
+                      ;; On lines that begin with v, drop the v
+                      (setq solndata (mapcar (lambda (s) (if (cl-ppcre:scan "^v" s) (subseq s 1) s)) solndata))
+                      ;; Eliminate lines containing anything other than integers
+                      (setq solndata (remove-if (lambda (str) (cl-ppcre:scan "[^0-9\\s-]" str)) solndata))
+                      ;; Convert to a single string
+                      (setq solndata (format nil "~{~a~^ ~}" solndata))
+                      ;; Convert to a list of integers
+                      (setq solndata (mapcar #'parse-integer (ppcre:all-matches-as-strings "-?\\d+" solndata)))
+                      ;; Remove negative integers
+                      (setq solndata (remove-if (lambda (x) (<= x 0)) solndata)))))
               ;; call soln2lit to create sorted list of true literals
-              (setq litdata (soln2lit mapdata solndata sort_by_last_argument))
-              ;; Print list of true literals to outfile
+              (setq litdata (soln2lit mapdata solndata sort-by-time))
+              ;; Print list of true literals to outfile, with the objective (if any) first.
               (with-open-file (OS SOLNFILE :direction :output :if-exists :supersede)
                 (format OS "SAT~%")
+                (when objective (format OS "~S~%" (list '*objective* objective)))
                 (format OS "~{~S~%~}" litdata)))))
    t))
 
-(defun solve (WFFFILE &optional SOLNFILE OBSFILE)
+(defun solve (WFFFILE &key SOLNFILE OBSFILE)
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
   (if (not SOLNFILE)
@@ -257,7 +290,7 @@
               (setq observations (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
                                        collect OBSERVATION)))))
       (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
-        (multiple-value-bind (result model-or-bindings) (solve-schemas schemas observations)
+        (multiple-value-bind (result model-or-bindings) (solve-schemas schemas :observations observations)
           (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
             (format ANSWER "~a~%" result)
             (dolist (e model-or-bindings) (format ANSWER "~a~%" e)))
@@ -292,16 +325,16 @@
                (dolist (w Weights) (format SCNF-STREAM "~S~%" w))
                (when (and Weights (not (eql *cnf-format* 'CNF)))
                  (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" *cnf-format*)))
-             (propositionalize scnf-file cnf-file map-file)
+             (propositionalize scnf-file :cnffile cnf-file :mapfile map-file)
              (unless (satisfy cnf-file)
                (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
                       *solver* cnf-file))
-             (interpret satout-file map-file soln-file)
+             (interpret satout-file :mapfile map-file :solnfile soln-file)
              (let ((results (read-sexprs-from-file soln-file)))
                (values (car results) (cdr results))))
         (cleanup-scratch-files)))))
 
-(defun lit2prop (CL &optional weights)
+(defun lit2prop (CL &key weights)
   (let ((cnfdata nil) (mapdata nil) (weightdata nil)
         (numvar 0) (numclauses (length CL))
         (hash (make-hash-table :test #'equal)))
@@ -394,7 +427,7 @@
     (loop for s in soft do (format CS "~D ~D 0~%" (cadr s) (car s)))))
 
 
-(defun soln2lit (mapdata solndata &optional sort-by-time)
+(defun soln2lit (mapdata solndata sort-by-time)
   ;; return a list of propositions
   (let ((hash (make-hash-table)) proplist)
     (loop for pair in mapdata do (setf (gethash (car pair) hash) (cadr pair)))
@@ -422,7 +455,7 @@
 ;;; Answer extraction
 ;;;
 
-(defun split-list (lst &optional (index (floor (/ (length lst) 2))))
+(defun split-list (lst &key (index (floor (/ (length lst) 2))))
   (let ((list1 (subseq lst 0 index))
         (list2 (subseq lst index)))
     (values list1 list2)))
@@ -504,15 +537,15 @@
 ;;     'COUNTEREXAMPLE, model (theory + negated conclusion is satisfiable)
 ;;     'PROVEN, bindings      (theory entails conclusion; answer extraction succeeded)
 ;;     'NOANSWER, nil         (theory entails conclusion; answer extraction failed)
-(defun solve-schemas (schemas &optional observations)
+(defun solve-schemas (schemas &key observations)
   (multiple-value-bind (prove-form rest-of-wff) (pull-out-prove schemas)
     (cond ((null prove-form)
-            (test-scnf (parse schemas observations)))
+            (test-scnf (parse schemas :observation-list observations)))
           (t
             (let* ((vdlist (cadr prove-form))
                    (test (caddr prove-form))
                    (qbody (cadddr prove-form))
-                   (assumptions (parse rest-of-wff observations))
+                   (assumptions (parse rest-of-wff :observation-list observations))
                    (notfound (expand-var-domain-list vdlist)))
               ;; First check whether the theory plus the negation of the prove
               ;; conclusion is satisfiable.  If SAT, that model is a counterexample.
@@ -553,11 +586,11 @@
   (setf (gethash 'FALSE ObservedPredicates) 1)
   (setf (gethash 'FALSE ObservedLiterals) 0))
 
-(defun parse (SCHEMA-LIST &optional OBSERVATION-LIST)
+(defun parse (SCHEMA-LIST &key OBSERVATION-LIST)
   (setup-global-env)
-  (parse-same-env SCHEMA-LIST OBSERVATION-LIST))
+  (parse-same-env SCHEMA-LIST :observation-list OBSERVATION-LIST))
 
-(defun parse-same-env (SCHEMA-LIST &optional OBSERVATION-LIST)
+(defun parse-same-env (SCHEMA-LIST &key OBSERVATION-LIST)
   (parse-observations OBSERVATION-LIST)
   (mapcar #'(lambda (c) (cons 'or c))
     (remove-valid-clauses
