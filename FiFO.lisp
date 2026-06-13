@@ -3,18 +3,29 @@
 (ql:quickload :cl-ppcre :silent t)
 
 ;; SAT program used by satisfy
-(defvar solver "kissat")
+(defvar *solver* "kissat")
+
+;; Abbreviations for solver names: a list of (abbreviation full-name) pairs
+;; (binary lists, not an association list). When the *solver* option is given an
+;; abbreviation, the *solver* variable is set to the corresponding full name.
+(defvar *solver-abbreviations*
+  '(("tt-glucose" "tt-open-wbo-inc-Glucose4_1")
+    ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")))
 
 ;; Muffle warnings about common lisp style
 (declaim (sb-ext:muffle-conditions cl:style-warning))
 
 ;; Default values of options
-(defvar compact-encoding t)
-(defvar tracing nil)
+(defvar *compact-encoding* t)
+(defvar *tracing* nil)
+;; SatPlan time horizon read by pddl2fifo-generated wff files. Declared special
+;; but intentionally left unbound: when unbound the generated alias falls back to
+;; 2; (option *satplan-numslices* N) or (setq *satplan-numslices* N) sets it.
+(defvar *satplan-numslices*)
 (defvar Weights nil)
 ;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
 ;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
-(defvar weights-format 'CNF)
+(defvar *cnf-format* 'CNF)
 (defvar binary-functions '(eq neq = > < >= <= member
                               union intersection set-difference + - * div rem mod ** bit
                               range))
@@ -101,11 +112,11 @@
     (unless (probe-file CNFFILE)
       (error "cnf file ~A does not exist" CNFFILE))
     (handler-case
-        (uiop:run-program (list solver CNFFILE)
+        (uiop:run-program (list *solver* CNFFILE)
                           :output SATOUTFILE :ignore-error-status t)
       (error (c)
         (format *error-output* "FiFO error: could not run SAT solver ~A: ~A~%"
-                solver c)
+                *solver* c)
         (return-from satisfy nil)))
     ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
     (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
@@ -133,49 +144,56 @@
                               collect OBSERVATION))))
             (loop for C in CL do (format OUTS "~S~%" C))
             (loop for W in Weights do (format OUTS "~S~%" W))
-            (when (and Weights (not (eql weights-format 'CNF)))
-              (format OUTS "(OPTION WEIGHTS ~S)~%" weights-format))))))
+            (when (and Weights (not (eql *cnf-format* 'CNF)))
+              (format OUTS "(OPTION WEIGHTS ~S)~%" *cnf-format*))))))
     t))
 
 (defun propositionalize (SCNFFILE &optional CNFFILE MAPFILE)
   (if (null (cl-ppcre:scan "\\.." SCNFFILE))
       (setq SCNFFILE (concatenate 'string SCNFFILE ".scnf")))
-  (if (not CNFFILE)
-      (setq CNFFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" ".cnf")))
-  (if (not MAPFILE)
-      (setq MAPFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" ".map")))
   (with-clean-errors ("propositionalizing" SCNFFILE)
-   (with-open-file (WS SCNFFILE :direction :input)
-    (with-open-file (CS CNFFILE :direction :output :if-exists :supersede)
-      (with-open-file (MS MAPFILE :direction :output :if-exists :supersede)
-        (let* ((all-forms (let ((*read-eval* nil))
-                            (loop with clause
-                                  while (not (eql :EOF (setq clause (read WS nil :EOF))))
-                                  do (unless (and (consp clause)
-                                                  (member (car clause) '(or weight option)))
-                                       (error "malformed scnf form (expected (OR ...), (WEIGHT ...), or (OPTION ...)): ~S"
-                                              clause))
-                                  collect clause)))
-               (clauses (remove-if (lambda (f) (member (car f) '(weight option))) all-forms))
-               (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms))
-               (wformat (or (loop for f in all-forms
-                                  when (and (eql (car f) 'option) (eql (cadr f) 'weights))
-                                    return (caddr f))
-                            'CNF)))
-          (multiple-value-bind (cnfdata mapdata numvar numclauses weightdata)
-              (lit2prop clauses weights)
-            (cond ((or (null weightdata) (eql wformat 'CNF))
-                    (format CS "p cnf ~S ~S~%" numvar numclauses)
-                    (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
-                    (loop for w in weightdata do (format CS "cw ~D ~A~%" (first w) (second w))))
-                  ((eql wformat 'WCNF-OLD)
-                    (write-wcnf-old CS cnfdata weightdata numvar))
-                  ((eql wformat 'WCNF)
-                    (write-wcnf CS cnfdata weightdata))
-                  (t (error "Unknown weights format ~S in ~A" wformat SCNFFILE)))
-            (format MS "map ~S~%" numvar)
-            (loop for m in mapdata do (format MS "~{~D ~S~}~%" m)))))))
-   t))
+   ;; Read the scnf first so the weights format (and hence the default output
+   ;; extension) is known before the output file is opened.
+   (let* ((all-forms (with-open-file (WS SCNFFILE :direction :input)
+                       (let ((*read-eval* nil))
+                         (loop with clause
+                               while (not (eql :EOF (setq clause (read WS nil :EOF))))
+                               do (unless (and (consp clause)
+                                               (member (car clause) '(or weight option)))
+                                    (error "malformed scnf form (expected (OR ...), (WEIGHT ...), or (OPTION ...)): ~S"
+                                           clause))
+                               collect clause))))
+          (clauses (remove-if (lambda (f) (member (car f) '(weight option))) all-forms))
+          (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms))
+          (wformat (or (loop for f in all-forms
+                             when (and (eql (car f) 'option) (eql (cadr f) 'weights))
+                               return (caddr f))
+                       'CNF))
+          ;; WCNF-format files conventionally carry a .wcnf extension; plain and
+          ;; cw-comment CNF use .cnf.
+          (cnf-suffix (if (member wformat '(WCNF WCNF-OLD)) ".wcnf" ".cnf")))
+     (if (not CNFFILE)
+         (setq CNFFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" cnf-suffix)))
+     (if (not MAPFILE)
+         (setq MAPFILE (replace-suffix-with-regex SCNFFILE "\\..*?$" ".map")))
+     (with-open-file (CS CNFFILE :direction :output :if-exists :supersede)
+       (with-open-file (MS MAPFILE :direction :output :if-exists :supersede)
+         (multiple-value-bind (cnfdata mapdata numvar numclauses weightdata)
+             (lit2prop clauses weights)
+           (cond ((or (null weightdata) (eql wformat 'CNF))
+                   (format CS "p cnf ~S ~S~%" numvar numclauses)
+                   (loop for c in cnfdata do (format CS "~{~D ~}0~%" c))
+                   (loop for w in weightdata do (format CS "cw ~D ~A~%" (first w) (second w))))
+                 ((eql wformat 'WCNF-OLD)
+                   (write-wcnf-old CS cnfdata weightdata numvar))
+                 ((eql wformat 'WCNF)
+                   (write-wcnf CS cnfdata weightdata))
+                 (t (error "Unknown weights format ~S in ~A" wformat SCNFFILE)))
+           (format MS "map ~S~%" numvar)
+           (loop for m in mapdata do (format MS "~{~D ~S~}~%" m))))))
+   ;; Return the cnf/wcnf pathname so callers that relied on the default name
+   ;; can discover which extension was chosen.
+   CNFFILE))
 
 
 (defun interpret (SATOUTFILE &optional MAPFILE SOLNFILE SORT_BY_LAST_ARGUMENT)
@@ -259,7 +277,7 @@
         (soln-file (format nil "~a.soln" scratch-file))
         (map-file (format nil "~a.map" scratch-file)))
     (labels ((cleanup-scratch-files ()
-               (unless tracing
+               (unless *tracing*
                  (dolist (file (list scnf-file cnf-file satout-file soln-file map-file))
                    (when (probe-file file)
                      (delete-file file))))))
@@ -272,12 +290,12 @@
              (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
                (dolist (c scnf) (format SCNF-STREAM "~S~%" c))
                (dolist (w Weights) (format SCNF-STREAM "~S~%" w))
-               (when (and Weights (not (eql weights-format 'CNF)))
-                 (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" weights-format)))
+               (when (and Weights (not (eql *cnf-format* 'CNF)))
+                 (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" *cnf-format*)))
              (propositionalize scnf-file cnf-file map-file)
              (unless (satisfy cnf-file)
                (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
-                      solver cnf-file))
+                      *solver* cnf-file))
              (interpret satout-file map-file soln-file)
              (let ((results (read-sexprs-from-file soln-file)))
                (values (car results) (cdr results))))
@@ -625,7 +643,7 @@
              (parse-schema-list (cdr SCHEMA-LIST))))))
 
 (defun parse-schema (SCHEMA)
-  (when tracing
+  (when *tracing*
     (cond ((atom SCHEMA)
            (format t "[TRACE] Formula: ~S~%" SCHEMA))
           ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
@@ -645,24 +663,46 @@
     (setq Weights (append Weights (list (list 'WEIGHT lit num))))
     nil))
 
+(defun resolve-solver-name (NAME)
+  (let ((pair (assoc (string-downcase NAME) *solver-abbreviations* :test #'string=)))
+    (if pair (cadr pair) NAME)))
+
+(defun normalize-solver-abbreviations (PAIRS)
+  (mapcar (lambda (pair)
+            (list (string-downcase (string (car pair)))
+                  (string (cadr pair))))
+          PAIRS))
+
 (defun parse-option (ARGS)
+  (let ((opt (car ARGS)))
+    ;; *solver-abbreviations* takes a raw list of pairs, which must not be run
+    ;; through parse-expression, so handle it before computing val.
+    (when (eql opt '*solver-abbreviations*)
+      (setq *solver-abbreviations*
+            (normalize-solver-abbreviations (cadr ARGS)))
+      (return-from parse-option nil)))
   (let ((opt (car ARGS))
         (val (parse-expression (cadr ARGS))))
     (if (eql val 0) (setq val nil))
-    (cond ((eql opt 'compact-encoding)
+    (cond ((eql opt '*compact-encoding*)
             (set opt val))
-          ((eql opt 'tracing)
-            (setq tracing val)
-            (when tracing (format t "[TRACE] Tracing enabled~%")))
-          ((eql opt 'weights-format)
+          ((eql opt '*tracing*)
+            (setq *tracing* val)
+            (when *tracing* (format t "[TRACE] Tracing enabled~%")))
+          ((eql opt '*cnf-format*)
             (unless (member val '(CNF WCNF-OLD WCNF))
-              (error "Unknown weights-format ~S; must be CNF, WCNF-OLD, or WCNF" val))
-            (setq weights-format val))
-          ((eql opt 'solver)
-            (setq solver
-                  (cond ((stringp val) val)
-                        ((symbolp val) (string-downcase (symbol-name val)))
-                        (t (error "solver must be a symbol or string, not ~S" val)))))
+              (error "Unknown *cnf-format* ~S; must be CNF, WCNF-OLD, or WCNF" val))
+            (setq *cnf-format* val))
+          ((eql opt '*solver*)
+            (setq *solver*
+                  (resolve-solver-name
+                    (cond ((stringp val) val)
+                          ((symbolp val) (string-downcase (symbol-name val)))
+                          (t (error "*solver* must be a symbol or string, not ~S" val))))))
+          ((eql opt '*satplan-numslices*)
+            (unless (integerp val)
+              (error "*satplan-numslices* must be an integer, not ~S" val))
+            (set '*satplan-numslices* val))
           (t (error "Unknown option ~S" opt)))
     nil))
 
@@ -671,12 +711,12 @@
                        (uiop:merge-pathnames* FILENAME *current-wff-directory*)
                        FILENAME))
          (*current-wff-directory* (uiop:pathname-directory-pathname resolved)))
-    (when tracing (format t "[TRACE] Include ~S~%" resolved))
+    (when *tracing* (format t "[TRACE] Include ~S~%" resolved))
     (parse-schema-list (read-sexprs-from-file resolved))))
 
 (defun parse-domain (DEFINITION)
   (let ((vals (parse-set-expression (cadr DEFINITION))))
-    (when tracing (format t "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals))
+    (when *tracing* (format t "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals))
     (setf (gethash (car DEFINITION) Bind) vals)
     nil))
 
@@ -795,7 +835,7 @@
 
 (defun multiply-clauses (L R)
   (let ((result
-          (if (or (null compact-encoding)
+          (if (or (null *compact-encoding*)
                   (< (length L) 2)
                   (< (length R) 2)
                   (< (+ (length L) (length R)) 5))
@@ -803,7 +843,7 @@
               (let ((g (gensym "XX"))) ;; g selects whether L or R must be true
                 (append (mapcar #'(lambda (c) (cons g c)) R)
                         (mapcar #'(lambda (c) (cons (list 'not g) c)) L))))))
-    (when tracing
+    (when *tracing*
       (format t "[TRACE] Multiply: ~D x ~D -> ~D clauses~%"
               (length L) (length R) (length result)))
     result))
@@ -841,12 +881,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracing (format t "[TRACE] ALL ~S = ~S~%" VAR (car DOM)))
+         (when *tracing* (format t "[TRACE] ALL ~S = ~S~%" VAR (car DOM)))
          (append (parse-binding VAR (car DOM) TEST BODY nil)
                  (parse-all VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracing (format t "[TRACE] ALL ~S over ~S~%" VAR DOM))
+         (when *tracing* (format t "[TRACE] ALL ~S over ~S~%" VAR DOM))
          (parse-formula (expand-multivar-all VAR DOM TEST BODY)))))
 
 
@@ -854,12 +894,12 @@
   (cond ((NULL Dom) (list nil)) ;; the empty clause
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracing (format t "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM)))
+         (when *tracing* (format t "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM)))
          (multiply-clauses (parse-binding VAR (car DOM) TEST BODY (list nil))
                            (parse-exists VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracing (format t "[TRACE] EXISTS ~S over ~S~%" VAR DOM))
+         (when *tracing* (format t "[TRACE] EXISTS ~S over ~S~%" VAR DOM))
          (parse-formula (expand-multivar-exists VAR DOM TEST BODY)))))
 
 
@@ -867,12 +907,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when tracing (format t "[TRACE] FOR ~S = ~S~%" VAR (car DOM)))
+         (when *tracing* (format t "[TRACE] FOR ~S = ~S~%" VAR (car DOM)))
          (append (parse-expression-binding VAR (car DOM) TEST BODY nil)
                  (parse-for VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when tracing (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
+         (when *tracing* (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
          (parse-expression (expand-multivar-for VAR DOM TEST BODY)))))
 
 (defun collect-match-term (VAR pat term)
@@ -933,7 +973,7 @@
             (when (and match-ok (not (eq var-val :unset)))
               (pushnew var-val results :test #'equal)))))
       ObservedLiterals)
-    (when tracing (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
+    (when *tracing* (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
     results))
 
 (defun parse-expression-binding (VAR VAL TEST BODY FAILED-TEST-RESULT)

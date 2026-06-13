@@ -1,4 +1,4 @@
-(option compact-encoding 0)
+(option *compact-encoding* 0)
 (domain boy (set jon alex bob))
 (domain girl (set mary sue))
 ;; Two different boys all love the same girl

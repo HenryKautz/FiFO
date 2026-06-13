@@ -1,0 +1,6 @@
+(OR (HAS-IN N2))
+(OR (HAS-IN N3))
+(OR (HAS-IN N4))
+(OR (HAS-OUT N1))
+(OR (HAS-OUT N2))
+(OR (HAS-OUT N3))

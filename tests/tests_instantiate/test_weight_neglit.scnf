@@ -1,0 +1,7 @@
+(OR (Q A) (Q B) (Q C))
+(OR (P A) (P B))
+(WEIGHT (P A) 2)
+(WEIGHT (NOT (P B)) 3)
+(WEIGHT (NOT (Q A)) 1.5)
+(WEIGHT (NOT (Q B)) 1.5)
+(WEIGHT (NOT (Q C)) 1.5)

@@ -31,9 +31,6 @@
 (defparameter *supported-requirements*
   '(:strips :typing :negative-preconditions :action-costs))
 
-(defparameter *default-numslices* 6
-  "Time horizon written into the generated wff file; edit the alias there as needed.")
-
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
     "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "NUMSLICES")
@@ -334,8 +331,14 @@ Returns the pathname of the wff file written."
                       (define-name problem-def) (file-namestring problem-path))
               (format out ";; Domain ~(~a~) from ~a~%~%"
                       (define-name domain-def) (file-namestring domain-path))
-              (format out ";; Time horizon -- adjust numslices as needed~%")
-              (write-form out (list 'alias 'numslices *default-numslices*))
+              (format out ";; Time horizon -- numslices is taken from the Lisp variable~%")
+              (format out ";; *satplan-numslices* when it is bound to an integer, else 2.~%")
+              (write-form out
+                          '(alias numslices
+                            (lisp (if (and (boundp '*satplan-numslices*)
+                                           (integerp (symbol-value '*satplan-numslices*)))
+                                      (symbol-value '*satplan-numslices*)
+                                      2))))
               (write-form out '(domain slices (range 1 numslices)))
               (write-form out '(domain actslices (range 1 (- numslices 1))))
               (terpri out)

@@ -1,0 +1,5 @@
+c weights scaled by 5: true cost = solver cost / 5
+c weight shift offset -17/10: add to unscaled cost
+h 1 2 0
+2 -1 0
+10 2 0

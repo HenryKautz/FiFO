@@ -1,0 +1,5 @@
+(OR (P A) (P B))
+(WEIGHT (P A) 0.7)
+(WEIGHT (NOT (P A)) 0.3)
+(WEIGHT (P B) -2)
+(OPTION WEIGHTS WCNF)
