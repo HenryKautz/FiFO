@@ -47,4 +47,4 @@
 ;; Negative goals
 (all f negative-goal-state true (not (holds f numslices)))
 
-(include "satplan.wff")
+(include "../satplan.wff")

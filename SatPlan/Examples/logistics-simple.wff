@@ -36,4 +36,4 @@
 (domain goal-state
    (set (at (truck 1) (place 2))))
 
-(include "satplan.wff")
+(include "../satplan.wff")

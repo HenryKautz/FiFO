@@ -57,4 +57,4 @@
                (union (collect f (del * f)) (union initial-state goal-state)))))
 (domain costs (collect c (cost * c)))
 
-(include "satplan.wff")
+(include "../satplan.wff")

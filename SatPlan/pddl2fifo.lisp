@@ -266,9 +266,12 @@ object-pairs is an alist of (object . type)."
     (write form :stream out))
   (terpri out))
 
-(defun pddl2fifo (problem-file &key domain-file)
+(defun pddl2fifo (problem-file &key domain-file (satplan-path "satplan.wff"))
   "Translate the PDDL PROBLEM-FILE (and its domain) into a FiFO wff file.
-Returns the pathname of the wff file written."
+SATPLAN-PATH is the path written into the generated (include ...) form for the
+domain-independent SatPlan axioms; it is resolved relative to the directory of
+the generated wff, so use e.g. \"../satplan.wff\" when the problem lives in a
+subdirectory below satplan.wff.  Returns the pathname of the wff file written."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
     (multiple-value-bind (domain-name object-pairs init goal+ goal-)
@@ -397,7 +400,7 @@ Returns the pathname of the wff file written."
                 (write-form out
                   '(all f negative-goal-state true (not (holds f numslices)))))
               (terpri out)
-              (write-form out '(include "satplan.wff"))))
+              (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))
           out-path)))))
 
