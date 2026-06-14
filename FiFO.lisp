@@ -578,6 +578,11 @@ exactly where it was."
 (defvar Bind)
 (defvar ObservedPredicates)
 (defvar ObservedLiterals)
+;; Inverted index over the asserted observed literals, used by collect to avoid
+;; scanning every literal.  Keys: (predicate position value) -> list of literals
+;; whose argument at POSITION equals VALUE, and (predicate :all) -> all literals
+;; of PREDICATE.
+(defvar ObservedIndex)
 (defvar Weights)
 ;; When true, parse-formula treats observed predicates as plain literals to assert
 ;; (used when processing observation form bodies so newly derived pairs get added).
@@ -588,6 +593,7 @@ exactly where it was."
   (setq Bind (make-hash-table :test #'eql))
   (setq ObservedPredicates (make-hash-table :test #'eql))
   (setq ObservedLiterals (make-hash-table :test #'equal))
+  (setq ObservedIndex (make-hash-table :test #'equal))
   (setq Weights nil)
   (setf (gethash 'TRUE ObservedPredicates) 1)
   (setf (gethash 'TRUE ObservedLiterals) 1)
@@ -623,11 +629,16 @@ exactly where it was."
                      (car OBSERVATION-LIST))
                  ObservedPredicates)
                1)
-         (let ((oldvalue (gethash (car OBSERVATION-LIST) ObservedLiterals)))
-           (if (not oldvalue)
-               (progn
-                 (setf (gethash (car OBSERVATION-LIST) ObservedLiterals) 1)
-                 (setq new-observation t))))
+         (let ((lit (car OBSERVATION-LIST)))
+           (when (not (gethash lit ObservedLiterals))
+             (setf (gethash lit ObservedLiterals) 1)
+             (setq new-observation t)
+             ;; Add the newly asserted literal to the inverted index.
+             (when (consp lit)
+               (let ((pred (car lit)))
+                 (push lit (gethash (list pred :all) ObservedIndex))
+                 (loop for arg in (cdr lit) for i from 1 do
+                   (push lit (gethash (list pred i arg) ObservedIndex)))))))
          (parse-unit-observations (cdr OBSERVATION-LIST)))))
 
 (defun parse-observations (OBSERVATION-LIST)
@@ -983,35 +994,46 @@ exactly where it was."
        (if (eq var-val :unset) :no-binding var-val)))
     (t :fail)))
 
+(defun collect-candidates (PRED VAR pat-args)
+  "Candidate observed literals for a (collect VAR (PRED . pat-args)) form,
+narrowed via ObservedIndex.  If some pattern position is a definite constraint
+-- an atom other than VAR or * -- look up the (PRED position value) bucket for
+the first such position; otherwise return all literals of PRED.  Every literal
+that can actually match is in the returned list (the caller still verifies the
+full pattern), so this never drops a valid match."
+  (loop for pat in pat-args and i from 1 do
+    (when (and (atom pat) (not (eq pat VAR)) (not (eq pat '*)))
+      (return-from collect-candidates
+        (gethash (list PRED i (parse-term pat)) ObservedIndex))))
+  (gethash (list PRED :all) ObservedIndex))
+
 (defun parse-collect (VAR PATTERN)
   ;; (collect VAR (pred pat+))
-  ;; Iterates over all true observed literals matching PATTERN and returns the
+  ;; Iterates over the true observed literals matching PATTERN and returns the
   ;; set of ground terms that VAR binds to.  Both VAR and * are wildcards;
   ;; other atoms/compounds are evaluated as terms and compared exactly.
+  ;; Candidate literals come from ObservedIndex rather than a full scan.
   (let ((pred (parse-name (car PATTERN)))
         (pat-args (cdr PATTERN))
         (results nil))
-    (maphash
-      (lambda (key val)
-        (when (and (= val 1)
-                   (listp key)
-                   (eq (car key) pred)
-                   (= (length (cdr key)) (length pat-args)))
-          (let ((var-val :unset)
-                (match-ok t))
-            (loop for pat in pat-args and term in (cdr key)
-                  while match-ok do
-              (let ((result (collect-match-term VAR pat term)))
-                (cond
-                  ((eq result :fail) (setq match-ok nil))
-                  ((not (eq result :no-binding))
-                   (if (eq var-val :unset)
-                       (setq var-val result)
-                       (unless (equal var-val result)
-                         (setq match-ok nil)))))))
-            (when (and match-ok (not (eq var-val :unset)))
-              (pushnew var-val results :test #'equal)))))
-      ObservedLiterals)
+    (dolist (key (collect-candidates pred VAR pat-args))
+      (when (and (listp key)
+                 (eq (car key) pred)
+                 (= (length (cdr key)) (length pat-args)))
+        (let ((var-val :unset)
+              (match-ok t))
+          (loop for pat in pat-args and term in (cdr key)
+                while match-ok do
+            (let ((result (collect-match-term VAR pat term)))
+              (cond
+                ((eq result :fail) (setq match-ok nil))
+                ((not (eq result :no-binding))
+                 (if (eq var-val :unset)
+                     (setq var-val result)
+                     (unless (equal var-val result)
+                       (setq match-ok nil)))))))
+          (when (and match-ok (not (eq var-val :unset)))
+            (pushnew var-val results :test #'equal)))))
     (trace-message "[TRACE] COLLECT ~S = ~S~%" VAR results)
     results))
 

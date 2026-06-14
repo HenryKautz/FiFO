@@ -37,24 +37,8 @@
             (implies (Occurs act s)
                (not (Holds flu (+ s 1))))))
 
-      ;; Interfering actions are mutually exclusive.
-      ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
-      ;;   or if a2 adds a negative precondition of a1, where a1 and a2 are not
-      ;;   equal.  Inequality is required because an action may delete its own
-      ;;   precondition or add its own negative precondition.
-      ;;
-      ;; These are indexed by fluent rather than iterated over all action pairs:
-      ;; for each fluent, only the (few) actions that need it conflict with the
-      ;; (few) actions that change it.  This avoids the O(actions^2 x fluents)
-      ;; blowup of quantifying over every pair of actions.
-      (all flu fluents true
-         (all a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true
-            (all a2 (collect a (Del a flu)) (neq a1 a2)
-               (or (not (Occurs a1 s)) (not (Occurs a2 s))))))
-      (all flu fluents true
-         (all a1 (collect a (PreNeg a flu)) true
-            (all a2 (collect a (Add a flu)) (neq a1 a2)
-               (or (not (Occurs a1 s)) (not (Occurs a2 s))))))
+      ;; (Interfering-action mutexes are lifted out of this per-slice loop; see
+      ;; below.)
 
       ;; Frame axioms
       (all flu fluents true
@@ -71,6 +55,28 @@
        (all a actions true
             (all c costs (Cost a c)
                 (Weight (Occurs a s) c)))))
+
+;; Interfering actions are mutually exclusive.
+;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1, or
+;;   if a2 adds a negative precondition of a1, where a1 and a2 are not equal.
+;;   Inequality is required because an action may delete its own precondition or
+;;   add its own negative precondition.
+;;
+;; These are indexed by fluent rather than iterated over all action pairs: for
+;; each fluent, only the (few) actions that need it conflict with the (few) that
+;; change it -- avoiding an O(actions^2 x fluents) blowup.  The interfering pairs
+;; do not depend on the time slice, so the per-fluent collects are done once here
+;; (slice loop innermost) rather than repeated for every slice.
+(all flu fluents true
+   (all a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true
+      (all a2 (collect a (Del a flu)) (neq a1 a2)
+         (all s actslices true
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
+(all flu fluents true
+   (all a1 (collect a (PreNeg a flu)) true
+      (all a2 (collect a (Add a flu)) (neq a1 a2)
+         (all s actslices true
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
 
 ;; Initial state is completely specified
 (all f initial-state true
