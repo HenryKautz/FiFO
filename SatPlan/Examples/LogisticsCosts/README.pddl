@@ -10,10 +10,9 @@
 ;; as a leading (*objective* <n>) atom.  For example:
 ;;     bash SatPlan/planner.sh SatPlan/Examples/LogisticsCosts/pb6.pddl
 ;;
-;; Note: planner.sh minimizes cost AT the smallest feasible horizon, which is not
-;; always the globally cheapest plan -- a longer horizon can be cheaper.  pb7 is
-;; the clearest case (see below): force more slices with --minslices if you want
-;; the cheaper longer plan.
+;; (planner.sh minimizes cost at the smallest feasible horizon; in general a
+;; longer horizon could admit a cheaper plan, but for these examples the smallest
+;; horizon already yields the optimum.)
 ;;
 ;; As in the Logistics domain, city is its own type (not a subtype of location)
 ;; and pddl2fifo compiles the static in-city predicate into an observed predicate,
@@ -24,15 +23,13 @@
 ;;   pb1 (rocket_ext.a)  -- SOLVES.  Airplanes/airports only (no trucks or
 ;;   pb4 (rocket_ext.b)     cities), so the instantiated encoding stays small.
 ;;
-;;   pb6                 -- SOLVES at 5 slices, cost 44.  Two cities, two trucks,
+;;   pb6                 -- SOLVES at 6 slices, cost 44.  Two cities, two trucks,
 ;;                          two airplanes; packages start inside the trucks and
 ;;                          are flown to the other city's airport.  (22 per
 ;;                          package = drive 4 + unload 1 + load 1 + fly 15 +
-;;                          unload 1; 2 packages = 44, and 5 slices suffice.)
-;;   pb7                 -- SOLVES at 5 slices, cost 96.  Same structure with
-;;                          three cities.  Fitting three deliveries into 5 slices
-;;                          forces two extra plane trips (+30); --minslices 6
-;;                          yields the cheaper 6-slice plan at cost 66.
+;;                          unload 1; 2 packages = 44.)
+;;   pb7                 -- SOLVES at 6 slices, cost 66.  Same structure with
+;;                          three cities (3 packages x 22 = 66).
 ;;
 ;;   pb2 (logistics.a)   -- STILL TOO LARGE for a quick demo: full PDDL4J
 ;;   pb3 (logistics.easy)   instances with many trucks, packages, and locations

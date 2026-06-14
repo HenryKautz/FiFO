@@ -1017,31 +1017,49 @@
                         (setq RESULT (parse-expression BODY)))))
     RESULT))
 
+(defun multivar-domain-alias (DOM)
+  "Bind a fresh symbol to the already-evaluated domain DOM and return that symbol.
+The inner quantifiers of an expanded multi-variable form reference the domain by
+this name rather than re-embedding it as (set ...).  Re-embedding would re-parse
+each domain element, re-evaluating any constant in a domain term that happens to
+collide with an outer quantifier variable (now bound) and thereby corrupting the
+term -- e.g. an action term (fly p a1 a2) when the quantifier variable a1 is
+bound.  Referencing a bound domain symbol returns the stored list verbatim."
+  (let ((sym (gensym "MVDOM")))
+    (setf (gethash sym Bind) DOM)
+    sym))
+
 (defun expand-multivar-for (VARLIST DOM TEST BODY)
-  (cond ((null VARLIST) BODY)
-        ((null (cdr VARLIST))
-          `(for ,(car VARLIST) (set ,@DOM) ,TEST ,BODY))
-        (t
-          `(for ,(car VARLIST) (set ,@DOM) t
-                ,(expand-multivar-for (cdr VARLIST) DOM TEST BODY)))))
+  (if (null VARLIST)
+      BODY
+      (let ((d (multivar-domain-alias DOM)))
+        (labels ((build (vars)
+                   (if (null (cdr vars))
+                       `(for ,(car vars) ,d ,TEST ,BODY)
+                       `(for ,(car vars) ,d t ,(build (cdr vars))))))
+          (build VARLIST)))))
 
 
 (defun expand-multivar-all (VARLIST DOM TEST BODY)
-  (cond ((null VARLIST) BODY)
-        ((null (cdr VARLIST))
-          `(all ,(car VARLIST) (set ,@DOM) ,TEST ,BODY))
-        (t
-          `(all ,(car VARLIST) (set ,@DOM) t
-                ,(expand-multivar-all (cdr VARLIST) DOM TEST BODY)))))
+  (if (null VARLIST)
+      BODY
+      (let ((d (multivar-domain-alias DOM)))
+        (labels ((build (vars)
+                   (if (null (cdr vars))
+                       `(all ,(car vars) ,d ,TEST ,BODY)
+                       `(all ,(car vars) ,d t ,(build (cdr vars))))))
+          (build VARLIST)))))
 
 
 (defun expand-multivar-exists (VARLIST DOM TEST BODY)
-  (cond ((null VARLIST) BODY)
-        ((null (cdr VARLIST))
-          `(exists ,(car VARLIST) (set ,@DOM) ,TEST ,BODY))
-        (t
-          `(exists ,(car VARLIST) (set ,@DOM) t
-                   ,(expand-multivar-exists (cdr VARLIST) DOM TEST BODY)))))
+  (if (null VARLIST)
+      BODY
+      (let ((d (multivar-domain-alias DOM)))
+        (labels ((build (vars)
+                   (if (null (cdr vars))
+                       `(exists ,(car vars) ,d ,TEST ,BODY)
+                       `(exists ,(car vars) ,d t ,(build (cdr vars))))))
+          (build VARLIST)))))
 
 (defun is-false (x)
   (or (null x) (and (numberp x) (zerop x))))
