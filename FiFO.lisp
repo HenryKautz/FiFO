@@ -18,6 +18,14 @@
 ;; Default values of options
 (defvar *compact-encoding* t)
 (defvar *tracing* nil)
+
+(defun trace-message (control &rest args)
+  "When *tracing* is set, print a [TRACE] message and flush immediately, so that
+if a long instantiation stalls or exhausts memory the last line printed shows
+exactly where it was."
+  (when *tracing*
+    (apply #'format t control args)
+    (finish-output)))
 ;; SatPlan time horizon read by pddl2fifo-generated wff files. Declared special
 ;; but intentionally left unbound: when unbound the generated alias falls back to
 ;; 2; (option *satplan-numslices* N) or (setq *satplan-numslices* N) sets it.
@@ -676,11 +684,10 @@
              (parse-schema-list (cdr SCHEMA-LIST))))))
 
 (defun parse-schema (SCHEMA)
-  (when *tracing*
-    (cond ((atom SCHEMA)
-           (format t "[TRACE] Formula: ~S~%" SCHEMA))
-          ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
-          (t (format t "[TRACE] Formula: (~A ...)~%" (car SCHEMA)))))
+  (cond ((atom SCHEMA)
+         (trace-message "[TRACE] Formula: ~S~%" SCHEMA))
+        ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
+        (t (trace-message "[TRACE] Formula: (~A ...)~%" (car SCHEMA))))
   (cond ((atom SCHEMA) (parse-formula SCHEMA))
         ((eql (car SCHEMA) 'domain) (parse-domain (cdr SCHEMA)))
         ((eql (car SCHEMA) 'alias) (parse-alias (cdr SCHEMA)))
@@ -721,7 +728,7 @@
             (set opt val))
           ((eql opt '*tracing*)
             (setq *tracing* val)
-            (when *tracing* (format t "[TRACE] Tracing enabled~%")))
+            (trace-message "[TRACE] Tracing enabled~%"))
           ((eql opt '*cnf-format*)
             (unless (member val '(CNF WCNF-OLD WCNF))
               (error "Unknown *cnf-format* ~S; must be CNF, WCNF-OLD, or WCNF" val))
@@ -744,12 +751,12 @@
                        (uiop:merge-pathnames* FILENAME *current-wff-directory*)
                        FILENAME))
          (*current-wff-directory* (uiop:pathname-directory-pathname resolved)))
-    (when *tracing* (format t "[TRACE] Include ~S~%" resolved))
+    (trace-message "[TRACE] Include ~S~%" resolved)
     (parse-schema-list (read-sexprs-from-file resolved))))
 
 (defun parse-domain (DEFINITION)
   (let ((vals (parse-set-expression (cadr DEFINITION))))
-    (when *tracing* (format t "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals))
+    (trace-message "[TRACE] Domain ~S = ~S~%" (car DEFINITION) vals)
     (setf (gethash (car DEFINITION) Bind) vals)
     nil))
 
@@ -876,9 +883,8 @@
               (let ((g (gensym "XX"))) ;; g selects whether L or R must be true
                 (append (mapcar #'(lambda (c) (cons g c)) R)
                         (mapcar #'(lambda (c) (cons (list 'not g) c)) L))))))
-    (when *tracing*
-      (format t "[TRACE] Multiply: ~D x ~D -> ~D clauses~%"
-              (length L) (length R) (length result)))
+    (trace-message "[TRACE] Multiply: ~D x ~D -> ~D clauses~%"
+                   (length L) (length R) (length result))
     result))
 
 (defun merge-clauses (C1 C2)
@@ -914,12 +920,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when *tracing* (format t "[TRACE] ALL ~S = ~S~%" VAR (car DOM)))
+         (trace-message "[TRACE] ALL ~S = ~S~%" VAR (car DOM))
          (append (parse-binding VAR (car DOM) TEST BODY nil)
                  (parse-all VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when *tracing* (format t "[TRACE] ALL ~S over ~S~%" VAR DOM))
+         (trace-message "[TRACE] ALL ~S over ~S~%" VAR DOM)
          (parse-formula (expand-multivar-all VAR DOM TEST BODY)))))
 
 
@@ -927,12 +933,12 @@
   (cond ((NULL Dom) (list nil)) ;; the empty clause
         ;; a single variable is specified
         ((not (listp VAR))
-         (when *tracing* (format t "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM)))
+         (trace-message "[TRACE] EXISTS ~S = ~S~%" VAR (car DOM))
          (multiply-clauses (parse-binding VAR (car DOM) TEST BODY (list nil))
                            (parse-exists VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when *tracing* (format t "[TRACE] EXISTS ~S over ~S~%" VAR DOM))
+         (trace-message "[TRACE] EXISTS ~S over ~S~%" VAR DOM)
          (parse-formula (expand-multivar-exists VAR DOM TEST BODY)))))
 
 
@@ -940,12 +946,12 @@
   (cond ((null DOM) nil) ;; the empty list of clauses
         ;; a single variable is specified
         ((not (listp VAR))
-         (when *tracing* (format t "[TRACE] FOR ~S = ~S~%" VAR (car DOM)))
+         (trace-message "[TRACE] FOR ~S = ~S~%" VAR (car DOM))
          (append (parse-expression-binding VAR (car DOM) TEST BODY nil)
                  (parse-for VAR (cdr DOM) TEST BODY)))
         ;; a list of variables is specified
         (t
-         (when *tracing* (format t "[TRACE] FOR ~S over ~S~%" VAR DOM))
+         (trace-message "[TRACE] FOR ~S over ~S~%" VAR DOM)
          (parse-expression (expand-multivar-for VAR DOM TEST BODY)))))
 
 (defun collect-match-term (VAR pat term)
@@ -1006,7 +1012,7 @@
             (when (and match-ok (not (eq var-val :unset)))
               (pushnew var-val results :test #'equal)))))
       ObservedLiterals)
-    (when *tracing* (format t "[TRACE] COLLECT ~S = ~S~%" VAR results))
+    (trace-message "[TRACE] COLLECT ~S = ~S~%" VAR results)
     results))
 
 (defun parse-expression-binding (VAR VAL TEST BODY FAILED-TEST-RESULT)

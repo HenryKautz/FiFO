@@ -42,12 +42,19 @@
       ;;   or if a2 adds a negative precondition of a1, where a1 and a2 are not
       ;;   equal.  Inequality is required because an action may delete its own
       ;;   precondition or add its own negative precondition.
-      (all (a1 a2) actions (neq a1 a2)
-         (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
-      (all (a1 a2) actions (neq a1 a2)
-         (all flu fluents (and (PreNeg a1 flu) (Add a2 flu))
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+      ;;
+      ;; These are indexed by fluent rather than iterated over all action pairs:
+      ;; for each fluent, only the (few) actions that need it conflict with the
+      ;; (few) actions that change it.  This avoids the O(actions^2 x fluents)
+      ;; blowup of quantifying over every pair of actions.
+      (all flu fluents true
+         (all a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true
+            (all a2 (collect a (Del a flu)) (neq a1 a2)
+               (or (not (Occurs a1 s)) (not (Occurs a2 s))))))
+      (all flu fluents true
+         (all a1 (collect a (PreNeg a flu)) true
+            (all a2 (collect a (Add a flu)) (neq a1 a2)
+               (or (not (Occurs a1 s)) (not (Occurs a2 s))))))
 
       ;; Frame axioms
       (all flu fluents true
