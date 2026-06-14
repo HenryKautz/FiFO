@@ -36,6 +36,11 @@
     "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
+(defparameter *static-dummy* 'pddl2fifo-static-dummy
+  "A constant that appears in no object/type domain, used to register a static
+observed predicate even when it has no true instances.  Like satplan.wff's dummy
+facts, such a dummy fact generates no clauses.")
+
 ;;; PDDL reading and access helpers
 
 (defun sym-name= (x name)
@@ -202,10 +207,54 @@ grouping consecutive parameters that share a domain."
             (list 'all group dom 'true inner)
             (list 'all (first group) dom 'true inner)))))
 
+;;; Static predicates
+;;;
+;;; A predicate that never appears in any action's add or delete effect is
+;;; static: its truth value is fixed by the initial state.  Such a predicate is
+;;; turned into an observed predicate -- its positive instances are asserted as
+;;; observations (from the initial state) and its preconditions become an
+;;; instantiation-time guard rather than time-indexed Holds fluents.
+
+(defun action-effect-predicates (action-form)
+  "Predicate names appearing in the add/delete effects of ACTION-FORM."
+  (let ((effect (getf (cddr action-form) :effect)) (preds '()))
+    (dolist (e (conjuncts effect) preds)
+      (cond ((and (consp e) (sym-name= (first e) "INCREASE")) nil)
+            ((and (negation-p e) (consp (second e)))
+             (pushnew (first (second e)) preds :test #'sym-name=))
+            ((consp e)
+             (pushnew (first e) preds :test #'sym-name=))))))
+
+(defun collect-effect-predicates (domain-def)
+  "All predicate names that appear in some action's add or delete effect."
+  (let ((preds '()))
+    (dolist (s (define-sections domain-def) preds)
+      (when (and (consp s) (eq (first s) :action))
+        (dolist (p (action-effect-predicates s))
+          (pushnew p preds :test #'sym-name=))))))
+
+(defun static-predicate-p (name effect-preds)
+  "True if NAME never appears in an add/delete effect (so it is static)."
+  (not (member name effect-preds :test #'sym-name=)))
+
+(defun collect-static-predicate-arities (domain-def effect-preds)
+  "Alist (predicate-name . arity) for the static predicates that appear in some
+action precondition."
+  (let ((arities '()))
+    (dolist (s (define-sections domain-def) arities)
+      (when (and (consp s) (eq (first s) :action))
+        (dolist (p (conjuncts (getf (cddr s) :precondition)))
+          (let ((atom (if (negation-p p) (second p) p)))
+            (when (and (consp atom) (static-predicate-p (first atom) effect-preds))
+              (unless (assoc (first atom) arities :test #'sym-name=)
+                (push (cons (first atom) (length (rest atom))) arities)))))))))
+
 ;;; Translation
 
-(defun translate-action (action-form forbidden)
-  "Translate one (:action ...) form into an observed FiFO formula.
+(defun translate-action (action-form forbidden effect-preds)
+  "Translate one (:action ...) form into an observed FiFO formula.  Preconditions
+on static predicates (those not in EFFECT-PREDS) become an (if ...) guard rather
+than Pre/PreNeg facts.
 Returns (values formula has-negative-preconditions-p parameter-types)."
   (destructuring-bind (key name &rest body) action-form
     (declare (ignore key))
@@ -225,12 +274,21 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                      param-pairs))
            (vars (mapcar #'cdr bindings))
            (act (if vars (cons name vars) name))
-           (pre+ '()) (pre- '()) (adds '()) (dels '()) (cost nil))
+           (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil))
       (dolist (p (conjuncts precondition))
         (cond ((negation-p p)
-               (push (substitute-terms (second p) bindings name) pre-))
+               (let ((atom (second p)))
+                 (unless (consp atom)
+                   (error "Cannot translate precondition ~s of action ~a" p name))
+                 (let ((subst (substitute-terms atom bindings name)))
+                   (if (static-predicate-p (first atom) effect-preds)
+                       (push (list 'not subst) guard)
+                       (push subst pre-)))))
               ((consp p)
-               (push (substitute-terms p bindings name) pre+))
+               (let ((subst (substitute-terms p bindings name)))
+                 (if (static-predicate-p (first p) effect-preds)
+                     (push subst guard)
+                     (push subst pre+))))
               (t (error "Cannot translate precondition ~s of action ~a" p name))))
       (dolist (e (conjuncts effect))
         (cond ((and (consp e) (sym-name= (first e) "INCREASE"))
@@ -254,7 +312,13 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                       (mapcar (lambda (f) (list 'add act f)) (nreverse adds))
                       (mapcar (lambda (f) (list 'del act f)) (nreverse dels))
                       (when cost (list (list 'cost act cost)))))
-             (conj (if (rest facts) (cons 'and facts) (first facts)))
+             (conj0 (if (rest facts) (cons 'and facts) (first facts)))
+             ;; Gate the action's facts on its static preconditions: when the
+             ;; guard is false (an observed static atom does not hold) the (if ...)
+             ;; expands to nothing, pruning that ground action at instantiation.
+             (conj (if guard
+                       (list 'if (cons 'and (nreverse guard)) conj0)
+                       conj0))
              (quants (mapcar (lambda (b p)
                                (cons (cdr b) (type-set-expression (cdr p))))
                              bindings param-pairs)))
@@ -326,6 +390,14 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                (forbidden (append all-objects
                                   (mapcar #'car type-table)
                                   *reserved-domain-names*))
+               (effect-preds (collect-effect-predicates domain-def))
+               (static-arities (collect-static-predicate-arities domain-def effect-preds))
+               ;; Split the initial state: static-predicate facts become
+               ;; observations; the rest are time-indexed fluents (initial-state).
+               (static-init (remove-if-not
+                              (lambda (f) (static-predicate-p (first f) effect-preds)) init))
+               (dynamic-init (remove-if
+                               (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (types-used '())
                (action-forms '())
                (any-neg-pre nil))
@@ -340,7 +412,7 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
           (dolist (s (define-sections domain-def))
             (when (and (consp s) (eq (first s) :action))
               (multiple-value-bind (form negp param-types)
-                  (translate-action s forbidden)
+                  (translate-action s forbidden effect-preds)
                 (push form action-forms)
                 (when negp (setq any-neg-pre t))
                 (dolist (tp param-types)
@@ -386,13 +458,25 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                           `(domain ,tp (set ,@members))
                           ;; FiFO sets cannot be literally empty
                           `(domain ,tp (set-difference objects objects)))))))
+              (when (or static-arities static-init)
+                (terpri out)
+                (format out ";; Static predicates (never added or deleted): observed,~%")
+                (format out ";; with all positive instances from the initial state.  The~%")
+                (format out ";; dummy facts only register each predicate as observed.~%")
+                (write-form out
+                  `(observed
+                     ,@(mapcar (lambda (pa)
+                                 (cons (car pa)
+                                       (make-list (cdr pa) :initial-element *static-dummy*)))
+                               static-arities)
+                     ,@static-init)))
               (terpri out)
               (format out ";; Action preconditions, effects, and costs~%")
               (write-form out `(observed ,@action-forms))
               (terpri out)
               (format out ";; Initial and goal states~%")
-              (when init
-                (write-form out `(domain initial-state (set ,@init))))
+              (when dynamic-init
+                (write-form out `(domain initial-state (set ,@dynamic-init))))
               (when goal+
                 (write-form out `(domain goal-state (set ,@goal+))))
               (when goal-
@@ -413,13 +497,13 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (when any-neg-pre '((collect f (preneg * f))))
                               '((collect f (add * f))
                                 (collect f (del * f)))
-                              (when init '(initial-state))
+                              (when dynamic-init '(initial-state))
                               (when goal+ '(goal-state))
                               (when goal- '(negative-goal-state))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
-              (unless init
+              (unless dynamic-init
                 (write-form out '(domain initial-state (set-difference fluents fluents))))
               (unless goal+
                 (write-form out '(domain goal-state (set-difference fluents fluents))))

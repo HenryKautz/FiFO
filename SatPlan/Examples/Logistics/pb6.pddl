@@ -7,10 +7,9 @@
 ;; action slices (6 time slices):
 ;;   1 drive->airport  2 unload-truck  3 load-airplane  4 fly  5 unload-airplane
 ;;
-;; Two cities (not three) keeps this small enough for FiFO: with the corrected
-;; domain (city is no longer a subtype of location) it instantiates to ~11.6k
-;; clauses in ~2 seconds.  The three-city version (pb7) is ~113k clauses / ~1
-;; minute, which is impractical.
+;; A small two-city example (pb7 is the three-city version).  With city no longer
+;; a subtype of location and the static in-city predicate compiled to an observed
+;; predicate, this instantiates to ~4.5k clauses in ~2 seconds.
 
 (define (problem pb6)
   (:domain logistics)
