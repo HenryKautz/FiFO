@@ -29,11 +29,11 @@
 ;;;; example of the output form.
 
 (defparameter *supported-requirements*
-  '(:strips :typing :negative-preconditions :action-costs))
+  '(:strips :typing :negative-preconditions :disjunctive-preconditions :action-costs))
 
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
-    "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "NUMSLICES")
+    "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "GOAL-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
 (defparameter *static-dummy* 'pddl2fifo-static-dummy
@@ -316,28 +316,90 @@ costs."
                         (mapcar (lambda (a) (reachability-ground-substitute a binding)) adds))
                   result)))))))
 
-(defun reachable-min-slices (domain-def object-pairs type-table init goal+)
-  "Lower bound on numslices from relaxed planning-graph reachability.  Returns an
-integer >= 2, or :unreachable if the positive goals are unreachable even in the
-relaxation (so the problem is unsolvable)."
-  (if (null goal+)
-      2
-      (let ((actions (relaxed-ground-actions domain-def object-pairs type-table))
-            (reachable (make-hash-table :test #'equal))
-            (level 0))
-        (dolist (f init) (setf (gethash f reachable) t))
-        (loop
-          (when (every (lambda (g) (gethash g reachable)) goal+)
-            (return (max 2 (1+ level))))
-          (let ((changed nil))
-            (dolist (ga actions)
-              (when (every (lambda (p) (gethash p reachable)) (car ga))
-                (dolist (a (cdr ga))
-                  (unless (gethash a reachable)
-                    (setf (gethash a reachable) t)
-                    (setq changed t)))))
-            (unless changed (return :unreachable))
-            (incf level))))))
+;;; Goals
+;;;
+;;; A goal description is a literal (an atom or (not atom)) or a combination with
+;;; and / or / not / imply.  A "simple" goal -- a conjunction of literals -- is
+;;; handled by the goal-state / negative-goal-state domains; anything using or or
+;;; imply (or nesting) is emitted as a direct FiFO formula instead.
+
+(defun goal-connective-p (sym)
+  (and (symbolp sym)
+       (member sym '("AND" "OR" "NOT" "IMPLY" "FORALL" "EXISTS") :test #'sym-name=)))
+
+(defun goal-atom-p (g)
+  "True if G is an atomic goal (a predicate application, not a connective)."
+  (and (consp g) (not (goal-connective-p (first g)))))
+
+(defun goal-literal-p (g)
+  (if (negation-p g) (goal-atom-p (second g)) (goal-atom-p g)))
+
+(defun simple-goal-p (g)
+  "True if G is a conjunction of literals (the goal-state/negative-goal-state form)."
+  (cond ((null g) t)
+        ((and (consp g) (sym-name= (first g) "AND")) (every #'goal-literal-p (rest g)))
+        (t (goal-literal-p g))))
+
+(defun collect-goal-fluents (g)
+  "All atomic fluents appearing anywhere in goal G (regardless of polarity)."
+  (cond ((null g) '())
+        ((negation-p g) (collect-goal-fluents (second g)))
+        ((and (consp g) (or (sym-name= (first g) "AND")
+                            (sym-name= (first g) "OR")
+                            (sym-name= (first g) "IMPLY")))
+         (remove-duplicates (mapcan #'collect-goal-fluents (rest g)) :test #'equal))
+        ((consp g) (list g))
+        (t '())))
+
+(defun translate-goal-formula (g)
+  "Translate a PDDL goal description G into a FiFO formula asserting it at the
+final time slice: atoms become (holds <atom> numslices), with and/or/not/imply
+mapped to the FiFO connectives."
+  (cond ((negation-p g) (list 'not (translate-goal-formula (second g))))
+        ((and (consp g) (sym-name= (first g) "AND"))
+         (cons 'and (mapcar #'translate-goal-formula (rest g))))
+        ((and (consp g) (sym-name= (first g) "OR"))
+         (cons 'or (mapcar #'translate-goal-formula (rest g))))
+        ((and (consp g) (sym-name= (first g) "IMPLY"))
+         (list 'implies (translate-goal-formula (second g)) (translate-goal-formula (third g))))
+        ((consp g) (list 'holds g 'numslices))
+        (t (error "Cannot translate goal ~s" g))))
+
+(defun goal-satisfiable-relaxed-p (g reachable)
+  "Whether goal G can be satisfied given the REACHABLE atom set, for the relaxed
+reachability analysis.  Negative and implicative subgoals are treated
+optimistically (assumed satisfiable), which keeps the resulting bound admissible."
+  (cond ((null g) t)
+        ((negation-p g) t)
+        ((and (consp g) (sym-name= (first g) "AND"))
+         (every (lambda (x) (goal-satisfiable-relaxed-p x reachable)) (rest g)))
+        ((and (consp g) (sym-name= (first g) "OR"))
+         (some (lambda (x) (goal-satisfiable-relaxed-p x reachable)) (rest g)))
+        ((and (consp g) (sym-name= (first g) "IMPLY")) t)
+        ((consp g) (gethash g reachable))
+        (t t)))
+
+(defun reachable-min-slices (domain-def object-pairs type-table init goal)
+  "Lower bound on numslices from relaxed planning-graph reachability.  GOAL is the
+raw goal description (so disjunctive goals are handled: a disjunct that becomes
+satisfiable earlier lowers the bound).  Returns an integer >= 2, or :unreachable
+if the goal is unreachable even in the relaxation (so the problem is unsolvable)."
+  (let ((actions (relaxed-ground-actions domain-def object-pairs type-table))
+        (reachable (make-hash-table :test #'equal))
+        (level 0))
+    (dolist (f init) (setf (gethash f reachable) t))
+    (loop
+      (when (goal-satisfiable-relaxed-p goal reachable)
+        (return (max 2 (1+ level))))
+      (let ((changed nil))
+        (dolist (ga actions)
+          (when (every (lambda (p) (gethash p reachable)) (car ga))
+            (dolist (a (cdr ga))
+              (unless (gethash a reachable)
+                (setf (gethash a reachable) t)
+                (setq changed t)))))
+        (unless changed (return :unreachable))
+        (incf level)))))
 
 ;;; Translation
 
@@ -417,8 +479,9 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                 (mapcar #'cdr param-pairs))))))
 
 (defun parse-problem (problem-def)
-  "Returns (values domain-name object-pairs init goal+ goal-), where
-object-pairs is an alist of (object . type)."
+  "Returns (values domain-name object-pairs init goal+ goal- goal), where
+object-pairs is an alist of (object . type).  goal+/goal- are filled only for a
+simple (conjunction-of-literals) goal; goal is always the raw goal description."
   (let ((object-pairs (parse-typed-list (rest (get-section problem-def :objects))
                                         ":objects"))
         (init-section (rest (get-section problem-def :init)))
@@ -432,11 +495,14 @@ object-pairs is an alist of (object . type)."
              nil)                  ; redundant under the closed-world assumption
             ((consp f) (push f init))
             (t (error "Cannot translate init fact ~s" f))))
-    (dolist (g (conjuncts goal))
-      (cond ((negation-p g) (push (second g) goal-))
-            ((consp g) (push g goal+))
-            (t (error "Cannot translate goal ~s" g))))
-    (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-))))
+    ;; Split a conjunction of literals into positive/negative goal sets; a
+    ;; disjunctive/nested goal is left to the caller as the raw GOAL.
+    (when (simple-goal-p goal)
+      (dolist (g (conjuncts goal))
+        (cond ((negation-p g) (push (second g) goal-))
+              ((consp g) (push g goal+))
+              (t (error "Cannot translate goal ~s" g)))))
+    (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-) goal)))
 
 ;;; Output
 
@@ -455,7 +521,7 @@ the generated wff, so use e.g. \"../satplan.wff\" when the problem lives in a
 subdirectory below satplan.wff.  Returns the pathname of the wff file written."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
-    (multiple-value-bind (domain-name object-pairs init goal+ goal-)
+    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal)
         (parse-problem problem-def)
       (unless (or domain-file domain-name)
         (error "No domain file given and no (:domain ...) form in ~a" problem-path))
@@ -488,8 +554,12 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (dynamic-init (remove-if
                                (lambda (f) (static-predicate-p (first f) effect-preds)) init))
+               ;; A goal using or/imply (or nesting) is emitted as a direct
+               ;; formula rather than the goal-state/negative-goal-state domains.
+               (general-goal (not (simple-goal-p goal)))
+               (goal-fluents (when general-goal (collect-goal-fluents goal)))
                ;; Reachability lower bound on the horizon (see reachable-min-slices).
-               (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal+))
+               (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
                (types-used '())
                (action-forms '())
                (any-neg-pre nil))
@@ -573,6 +643,14 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (write-form out `(domain goal-state (set ,@goal+))))
               (when goal-
                 (write-form out `(domain negative-goal-state (set ,@goal-))))
+              ;; For a disjunctive/nested goal, gather its fluents so they get
+              ;; Holds variables and frame axioms; the goal itself is asserted as
+              ;; a direct formula below (and goal-state is left empty).
+              (when general-goal
+                (write-form out
+                  (if goal-fluents
+                      `(domain goal-fluents (set ,@goal-fluents))
+                      '(domain goal-fluents (set-difference fluents fluents)))))
               (terpri out)
               (format out ";; Domains derived from the observed action schemas~%")
               (write-form out
@@ -591,7 +669,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                                 (collect f (del * f)))
                               (when dynamic-init '(initial-state))
                               (when goal+ '(goal-state))
-                              (when goal- '(negative-goal-state))))))
+                              (when goal- '(negative-goal-state))
+                              (when general-goal '(goal-fluents))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
@@ -604,6 +683,10 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (format out ";; Negative goals~%")
                 (write-form out
                   '(all f negative-goal-state true (not (holds f numslices)))))
+              (when general-goal
+                (terpri out)
+                (format out ";; Goal (disjunctive/nested) asserted directly at the final slice~%")
+                (write-form out (translate-goal-formula goal)))
               (terpri out)
               (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))
