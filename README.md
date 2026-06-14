@@ -720,17 +720,8 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
             (implies (Occurs act s)
                (not (Holds flu (+ s 1))))))
 
-      ;; Interfering actions are mutually exclusive.
-      ;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1,
-      ;;   or if a2 adds a negative precondition of a1, where a1 and a2 are not
-      ;;   equal.  Inequality is required because an action may delete its own
-      ;;   precondition or add its own negative precondition.
-      (all (a1 a2) actions (neq a1 a2)
-         (all flu fluents (and (or (Pre a1 flu) (Add a1 flu)) (Del a2 flu))
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
-      (all (a1 a2) actions (neq a1 a2)
-         (all flu fluents (and (PreNeg a1 flu) (Add a2 flu))
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))
+      ;; (Interfering-action mutexes are lifted out of this per-slice loop; see
+      ;; below.)
 
       ;; Frame axioms
       (all flu fluents true
@@ -748,6 +739,26 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
             (all c costs (Cost a c)
                 (Weight (Occurs a s) c)))))
 
+;; Interfering actions are mutually exclusive.
+;;   a2 interferes with a1 if a2 deletes a precondition or add-effect of a1, or
+;;   if a2 adds a negative precondition of a1, where a1 and a2 are not equal.
+;;
+;; These are indexed by fluent rather than iterated over all action pairs: for
+;; each fluent, only the (few) actions that need it conflict with the (few) that
+;; change it -- avoiding an O(actions^2 x fluents) blowup.  The interfering pairs
+;; do not depend on the time slice, so the per-fluent collects are done once here
+;; (slice loop innermost) rather than repeated for every slice.
+(all flu fluents true
+   (all a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true
+      (all a2 (collect a (Del a flu)) (neq a1 a2)
+         (all s actslices true
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
+(all flu fluents true
+   (all a1 (collect a (PreNeg a flu)) true
+      (all a2 (collect a (Add a flu)) (neq a1 a2)
+         (all s actslices true
+            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
+
 ;; Initial state is completely specified
 (all f initial-state true
    (Holds f 1))
@@ -763,95 +774,41 @@ The `observed` block at the top registers the five observed predicates so that t
 
 The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other, or if one adds a negative precondition of the other.
 
+The interference mutexes are written **indexed by fluent**: for each fluent, the actions that need it (`Pre`/`Add`, or `PreNeg`) are paired with the actions that change it (`Del`, or `Add`), gathered with `collect`. This generates exactly the interfering pairs without quantifying over every pair of actions, which would be O(actions² × fluents). They are also kept **outside the per-slice loop** (with the slice quantifier innermost), because the interfering pairs are the same at every step — so the per-fluent `collect`s run once rather than once per time slice. Together these let the encoding scale to many time steps.
+
 **Negative preconditions** are expressed with `(PreNeg action fluent)`, meaning the action requires the fluent to be false. An action occurrence implies its negative preconditions are false at that time step, and an action may add its own negative precondition, just as an action may delete its own positive precondition. Fluents appearing in `PreNeg` facts must be included in the `fluents` domain.
 
 The **frame axioms** ensure that fluents persist across time steps unless an action explicitly changes them. They are encoded as explanatory frame axioms: if a fluent changes value, some action must be responsible.
 
 The **cost axioms** use `Weight` (FiFO's weighted MaxSAT mechanism) to assign a cost to each action occurrence. Minimizing total weight then yields a minimum-cost plan.
 
-### Example: Logistics Domain
+### Example: a small logistics problem
 
-The file `SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff` encodes a logistics planning problem: packages must be transported between places using trucks. A truck can drive between any two places in one step; packages are loaded onto and unloaded from trucks.
+The bundled examples under `SatPlan/Examples/` are written in PDDL and translated to FiFO by `pddl2fifo` (below) rather than hand-written. The smallest, `SatPlan/Examples/Logistics/pb6.pddl`, is a two-city logistics problem: each city has an ordinary location and an airport, a truck (holding a package) and an airplane; each package must be delivered to the *other* city's airport.
 
 ```lisp
-;; SatPlan Logistics Problem
-
-;; Time horizon
-(alias numslices 6)
-(domain slices (range 1 numslices))
-(domain actslices (range 1 (- numslices 1)))
-
-(alias numpackages 3)
-(alias numtrucks 2)
-(alias numplaces 3)
-
-(domain packages (for i (range 1 numpackages) true (set (package i))))
-(domain trucks   (for i (range 1 numtrucks)   true (set (truck i))))
-(domain places   (for i (range 1 numplaces)   true (set (place i))))
-
-(observed
-   (all tr trucks true
-      (all pl places true
-         (all pk packages true
-            (and (Pre (load pk tr pl) (at tr pl))
-               (Pre (load pk tr pl) (at pk pl))
-               (Pre (unload pk tr pl) (in pk tr))
-               (Pre (unload pk tr pl) (at tr pl))
-               (Add (load pk tr pl) (in pk tr))
-               (Add (unload pk tr pl) (at pk pl))
-               (Del (load pk tr pl) (at pk pl))
-               (Del (unload pk tr pl) (in pk tr))
-               (Cost (load pk tr pl) 0.7)
-               (Cost (unload pk tr pl) 0.5)))))
-
-   (all tr trucks true
-      (all (pl1 pl2) places (neq pl1 pl2)
-         (and (Pre (drive tr pl1 pl2) (at tr pl1))
-            (Add (drive tr pl1 pl2) (at tr pl2))
-            (Del (drive tr pl1 pl2) (at tr pl1))
-            (Cost (drive tr pl1 pl2) 4.5)))))
-
-;; Initial and goal states
-
-(domain initial-state
-   (set
-      (at (package 1) (place 1))
-      (at (package 2) (place 2))
-      (at (package 3) (place 3))
-      (at (truck 1) (place 1))
-      (at (truck 2) (place 2))))
-
-(domain goal-state
-   (set
-      (at (package 1) (place 2))
-      (at (package 3) (place 2))
-      (at (package 2) (place 1))))
-
-;; Derive action, fluent, and cost domains from the observed schemas
-(domain actions (collect act (Pre act *)))
-(domain fluents (collect fl  (Pre * fl)))
-(domain costs   (collect c   (Cost * c)))
-
-(include "satplan.wff")
+(define (problem pb6)
+  (:domain logistics)
+  (:requirements :strips :typing)
+  (:objects
+     pkg1 pkg2   - package
+     t1 t2       - truck
+     p1 p2       - airplane
+     l1 l2       - location
+     a1 a2       - airport
+     c1 c2       - city)
+  (:init
+     (in-city l1 c1) (in-city a1 c1)
+     (in-city l2 c2) (in-city a2 c2)
+     (at t1 l1) (at t2 l2)
+     (at p1 a1) (at p2 a2)
+     (in pkg1 t1) (in pkg2 t2))
+  (:goal (and (at pkg1 a2) (at pkg2 a1))))
 ```
 
-The `observed` block defines the action schemas. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the SatPlan axioms in `satplan.wff` can use them as tests in quantified filters (e.g., `(all flu fluents (Pre act flu) ...)`), generating clauses only for relevant fluent–action pairs rather than all combinations.
+`pddl2fifo` turns this into exactly the FiFO encoding described above: an `observed` block of `Pre`/`Add`/`Del`/`Cost` facts for each ground action, the `actions`/`fluents`/`costs` domains derived from those facts with `collect`, the `initial-state` and `goal-state` domains, and a trailing `(include "satplan.wff")`. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the axioms use them as tests in quantified filters (e.g. `(all flu fluents (Pre act flu) ...)`), generating clauses only for relevant fluent–action pairs.
 
-The `collect` forms derive the `actions`, `fluents`, and `costs` domains directly from the observed schemas, so there is no need to enumerate them manually. They must appear *after* the `observed` block so that `ObservedLiterals` is fully populated when they are evaluated. `collect` scans all true observed literals matching the pattern and returns the set of ground terms bound to the variable; `*` is an anonymous wildcard.
-
-### Running the Logistics Example
-
-To instantiate (expand to symbolic CNF):
-
-```sh
-sbcl --load FiFO.lisp --eval '(instantiate "SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")' --eval '(quit)'
-```
-
-To solve end-to-end:
-
-```sh
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")' --eval '(quit)'
-```
+The optimal plan runs the two deliveries in lockstep over five parallel action slices (drive → unload-truck → load-airplane → fly → unload-airplane), so it solves at a horizon of six time slices.
 
 ### Translating PDDL to FiFO with pddl2fifo
 
@@ -879,25 +836,32 @@ If the domain file is not given, the root of its file name is taken from the `(:
 The translation is written to `<problem-root>.wff` in the directory of the problem file. The output:
 
 - Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `observed` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
-- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`, as in `logistics-hand-encoding.wff`.
+- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`.
 - Emits the time horizon as `(alias numslices (lisp ...))`, which evaluates to the Lisp variable `*satplan-numslices*` when it is bound to an integer and otherwise to `2`. Set the horizon without editing the output by binding `*satplan-numslices*` — e.g. `(setq *satplan-numslices* 10)` on the command line before `solve`/`instantiate`, or `(option *satplan-numslices* 10)` ahead of the alias — or edit the alias line directly.
 - Ends with `(include "satplan.wff")` (or whatever `:satplan-path` was given), so the SatPlan axiom file must be reachable from the directory containing the output file.
 
 Negative preconditions are translated into `PreNeg` observed facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
 
-Two example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs:
+Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs. The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` is a logistics task using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`).
+
+### Running the planner
+
+`SatPlan/planner.sh` is an end-to-end driver. It translates a PDDL problem with `pddl2fifo` (or takes a `.wff` directly), then **searches for the smallest workable time horizon** and solves at it. At each horizon it instantiates the problem and tests feasibility with a pure SAT solver; if the domain has action costs, it then re-solves the smallest feasible horizon with a weighted (MaxSAT) solver to minimize total cost. The two solvers are configured at the top of the script (`kissat` and `tt-open-wbo-inc-Glucose4_1` by default).
 
 ```sh
-sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/Switch/switchprob.pddl" :satplan-path "../../satplan.wff")' --eval '(quit)'
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/Switch/switchprob.wff")' --eval '(quit)'
+# search horizons 2..6 (the defaults) for the smallest plan
+bash SatPlan/planner.sh SatPlan/Examples/Logistics/pb6.pddl
+
+# the switch problem -- has costs, so the weighted solver minimizes total cost
+bash SatPlan/planner.sh SatPlan/Examples/Switch/switchprob.pddl
+
+# the typed trucklog problem
+bash SatPlan/planner.sh SatPlan/Examples/TruckLog/trucklogprob.pddl
 ```
 
-The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` encodes the same logistics task as `SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff` using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`):
+`--minslices`/`--maxslices` bound the horizon search (defaults 2 and 6), `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
 
-```sh
-sbcl --load SatPlan/pddl2fifo.lisp --eval '(pddl2fifo "SatPlan/Examples/TruckLog/trucklogprob.pddl" :satplan-path "../../satplan.wff")' --eval '(quit)'
-sbcl --load FiFO.lisp --eval '(solve "SatPlan/Examples/TruckLog/trucklogprob.wff")' --eval '(quit)'
-```
+The logic lives in `SatPlan/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path)` runs the search and returns the status, horizon, and answer-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `FiFO.lisp`, `SatPlan/pddl2fifo.lisp`, and `SatPlan/planner.lisp` to call them from a Lisp listener.
 
 Schema BNF
 ----------
@@ -995,10 +959,10 @@ def fifo_solve(wff_path):
         lines = f.read().splitlines()
     return lines[0], lines[1:]     # "SAT"/"UNSAT"/..., literals
 
-status, literals = fifo_solve("SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff")
+status, literals = fifo_solve("SatPlan/Examples/Switch/switchprob.wff")
 ```
 
-Each literal line is an s-expression such as `(OCCURS (LOAD (PACKAGE 1) (TRUCK 1) (PLACE 1)) 1)`. The small `sexpdata` library (`pip install sexpdata`) parses these into nested Python lists:
+Each literal line is an s-expression such as `(OCCURS (TURN-ON S2) 1)`. The small `sexpdata` library (`pip install sexpdata`) parses these into nested Python lists:
 
 ```python
 import sexpdata
@@ -1024,7 +988,7 @@ clauses = lisp.eval(('parse', ('quote',
 # => List(List(Symbol("OR"), List(Symbol("P"), Symbol("B"))),
 #         List(Symbol("OR"), List(Symbol("P"), Symbol("A"))))
 
-lisp.eval(('solve', '"SatPlan/Examples/HandEncodings/logistics-hand-encoding.wff"'))
+lisp.eval(('solve', '"SatPlan/Examples/Switch/switchprob.wff"'))
 ```
 
 cl4py converts data between the languages automatically, but note which Python type maps to which Lisp type:
