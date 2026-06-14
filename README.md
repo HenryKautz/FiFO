@@ -842,6 +842,8 @@ The translation is written to `<problem-root>.wff` in the directory of the probl
 
 Negative preconditions are translated into `PreNeg` observed facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
 
+`pddl2fifo` also runs a relaxed planning-graph reachability analysis on the problem and returns, as a second value, a lower bound on the number of time slices a plan needs (or `:unreachable` if the goals cannot be reached even in the relaxation). The planner uses this to choose its default horizon range; see *Running the planner* below.
+
 Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs. The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` is a logistics task using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`).
 
 ### Running the planner
@@ -859,7 +861,7 @@ bash SatPlan/planner.sh SatPlan/Examples/Switch/switchprob.pddl
 bash SatPlan/planner.sh SatPlan/Examples/TruckLog/trucklogprob.pddl
 ```
 
-`--minslices`/`--maxslices` bound the horizon search (defaults 2 and 6), `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
+`--minslices`/`--maxslices` bound the horizon search, `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly. When the bounds are omitted, `pddl2fifo` runs a relaxed planning-graph **reachability analysis** (ignoring delete effects and negative preconditions) to compute a lower bound on the horizon: `--minslices` defaults to that bound (2 for a `.wff`, which has no PDDL to analyze) and `--maxslices` defaults to twice `--minslices`. If the reachability analysis shows the goals are unreachable even in the relaxation, the problem is reported unsolvable without any search. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
 
 The logic lives in `SatPlan/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path)` runs the search and returns the status, horizon, and answer-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `FiFO.lisp`, `SatPlan/pddl2fifo.lisp`, and `SatPlan/planner.lisp` to call them from a Lisp listener.
 

@@ -249,6 +249,96 @@ action precondition."
               (unless (assoc (first atom) arities :test #'sym-name=)
                 (push (cons (first atom) (length (rest atom))) arities)))))))))
 
+;;; Reachability analysis
+;;;
+;;; A relaxed planning-graph analysis gives a lower bound on the number of time
+;;; slices a plan needs.  Ignoring delete effects and negative preconditions
+;;; (both of which only make more reachable), build successive fluent layers:
+;;; layer 0 is the initial state; each next layer adds the add-effects of every
+;;; ground action whose positive preconditions hold in the current layer.  The
+;;; first layer at which all positive goals appear is a lower bound on the
+;;; parallel plan length, so numslices >= that layer + 1.  If the goals never
+;;; appear (the layers reach a fixpoint without them), even the relaxed problem
+;;; is unsolvable, hence so is the real one.
+
+(defun reachability-cartesian (lists)
+  "All tuples drawing one element from each list in LISTS."
+  (if (null lists)
+      (list '())
+      (let ((rest (reachability-cartesian (cdr lists))))
+        (mapcan (lambda (x) (mapcar (lambda (r) (cons x r)) rest)) (car lists)))))
+
+(defun reachability-param-objects (type object-pairs type-table)
+  "Objects that can fill a parameter of TYPE (a type name or an (either ...))."
+  (if (either-type-p type)
+      (remove-duplicates
+        (mapcan (lambda (tc) (copy-list (objects-of-type tc object-pairs type-table)))
+                (rest type))
+        :test #'equal)
+      (objects-of-type type object-pairs type-table)))
+
+(defun reachability-ground-substitute (form bindings)
+  "Replace each PDDL ?variable in FORM by its object in the BINDINGS alist."
+  (cond ((pddl-variable-p form) (or (cdr (assoc form bindings)) form))
+        ((consp form) (mapcar (lambda (x) (reachability-ground-substitute x bindings)) form))
+        (t form)))
+
+(defun action-relaxed-parts (action-form)
+  "For the relaxed analysis, return (values params positive-preconditions
+add-effects) of ACTION-FORM, dropping negative preconditions, deletes, and
+costs."
+  (destructuring-bind (key name &rest body) action-form
+    (declare (ignore key name))
+    (let ((params (parse-typed-list (getf body :parameters) "reachability parameters"))
+          (prep '()) (adds '()))
+      (dolist (p (conjuncts (getf body :precondition)))
+        (when (and (consp p) (not (negation-p p)))
+          (push p prep)))
+      (dolist (e (conjuncts (getf body :effect)))
+        (cond ((and (consp e) (sym-name= (first e) "INCREASE")) nil)
+              ((negation-p e) nil)
+              ((consp e) (push e adds))))
+      (values params (nreverse prep) (nreverse adds)))))
+
+(defun relaxed-ground-actions (domain-def object-pairs type-table)
+  "All ground actions for the relaxed analysis, each as (positive-preconditions
+. add-effects) with parameters replaced by objects."
+  (let ((result '()))
+    (dolist (s (define-sections domain-def) result)
+      (when (and (consp s) (eq (first s) :action))
+        (multiple-value-bind (params prep adds) (action-relaxed-parts s)
+          (dolist (binding (mapcar (lambda (tuple) (mapcar #'cons (mapcar #'car params) tuple))
+                                   (reachability-cartesian
+                                     (mapcar (lambda (p)
+                                               (reachability-param-objects (cdr p) object-pairs type-table))
+                                             params))))
+            (push (cons (mapcar (lambda (a) (reachability-ground-substitute a binding)) prep)
+                        (mapcar (lambda (a) (reachability-ground-substitute a binding)) adds))
+                  result)))))))
+
+(defun reachable-min-slices (domain-def object-pairs type-table init goal+)
+  "Lower bound on numslices from relaxed planning-graph reachability.  Returns an
+integer >= 2, or :unreachable if the positive goals are unreachable even in the
+relaxation (so the problem is unsolvable)."
+  (if (null goal+)
+      2
+      (let ((actions (relaxed-ground-actions domain-def object-pairs type-table))
+            (reachable (make-hash-table :test #'equal))
+            (level 0))
+        (dolist (f init) (setf (gethash f reachable) t))
+        (loop
+          (when (every (lambda (g) (gethash g reachable)) goal+)
+            (return (max 2 (1+ level))))
+          (let ((changed nil))
+            (dolist (ga actions)
+              (when (every (lambda (p) (gethash p reachable)) (car ga))
+                (dolist (a (cdr ga))
+                  (unless (gethash a reachable)
+                    (setf (gethash a reachable) t)
+                    (setq changed t)))))
+            (unless changed (return :unreachable))
+            (incf level))))))
+
 ;;; Translation
 
 (defun translate-action (action-form forbidden effect-preds)
@@ -398,6 +488,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (dynamic-init (remove-if
                                (lambda (f) (static-predicate-p (first f) effect-preds)) init))
+               ;; Reachability lower bound on the horizon (see reachable-min-slices).
+               (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal+))
                (types-used '())
                (action-forms '())
                (any-neg-pre nil))
@@ -515,7 +607,9 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
               (terpri out)
               (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))
-          out-path)))))
+          ;; Return the wff pathname and the reachability lower bound on numslices
+          ;; (an integer, or :unreachable if the relaxed problem has no plan).
+          (values out-path min-slices))))))
 
 ;;; Command-line entry point.  Under "sbcl --script pddl2fifo.lisp args..."
 ;;; the remaining argv entries are the program arguments; under "sbcl --load"

@@ -19,7 +19,7 @@
   (namestring (merge-pathnames (make-pathname :type type) problem-path)))
 
 (defun plan (problem-file
-             &key (minslices 2) (maxslices 6)
+             &key minslices maxslices
                   (sat-solver "kissat")
                   (weighted-solver "tt-open-wbo-inc-Glucose4_1")
                   domain-file (satplan-path "satplan.wff")
@@ -27,6 +27,12 @@
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
 numslices must read *satplan-numslices*, as pddl2fifo-generated wffs do).
+
+If MINSLICES is unspecified it defaults to the lower bound from pddl2fifo's
+relaxed reachability analysis (2 for a .wff problem, which has no PDDL to
+analyze).  If MAXSLICES is unspecified it defaults to twice MINSLICES.  For a
+PDDL problem whose goals are unreachable even in the relaxation, no search is
+done and :UNSAT is returned.
 
 Phase 1 finds the smallest horizon with a satisfying model, instantiating in
 plain CNF and testing with the pure SAT solver SAT-SOLVER.  If the domain has no
@@ -47,16 +53,28 @@ Progress is printed to STREAM."
          (satout (planner-file problem-path "satout"))
          (answer (planner-file problem-path "answer")))
     (handler-case
-        (progn
-          ;; Build the wff from PDDL when needed.
+        (let ((reach-min nil))
+          ;; Build the wff from PDDL when needed, capturing the reachability bound.
           (unless (string-equal (or (pathname-type problem-path) "") "wff")
-            (unless (apply #'pddl2fifo (namestring problem-path)
-                           :satplan-path satplan-path
-                           (when domain-file (list :domain-file domain-file)))
-              (error "wff generation failed")))
-          (let ((found nil) (has-costs nil))
+            (multiple-value-bind (out rmin)
+                (apply #'pddl2fifo (namestring problem-path)
+                       :satplan-path satplan-path
+                       (when domain-file (list :domain-file domain-file)))
+              (unless out (error "wff generation failed"))
+              (setq reach-min rmin)))
+          (when (and (not minslices) (integerp reach-min))
+            (format stream "Reachability analysis: a plan needs at least ~A time slices.~%"
+                    reach-min))
+          (if (eq reach-min :unreachable)
+              ;; Relaxed reachability proves the (real) problem unsolvable.
+              (progn
+                (format stream "Reachability analysis: the goals are unreachable; no plan exists.~%")
+                (values :unsat nil nil))
+          (let* ((lo (or minslices (and (integerp reach-min) reach-min) 2))
+                 (hi (or maxslices (* 2 lo)))
+                 (found nil) (has-costs nil))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).
-            (loop for n from minslices to maxslices until found do
+            (loop for n from lo to hi until found do
               (format stream "Trying ~A time slices with ~A (cnf)...~%" n sat-solver)
               (setq *satplan-numslices* n *cnf-format* 'cnf *solver* sat-solver)
               (unless (instantiate wff :scnfile scnf)
@@ -88,7 +106,7 @@ Progress is printed to STREAM."
                   (values :sat found answer))
                  (t
                   (interpret satout :mapfile map :solnfile answer)
-                  (values :sat found answer)))))))
+                  (values :sat found answer))))))))
       (error (e)
         (format *error-output* "planner: ~A~%" e)
         (values :error nil nil)))))
