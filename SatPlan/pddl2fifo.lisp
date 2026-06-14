@@ -403,6 +403,18 @@ if the goal is unreachable even in the relaxation (so the problem is unsolvable)
 
 ;;; Translation
 
+(defun disjunctive-precondition-p (p)
+  "True if precondition P is a disjunction, implication, or quantifier (or a
+negation of one) -- anything beyond a possibly-negated atom.  pddl2fifo accepts
+:disjunctive-preconditions only in the problem :goal, not in action
+preconditions, so these are rejected with an explanatory error."
+  (flet ((complex-head (f)
+           (and (consp f)
+                (member (first f) '("OR" "IMPLY" "FORALL" "EXISTS")
+                        :test #'sym-name=))))
+    (or (complex-head p)
+        (and (negation-p p) (complex-head (second p))))))
+
 (defun translate-action (action-form forbidden effect-preds)
   "Translate one (:action ...) form into an observed FiFO formula.  Preconditions
 on static predicates (those not in EFFECT-PREDS) become an (if ...) guard rather
@@ -428,7 +440,12 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
            (act (if vars (cons name vars) name))
            (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil))
       (dolist (p (conjuncts precondition))
-        (cond ((negation-p p)
+        (cond ((disjunctive-precondition-p p)
+               (error "Action ~a has a disjunctive or quantified precondition ~s.~@
+                       pddl2fifo supports :disjunctive-preconditions only in the ~
+                       problem :goal, not in action preconditions."
+                      name p))
+              ((negation-p p)
                (let ((atom (second p)))
                  (unless (consp atom)
                    (error "Cannot translate precondition ~s of action ~a" p name))

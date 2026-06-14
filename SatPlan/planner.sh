@@ -4,7 +4,7 @@
 #
 # Usage:
 #   planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] \
-#              [--minslices <int>] [--maxslices <int>]
+#              [--minslices <int>] [--maxslices <int>] [--solver <name>]
 #
 # Translates a .pddl problem with pddl2fifo (a .wff is used directly) and calls
 # (plan-and-report ...) in planner.lisp, which searches horizons --minslices
@@ -22,10 +22,11 @@ WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"   # weighted/MaxSAT solver (costs)
 # ----------------------------------------------------------------------------
 
 usage() {
-  echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>]" >&2
+  echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>]" >&2
   echo "  A .pddl problem is translated with pddl2fifo; a .wff is used as-is." >&2
   echo "  Searches horizons for the smallest plan.  --minslices defaults to a reachability" >&2
   echo "  lower bound (2 for a .wff); --maxslices defaults to 2 * minslices." >&2
+  echo "  --solver overrides the pure SAT (feasibility) solver; default: $SAT_SOLVER." >&2
   exit 2
 }
 
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --minslices) [[ $# -ge 2 ]] || usage; MINSLICES="$2"; shift 2 ;;
     --maxslices) [[ $# -ge 2 ]] || usage; MAXSLICES="$2"; shift 2 ;;
     --numslices) [[ $# -ge 2 ]] || usage; MINSLICES="$2"; MAXSLICES="$2"; shift 2 ;;  # fixed horizon
+    --solver)    [[ $# -ge 2 ]] || usage; SAT_SOLVER="$2";  shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
