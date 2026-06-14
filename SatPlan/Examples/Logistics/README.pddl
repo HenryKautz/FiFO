@@ -12,10 +12,10 @@
 ;; pruned at instantiation.  Together these shrink the multi-city instances by
 ;; one to two orders of magnitude.
 ;;
-;; Because this domain has no action costs, solve these with a plain SAT solver,
-;; e.g.:
-;;     bash SatPlan/planner.sh SatPlan/Examples/Logistics/pb1.pddl \
-;;          --numslices 8 --solver kissat
+;; planner.sh searches for the smallest workable horizon (--minslices ..
+;; --maxslices, default 2..6) and, since this domain has no action costs, just
+;; uses the pure SAT solver.  For example (pb1 needs 8 slices):
+;;     bash SatPlan/planner.sh SatPlan/Examples/Logistics/pb1.pddl --maxslices 8
 ;;
 ;; Status with FiFO:
 ;;
