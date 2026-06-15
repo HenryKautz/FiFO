@@ -873,6 +873,19 @@ Each preference is compiled to a fresh proposition `(pref-violated <name>)`: the
 
 Because the planner searches for the *smallest* feasible horizon and only then minimizes weight, preference satisfaction is optimized at that smallest horizon (a preference satisfiable only at a larger horizon will be reported violated) — the same makespan-then-cost tradeoff used for action costs.
 
+#### Preferences Between Disjunctive Goals
+
+Combining a disjunctive goal with a preference expresses "either of these, but I'd rather have this one." For example, to require an airplane to end in Boston *or* Washington while preferring Washington:
+
+```lisp
+(:requirements :strips :typing :disjunctive-preconditions :preferences)
+...
+(:goal (and (or (at plane1 boston) (at plane1 washington))     ; hard: one of the two
+            (preference end-in-washington (at plane1 washington) 10)))  ; soft: prefer Washington
+```
+
+The disjunction is the hard requirement, so the plan must reach one of the two airports; the preference adds a penalty of 10 for not ending in Washington. Since the hard goal already guarantees Boston-or-Washington, the only way to avoid the penalty is to end in Washington, so the planner chooses Washington when it can and falls back to Boston (objective 10, with `(pref-violated end-in-washington)` reported) only when Washington is unreachable. When the preference is the only soft term its weight is arbitrary — any positive value picks Washington; the magnitude matters only when traded off against other costs.
+
 #### Per-step fluent costs
 
 Standard PDDL attaches costs to actions, never to states. The FiFO-specific `(:fluent-cost <literal> <cost>)` form attaches a cost to a *fluent*: it charges `<cost>` for every time slice in which the literal holds. A problem may contain any number of these forms.
