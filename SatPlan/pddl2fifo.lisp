@@ -29,11 +29,13 @@
 ;;;; example of the output form.
 
 (defparameter *supported-requirements*
-  '(:strips :typing :negative-preconditions :disjunctive-preconditions :action-costs))
+  '(:strips :typing :negative-preconditions :disjunctive-preconditions
+    :constraints :action-costs))
 
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
-    "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "GOAL-FLUENTS" "NUMSLICES")
+    "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "GOAL-FLUENTS"
+    "CONSTRAINT-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
 (defparameter *static-dummy* 'pddl2fifo-static-dummy
@@ -351,19 +353,68 @@ costs."
         ((consp g) (list g))
         (t '())))
 
+(defun translate-state-formula (g slice)
+  "Translate a state description G (a literal or an and/or/not/imply combination
+of literals) into a FiFO formula asserting it at SLICE: each atom becomes
+(holds <atom> slice)."
+  (cond ((negation-p g) (list 'not (translate-state-formula (second g) slice)))
+        ((and (consp g) (sym-name= (first g) "AND"))
+         (cons 'and (mapcar (lambda (x) (translate-state-formula x slice)) (rest g))))
+        ((and (consp g) (sym-name= (first g) "OR"))
+         (cons 'or (mapcar (lambda (x) (translate-state-formula x slice)) (rest g))))
+        ((and (consp g) (sym-name= (first g) "IMPLY"))
+         (list 'implies (translate-state-formula (second g) slice)
+                        (translate-state-formula (third g) slice)))
+        ((consp g) (list 'holds g slice))
+        (t (error "Cannot translate state formula ~s" g))))
+
 (defun translate-goal-formula (g)
   "Translate a PDDL goal description G into a FiFO formula asserting it at the
-final time slice: atoms become (holds <atom> numslices), with and/or/not/imply
-mapped to the FiFO connectives."
-  (cond ((negation-p g) (list 'not (translate-goal-formula (second g))))
-        ((and (consp g) (sym-name= (first g) "AND"))
-         (cons 'and (mapcar #'translate-goal-formula (rest g))))
-        ((and (consp g) (sym-name= (first g) "OR"))
-         (cons 'or (mapcar #'translate-goal-formula (rest g))))
-        ((and (consp g) (sym-name= (first g) "IMPLY"))
-         (list 'implies (translate-goal-formula (second g)) (translate-goal-formula (third g))))
-        ((consp g) (list 'holds g 'numslices))
-        (t (error "Cannot translate goal ~s" g))))
+final time slice (numslices)."
+  (translate-state-formula g 'numslices))
+
+;;; Trajectory constraints (the :constraints section).  We support four modal
+;;; operators over the slice timeline (slice 1 = initial state, numslices =
+;;; final): (always phi), (at-end phi), (hold-during t1 t2 phi), and
+;;; (occur-during t1 t2 <ground-action>).  Time bounds t1..t2 are inclusive
+;;; integer slice numbers.  phi is a state description; the action of
+;;; occur-during is a fully instantiated action term.
+
+(defun constraint-time-bound (x role c)
+  (unless (integerp x)
+    (error "The ~a of constraint ~s must be an integer slice number, got ~s" role c x))
+  x)
+
+(defun collect-constraint-fluents (c)
+  "Fluents referenced by a state-formula constraint, so they get Holds variables
+and frame axioms.  occur-during refers to an action, not a fluent, and a single
+state may be referenced at any slice, so its fluents come via collect-goal-fluents."
+  (cond ((and (consp c) (sym-name= (first c) "ALWAYS")) (collect-goal-fluents (second c)))
+        ((and (consp c) (sym-name= (first c) "AT-END")) (collect-goal-fluents (second c)))
+        ((and (consp c) (sym-name= (first c) "HOLD-DURING")) (collect-goal-fluents (fourth c)))
+        ((and (consp c) (sym-name= (first c) "OCCUR-DURING")) '())
+        (t '())))
+
+(defun translate-constraint (c)
+  "Translate one (:constraints ...) modal formula into a FiFO formula over the
+slice timeline.  Supported: always, at-end, hold-during, occur-during."
+  (cond
+    ((and (consp c) (sym-name= (first c) "ALWAYS"))
+     `(all s slices true ,(translate-state-formula (second c) 's)))
+    ((and (consp c) (sym-name= (first c) "AT-END"))
+     (translate-state-formula (second c) 'numslices))
+    ((and (consp c) (sym-name= (first c) "HOLD-DURING"))
+     (let ((t1 (constraint-time-bound (second c) "first time bound" c))
+           (t2 (constraint-time-bound (third c) "second time bound" c)))
+       `(all s slices (and (>= s ,t1) (<= s ,t2))
+          ,(translate-state-formula (fourth c) 's))))
+    ((and (consp c) (sym-name= (first c) "OCCUR-DURING"))
+     (let ((t1 (constraint-time-bound (second c) "first time bound" c))
+           (t2 (constraint-time-bound (third c) "second time bound" c)))
+       `(exists s actslices (and (>= s ,t1) (<= s ,t2))
+          (occurs ,(fourth c) s))))
+    (t (error "Unsupported trajectory constraint ~s~@
+               (supported: always, at-end, hold-during, occur-during)" c))))
 
 (defun goal-satisfiable-relaxed-p (g reachable)
   "Whether goal G can be satisfied given the REACHABLE atom set, for the relaxed
@@ -496,13 +547,16 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                 (mapcar #'cdr param-pairs))))))
 
 (defun parse-problem (problem-def)
-  "Returns (values domain-name object-pairs init goal+ goal- goal), where
-object-pairs is an alist of (object . type).  goal+/goal- are filled only for a
-simple (conjunction-of-literals) goal; goal is always the raw goal description."
+  "Returns (values domain-name object-pairs init goal+ goal- goal constraints),
+where object-pairs is an alist of (object . type).  goal+/goal- are filled only
+for a simple (conjunction-of-literals) goal; goal is always the raw goal
+description.  constraints is the list of (:constraints ...) modal formulas (the
+section's contents flattened through a top-level and), or nil."
   (let ((object-pairs (parse-typed-list (rest (get-section problem-def :objects))
                                         ":objects"))
         (init-section (rest (get-section problem-def :init)))
         (goal (second (get-section problem-def :goal)))
+        (constraints-form (second (get-section problem-def :constraints)))
         (domain-name (second (get-section problem-def :domain)))
         (init '()) (goal+ '()) (goal- '()))
     (dolist (f init-section)
@@ -519,7 +573,8 @@ simple (conjunction-of-literals) goal; goal is always the raw goal description."
         (cond ((negation-p g) (push (second g) goal-))
               ((consp g) (push g goal+))
               (t (error "Cannot translate goal ~s" g)))))
-    (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-) goal)))
+    (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-) goal
+            (and constraints-form (conjuncts constraints-form)))))
 
 ;;; Output
 
@@ -538,7 +593,7 @@ the generated wff, so use e.g. \"../satplan.wff\" when the problem lives in a
 subdirectory below satplan.wff.  Returns the pathname of the wff file written."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
-    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal)
+    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints)
         (parse-problem problem-def)
       (unless (or domain-file domain-name)
         (error "No domain file given and no (:domain ...) form in ~a" problem-path))
@@ -575,6 +630,11 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                ;; formula rather than the goal-state/negative-goal-state domains.
                (general-goal (not (simple-goal-p goal)))
                (goal-fluents (when general-goal (collect-goal-fluents goal)))
+               ;; Fluents mentioned by trajectory constraints need Holds
+               ;; variables and frame axioms even if no action/goal touches them.
+               (constraint-fluents (remove-duplicates
+                                     (mapcan #'collect-constraint-fluents constraints)
+                                     :test #'equal))
                ;; Reachability lower bound on the horizon (see reachable-min-slices).
                (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
                (types-used '())
@@ -668,6 +728,10 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                   (if goal-fluents
                       `(domain goal-fluents (set ,@goal-fluents))
                       '(domain goal-fluents (set-difference fluents fluents)))))
+              ;; Fluents named only by trajectory constraints (always/at-end/
+              ;; hold-during).  occur-during contributes no fluents.
+              (when constraint-fluents
+                (write-form out `(domain constraint-fluents (set ,@constraint-fluents))))
               (terpri out)
               (format out ";; Domains derived from the observed action schemas~%")
               (write-form out
@@ -687,7 +751,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (when dynamic-init '(initial-state))
                               (when goal+ '(goal-state))
                               (when goal- '(negative-goal-state))
-                              (when general-goal '(goal-fluents))))))
+                              (when general-goal '(goal-fluents))
+                              (when constraint-fluents '(constraint-fluents))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
@@ -704,6 +769,11 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (terpri out)
                 (format out ";; Goal (disjunctive/nested) asserted directly at the final slice~%")
                 (write-form out (translate-goal-formula goal)))
+              (when constraints
+                (terpri out)
+                (format out ";; Trajectory constraints (:constraints)~%")
+                (dolist (c constraints)
+                  (write-form out (translate-constraint c))))
               (terpri out)
               (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))

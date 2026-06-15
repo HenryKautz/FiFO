@@ -812,9 +812,30 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
+The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
 
 With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
+
+#### Trajectory constraints
+
+With `:constraints`, the problem may carry a `(:constraints ...)` section of hard state-trajectory constraints over the plan's slice timeline (slice 1 is the initial state, `numslices` the final state). The contents are a single modal formula or an `and` of them. Four operators are supported:
+
+| Constraint | Meaning | Encoding |
+|---|---|---|
+| `(always φ)` | φ holds in every state | `(all s slices true (holds φ s))` |
+| `(at-end φ)` | φ holds in the final state | `(holds φ numslices)` |
+| `(hold-during t1 t2 φ)` | φ holds in every state of the inclusive slice window `[t1, t2]` | `(all s slices (and (>= s t1) (<= s t2)) (holds φ s))` |
+| `(occur-during t1 t2 a)` | the ground action `a` occurs at some slice in `[t1, t2]` | `(exists s actslices (and (>= s t1) (<= s t2)) (occurs a s))` |
+
+Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combination of literals) and `a` is a fully instantiated action term, e.g. `(fly-airplane p1 a1 a2)`. The time bounds `t1`/`t2` are inclusive integer slice numbers. `occur-during` is a FiFO-specific extension (it has no standard PDDL counterpart). Constraints only restrict the set of valid plans, so they do not change the reachability lower bound on `minslices`. φ must refer to dynamic fluents (predicates that some action adds or deletes); a constraint over a static predicate, or any unsupported operator, is rejected with an error. For example:
+
+```lisp
+(:constraints
+   (and
+      (always (not (at pkg1 l2)))            ; pkg1 never passes through l2
+      (hold-during 1 2 (in pkg1 t1))         ; pkg1 stays in t1 for the first two slices
+      (occur-during 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
+```
 
 To run from the shell:
 
