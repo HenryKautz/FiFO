@@ -847,6 +847,23 @@ Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combin
       (occur-during 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
 ```
 
+#### Forcing Plan to Incorporate Known Facts
+
+Trajectory constraints are also useful for pinning a plan to facts you already know about *when* things happen — forcing a particular action into a time window, or requiring a fluent to persist across a range of steps. For example, requiring the Washington→Boston flight to occur somewhere in steps 3–5 while package `pkg1` stays at the Boston airport throughout steps 1–4:
+
+```lisp
+(:requirements :strips :typing :constraints)
+...
+(:init (at plane1 washington) (at pkg1 boston))
+(:goal (at plane1 boston))
+(:constraints
+   (and
+      (occur-during 3 5 (fly-airplane plane1 washington boston))  ; flight fires in step 3..5
+      (hold-during 1 4 (at pkg1 boston))))                        ; pkg1 at boston in steps 1..4
+```
+
+The plan must reach the goal *and* respect both constraints, so the planner holds the plane in Washington and fires the flight at the earliest allowed step (3, landing in Boston at step 4), while `pkg1` — which starts at Boston and is never moved — satisfies the `hold-during` window. Recall the windows use absolute slice numbers and do not raise the reachability bound, so ensure the search horizon reaches them (here the `occur-during` window already forces a horizon of 4); the `hold-during` body must name a dynamic fluent.
+
 #### Preferences (soft goals and soft constraints)
 
 With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body> [<weight>])` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (one of the four operators above). To prefer that something *not* hold, negate the body (e.g. `(preference tidy (not (at junk depot)) 5)`); weights are always non-negative penalties, so a negative weight is an error.
