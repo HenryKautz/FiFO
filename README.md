@@ -812,7 +812,7 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
+The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
 
 With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
 
@@ -836,6 +836,22 @@ Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combin
       (hold-during 1 2 (in pkg1 t1))         ; pkg1 stays in t1 for the first two slices
       (occur-during 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
 ```
+
+#### Preferences (soft goals and soft constraints)
+
+With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body>)` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (one of the four operators above). The violation weights come from the `(:metric minimize ...)` form, whose `(is-violated <name>)` terms name the preferences:
+
+```lisp
+(:goal (and (at pkg1 a2)                              ; hard goal
+            (preference deliver2 (at pkg2 a1))        ; soft: deliver pkg2 too
+            (preference park1 (at-end (at p1 a1)))))  ; soft: leave p1 at a1
+(:metric minimize (+ (* 3 (is-violated deliver2))
+                     (* 7 (is-violated park1))))
+```
+
+Each preference is compiled to a fresh proposition `(pref-violated <name>)`: the hard clause `(or <body> (pref-violated <name>))` forces it true whenever the body fails, and a soft `(weight (pref-violated <name>) w)` charges the weight `w` (the preference's coefficient in the metric). The planner then solves the problem as weighted MaxSAT, minimizing the total weight, and the answer lists `(pref-violated <name>)` for exactly the violated preferences along with the `*objective*` (the minimized total). The coefficient of `(total-cost)` in the metric scales the action costs and combines with the preference weights in the same objective; if there is no `:metric`, each preference defaults to weight 1 (so the planner minimizes the number of violations). A preference appearing in an action `:precondition` is not supported and is rejected with an error.
+
+Because the planner searches for the *smallest* feasible horizon and only then minimizes weight, preference satisfaction is optimized at that smallest horizon (a preference satisfiable only at a larger horizon will be reported violated) — the same makespan-then-cost tradeoff used for action costs.
 
 To run from the shell:
 

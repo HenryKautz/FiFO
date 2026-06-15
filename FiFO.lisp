@@ -448,7 +448,10 @@ exactly where it was."
 
 (defun time-order-r (p q)
   (cond ((and (integerp p) (integerp q)) (< p q))
-        ((and (atom p) (atom q)) (string-lessp p q))
+        ;; Compare atoms by print name so a numeric slice argument can be ordered
+        ;; against a symbolic one (e.g. a non-time-indexed proposition such as
+        ;; (pref-violated <name>)) without string-lessp rejecting the integer.
+        ((and (atom p) (atom q)) (string-lessp (princ-to-string p) (princ-to-string q)))
         ((atom p) t)
         ((atom q) nil)
         ((equal (car p) (car q)) (time-order-r (cdr p) (cdr q)))

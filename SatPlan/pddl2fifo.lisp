@@ -30,7 +30,7 @@
 
 (defparameter *supported-requirements*
   '(:strips :typing :negative-preconditions :disjunctive-preconditions
-    :constraints :action-costs))
+    :constraints :preferences :action-costs))
 
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
@@ -416,6 +416,92 @@ slice timeline.  Supported: always, at-end, hold-during, occur-during."
     (t (error "Unsupported trajectory constraint ~s~@
                (supported: always, at-end, hold-during, occur-during)" c))))
 
+;;; Preferences (soft goals / soft constraints).
+;;;
+;;; A (preference <name> <body>) declared in the :goal or :constraints section is
+;;; a soft requirement: violating it costs the weight given to (is-violated <name>)
+;;; in the :metric.  We reify the body's satisfaction with a fresh proposition
+;;; (pref-violated <name>): the hard clause (or <body> (pref-violated <name>))
+;;; forces the proposition true whenever the body is false, and the soft weight
+;;; (weight (pref-violated <name>) w) charges w when it is true.  The MaxSAT solver
+;;; then minimizes total weight, so (pref-violated <name>) is true in the answer
+;;; exactly for the violated preferences.
+
+(defun preference-p (x)
+  (and (consp x) (sym-name= (first x) "PREFERENCE")))
+
+(defun split-preferences (forms)
+  "Partition a list of top-level conjuncts into (values hard preferences), where
+each preference is (name . body)."
+  (let ((hard '()) (prefs '()))
+    (dolist (f forms)
+      (if (preference-p f)
+          (push (cons (second f) (third f)) prefs)
+          (push f hard)))
+    (values (nreverse hard) (nreverse prefs))))
+
+(defun constraint-head-p (body)
+  "True if BODY is a trajectory-constraint modal formula (vs. a state description)."
+  (and (consp body)
+       (member (first body) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-DURING")
+               :test #'sym-name=)))
+
+(defun translate-preference-body (body)
+  "Translate a preference BODY to the FiFO formula whose truth means the
+preference is satisfied: a trajectory-constraint body via translate-constraint, a
+plain state description as a goal (asserted at the final slice)."
+  (if (constraint-head-p body)
+      (translate-constraint body)
+      (translate-goal-formula body)))
+
+(defun collect-preference-fluents (body)
+  "Fluents referenced by a preference body, so they get Holds variables and frame
+axioms."
+  (if (constraint-head-p body)
+      (collect-constraint-fluents body)
+      (collect-goal-fluents body)))
+
+(defun parse-metric-term (term)
+  "Decode one :metric summand.  Returns (values KIND NAME COEFF): KIND is :cost
+for k*(total-cost) or :pref for k*(is-violated <name>); the optional integer
+coefficient k defaults to 1."
+  (labels ((total-cost-p (x) (and (consp x) (sym-name= (first x) "TOTAL-COST")))
+           (is-viol-p (x) (and (consp x) (sym-name= (first x) "IS-VIOLATED"))))
+    (cond
+      ((total-cost-p term) (values :cost nil 1))
+      ((is-viol-p term) (values :pref (second term) 1))
+      ((and (consp term) (sym-name= (first term) "*"))
+       (let* ((a (second term)) (b (third term))
+              (k (cond ((integerp a) a) ((integerp b) b)
+                       (t (error "Metric term ~s needs an integer coefficient" term))))
+              (x (if (integerp a) b a)))
+         (cond ((total-cost-p x) (values :cost nil k))
+               ((is-viol-p x) (values :pref (second x) k))
+               (t (error "Unsupported metric term ~s" term)))))
+      (t (error "Unsupported metric term ~s~@
+                 (expected (total-cost) or (is-violated <name>), optionally k*...)" term)))))
+
+(defun parse-metric (problem-def)
+  "Parse (:metric minimize <expr>).  Returns (values total-cost-coeff weight-alist
+metric-present-p): total-cost-coeff is the summed coefficient of (total-cost) (0
+if absent), and weight-alist maps each preference name to its summed coefficient."
+  (let ((section (get-section problem-def :metric)))
+    (if (null section)
+        (values 1 nil nil)
+        (let ((dir (second section)) (expr (third section))
+              (coeff 0) (weights '()))
+          (unless (sym-name= dir "MINIMIZE")
+            (error "Only (:metric minimize ...) is supported, got ~s" dir))
+          (dolist (term (if (and (consp expr) (sym-name= (first expr) "+"))
+                            (rest expr)
+                            (list expr)))
+            (multiple-value-bind (kind name k) (parse-metric-term term)
+              (if (eq kind :cost)
+                  (incf coeff k)
+                  (let ((cell (assoc name weights :test #'sym-name=)))
+                    (if cell (incf (cdr cell) k) (push (cons name k) weights))))))
+          (values coeff weights t)))))
+
 (defun goal-satisfiable-relaxed-p (g reachable)
   "Whether goal G can be satisfied given the REACHABLE atom set, for the relaxed
 reachability analysis.  Negative and implicative subgoals are treated
@@ -466,10 +552,11 @@ preconditions, so these are rejected with an explanatory error."
     (or (complex-head p)
         (and (negation-p p) (complex-head (second p))))))
 
-(defun translate-action (action-form forbidden effect-preds)
+(defun translate-action (action-form forbidden effect-preds &optional (cost-scale 1))
   "Translate one (:action ...) form into an observed FiFO formula.  Preconditions
 on static predicates (those not in EFFECT-PREDS) become an (if ...) guard rather
-than Pre/PreNeg facts.
+than Pre/PreNeg facts.  The action's cost (if any) is multiplied by COST-SCALE,
+the coefficient of (total-cost) in the :metric.
 Returns (values formula has-negative-preconditions-p parameter-types)."
   (destructuring-bind (key name &rest body) action-form
     (declare (ignore key))
@@ -491,7 +578,12 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
            (act (if vars (cons name vars) name))
            (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil))
       (dolist (p (conjuncts precondition))
-        (cond ((disjunctive-precondition-p p)
+        (cond ((preference-p p)
+               (error "Action ~a has a precondition preference ~s.~@
+                       pddl2fifo supports preferences only in the :goal and ~
+                       :constraints sections, not in action preconditions."
+                      name p))
+              ((disjunctive-precondition-p p)
                (error "Action ~a has a disjunctive or quantified precondition ~s.~@
                        pddl2fifo supports :disjunctive-preconditions only in the ~
                        problem :goal, not in action preconditions."
@@ -531,7 +623,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                       (mapcar (lambda (f) (list 'preneg act f)) (nreverse pre-))
                       (mapcar (lambda (f) (list 'add act f)) (nreverse adds))
                       (mapcar (lambda (f) (list 'del act f)) (nreverse dels))
-                      (when cost (list (list 'cost act cost)))))
+                      (when cost (list (list 'cost act (* cost-scale cost))))))
              (conj0 (if (rest facts) (cons 'and facts) (first facts)))
              ;; Gate the action's facts on its static preconditions: when the
              ;; guard is false (an observed static atom does not hold) the (if ...)
@@ -546,16 +638,25 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                 negp
                 (mapcar #'cdr param-pairs))))))
 
+(defun reassemble-conjunction (forms)
+  "Rebuild a goal/constraint formula from its top-level conjuncts: nil, the single
+form, or (and ...).  reassemble-conjunction (conjuncts f) reproduces f when f has
+no preferences removed, so non-preference problems are unaffected."
+  (cond ((null forms) nil)
+        ((null (rest forms)) (first forms))
+        (t (cons 'and forms))))
+
 (defun parse-problem (problem-def)
-  "Returns (values domain-name object-pairs init goal+ goal- goal constraints),
-where object-pairs is an alist of (object . type).  goal+/goal- are filled only
-for a simple (conjunction-of-literals) goal; goal is always the raw goal
-description.  constraints is the list of (:constraints ...) modal formulas (the
-section's contents flattened through a top-level and), or nil."
+  "Returns (values domain-name object-pairs init goal+ goal- goal constraints
+preferences).  object-pairs is an alist of (object . type).  goal+/goal- are
+filled only for a simple (conjunction-of-literals) hard goal; goal is the hard
+goal description (preferences removed).  constraints is the list of hard
+(:constraints ...) modal formulas.  preferences is a list of (name . body) for
+the (preference ...) forms found in either section."
   (let ((object-pairs (parse-typed-list (rest (get-section problem-def :objects))
                                         ":objects"))
         (init-section (rest (get-section problem-def :init)))
-        (goal (second (get-section problem-def :goal)))
+        (goal-form (second (get-section problem-def :goal)))
         (constraints-form (second (get-section problem-def :constraints)))
         (domain-name (second (get-section problem-def :domain)))
         (init '()) (goal+ '()) (goal- '()))
@@ -566,15 +667,24 @@ section's contents flattened through a top-level and), or nil."
              nil)                  ; redundant under the closed-world assumption
             ((consp f) (push f init))
             (t (error "Cannot translate init fact ~s" f))))
-    ;; Split a conjunction of literals into positive/negative goal sets; a
-    ;; disjunctive/nested goal is left to the caller as the raw GOAL.
-    (when (simple-goal-p goal)
-      (dolist (g (conjuncts goal))
-        (cond ((negation-p g) (push (second g) goal-))
-              ((consp g) (push g goal+))
-              (t (error "Cannot translate goal ~s" g)))))
-    (values domain-name object-pairs (nreverse init) (nreverse goal+) (nreverse goal-) goal
-            (and constraints-form (conjuncts constraints-form)))))
+    ;; Pull (preference ...) forms out of the goal and constraint conjunctions;
+    ;; what remains is the hard goal / hard constraints.
+    (multiple-value-bind (goal-hard goal-prefs)
+        (split-preferences (and goal-form (conjuncts goal-form)))
+      (multiple-value-bind (constraint-hard constraint-prefs)
+          (split-preferences (and constraints-form (conjuncts constraints-form)))
+        (let ((goal (reassemble-conjunction goal-hard)))
+          ;; Split a conjunction of literals into positive/negative goal sets; a
+          ;; disjunctive/nested hard goal is left to the caller as the raw GOAL.
+          (when (simple-goal-p goal)
+            (dolist (g (conjuncts goal))
+              (cond ((negation-p g) (push (second g) goal-))
+                    ((consp g) (push g goal+))
+                    (t (error "Cannot translate goal ~s" g)))))
+          (values domain-name object-pairs (nreverse init)
+                  (nreverse goal+) (nreverse goal-) goal
+                  constraint-hard
+                  (append goal-prefs constraint-prefs)))))))
 
 ;;; Output
 
@@ -593,7 +703,7 @@ the generated wff, so use e.g. \"../satplan.wff\" when the problem lives in a
 subdirectory below satplan.wff.  Returns the pathname of the wff file written."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
-    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints)
+    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints preferences)
         (parse-problem problem-def)
       (unless (or domain-file domain-name)
         (error "No domain file given and no (:domain ...) form in ~a" problem-path))
@@ -635,6 +745,27 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                (constraint-fluents (remove-duplicates
                                      (mapcan #'collect-constraint-fluents constraints)
                                      :test #'equal))
+               ;; Preferences (soft goals/constraints).  The :metric gives the
+               ;; coefficient of (total-cost) -- by which action costs are scaled
+               ;; -- and the violation weight of each preference.  The metric is
+               ;; only consulted when preferences exist, so cost-only problems are
+               ;; unaffected (they keep cost-scale 1 and ignore :metric, as before).
+               (cost-scale 1)
+               (active-prefs                       ; (name body . weight), weight > 0
+                 (when preferences
+                   (multiple-value-bind (coeff weights metric-present)
+                       (parse-metric problem-def)
+                     (when metric-present (setq cost-scale coeff))
+                     (loop for (name . body) in preferences
+                           for w = (if metric-present
+                                       (or (cdr (assoc name weights :test #'sym-name=)) 0)
+                                       1)            ; no metric: minimize # violated
+                           when (plusp w)
+                             collect (list* name body w)))))
+               (pref-fluents (remove-duplicates
+                               (loop for entry in active-prefs
+                                     append (collect-preference-fluents (second entry)))
+                               :test #'equal))
                ;; Reachability lower bound on the horizon (see reachable-min-slices).
                (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
                (types-used '())
@@ -651,7 +782,7 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
           (dolist (s (define-sections domain-def))
             (when (and (consp s) (eq (first s) :action))
               (multiple-value-bind (form negp param-types)
-                  (translate-action s forbidden effect-preds)
+                  (translate-action s forbidden effect-preds cost-scale)
                 (push form action-forms)
                 (when negp (setq any-neg-pre t))
                 (dolist (tp param-types)
@@ -732,6 +863,9 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
               ;; hold-during).  occur-during contributes no fluents.
               (when constraint-fluents
                 (write-form out `(domain constraint-fluents (set ,@constraint-fluents))))
+              ;; Fluents named only by preference bodies.
+              (when pref-fluents
+                (write-form out `(domain pref-fluents (set ,@pref-fluents))))
               (terpri out)
               (format out ";; Domains derived from the observed action schemas~%")
               (write-form out
@@ -752,7 +886,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (when goal+ '(goal-state))
                               (when goal- '(negative-goal-state))
                               (when general-goal '(goal-fluents))
-                              (when constraint-fluents '(constraint-fluents))))))
+                              (when constraint-fluents '(constraint-fluents))
+                              (when pref-fluents '(pref-fluents))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
@@ -774,6 +909,17 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (format out ";; Trajectory constraints (:constraints)~%")
                 (dolist (c constraints)
                   (write-form out (translate-constraint c))))
+              ;; Preferences: reify each body's satisfaction with (pref-violated
+              ;; <name>) and charge its violation weight via a soft (weight ...).
+              (when active-prefs
+                (terpri out)
+                (format out ";; Preferences (soft): violated when the body fails;~%")
+                (format out ";; (weight ...) charges the metric cost of each violation~%")
+                (dolist (entry active-prefs)
+                  (destructuring-bind (name body . w) entry
+                    (write-form out
+                      `(or ,(translate-preference-body body) (pref-violated ,name)))
+                    (write-form out `(weight (pref-violated ,name) ,w)))))
               (terpri out)
               (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))
