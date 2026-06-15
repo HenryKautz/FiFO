@@ -430,13 +430,29 @@ slice timeline.  Supported: always, at-end, hold-during, occur-during."
 (defun preference-p (x)
   (and (consp x) (sym-name= (first x) "PREFERENCE")))
 
+(defun parse-preference (f)
+  "Parse (preference <name> <body> [<weight>]) into the list (name body weight),
+where weight is the inline non-negative number, or nil when omitted (the weight
+then comes from the :metric, defaulting to 1)."
+  (let ((name (second f)) (body (third f)) (extra (cdddr f)))
+    (unless (and name body)
+      (error "Malformed preference ~s (expected (preference <name> <body> [<weight>]))" f))
+    (cond ((null extra) (list name body nil))
+          ((and (null (cdr extra)) (numberp (car extra)))
+           (when (minusp (car extra))
+             (error "Preference ~a has a negative weight ~s; weights are non-negative penalties ~
+                     (to prefer that something not hold, negate the body instead)"
+                    name (car extra)))
+           (list name body (car extra)))
+          (t (error "Malformed preference ~s (expected (preference <name> <body> [<weight>]))" f)))))
+
 (defun split-preferences (forms)
   "Partition a list of top-level conjuncts into (values hard preferences), where
-each preference is (name . body)."
+each preference is (name body weight) -- weight nil unless given inline."
   (let ((hard '()) (prefs '()))
     (dolist (f forms)
       (if (preference-p f)
-          (push (cons (second f) (third f)) prefs)
+          (push (parse-preference f) prefs)
           (push f hard)))
     (values (nreverse hard) (nreverse prefs))))
 
@@ -564,6 +580,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                                           (format nil "parameters of action ~a" name)))
            (precondition (getf body :precondition))
            (effect (getf body :effect))
+           (cost-slot (getf body :cost))
            (bindings
              (mapcar (lambda (p)
                        (unless (pddl-variable-p (car p))
@@ -615,6 +632,14 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
               ((consp e)
                (push (substitute-terms e bindings name) adds))
               (t (error "Cannot translate effect ~s of action ~a" e name))))
+      ;; A :cost slot is an alternative to an (increase (total-cost) n) effect.
+      (when cost-slot
+        (when cost
+          (error "Action ~a has both a :cost slot and an (increase (total-cost) ...) effect"
+                 name))
+        (unless (numberp cost-slot)
+          (error "The :cost of action ~a must be a number, got ~s" name cost-slot))
+        (setq cost cost-slot))
       (unless (or adds dels)
         (error "Action ~a has no add or delete effects" name))
       (let* ((negp (consp pre-))
@@ -756,10 +781,19 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                    (multiple-value-bind (coeff weights metric-present)
                        (parse-metric problem-def)
                      (when metric-present (setq cost-scale coeff))
-                     (loop for (name . body) in preferences
-                           for w = (if metric-present
-                                       (or (cdr (assoc name weights :test #'sym-name=)) 0)
-                                       1)            ; no metric: minimize # violated
+                     ;; Weight precedence: an inline weight wins; else the :metric
+                     ;; coefficient; else 0 when a metric is present (preference is
+                     ;; ignored) or 1 when none is (minimize # of violations).
+                     (loop for (name body inline-w) in preferences
+                           for metric-w = (and metric-present
+                                               (cdr (assoc name weights :test #'sym-name=)))
+                           for w = (cond (inline-w inline-w)
+                                         (metric-w metric-w)
+                                         (metric-present 0)
+                                         (t 1))
+                           do (when (and inline-w metric-w)
+                                (warn "Preference ~a has an inline weight ~a; ignoring its ~
+                                       :metric coefficient ~a" name inline-w metric-w))
                            when (plusp w)
                              collect (list* name body w)))))
                (pref-fluents (remove-duplicates

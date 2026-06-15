@@ -812,7 +812,17 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers, i.e. effects of the form `(increase (total-cost) <number>)`.
+The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
+
+```lisp
+(:action turn-off
+   :parameters (?x)
+   :precondition (on ?x)
+   :effect (not (on ?x))
+   :cost 2)
+```
+
+The two forms are equivalent; giving both on the same action is an error. The cost must be a constant number (a cost that varies with the action's parameters is not supported by either form).
 
 With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
 
@@ -839,17 +849,27 @@ Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combin
 
 #### Preferences (soft goals and soft constraints)
 
-With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body>)` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (one of the four operators above). The violation weights come from the `(:metric minimize ...)` form, whose `(is-violated <name>)` terms name the preferences:
+With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body> [<weight>])` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (one of the four operators above). To prefer that something *not* hold, negate the body (e.g. `(preference tidy (not (at junk depot)) 5)`); weights are always non-negative penalties, so a negative weight is an error.
+
+The optional fourth element gives the violation weight inline. When it is omitted, the weight comes from the `(:metric minimize ...)` form, whose `(is-violated <name>)` terms name the preferences. So the same preferences can be written either way:
 
 ```lisp
+;; Inline weights -- no :metric needed
 (:goal (and (at pkg1 a2)                              ; hard goal
-            (preference deliver2 (at pkg2 a1))        ; soft: deliver pkg2 too
-            (preference park1 (at-end (at p1 a1)))))  ; soft: leave p1 at a1
+            (preference deliver2 (at pkg2 a1) 3)      ; soft, weight 3
+            (preference park1 (at-end (at p1 a1)) 7)))
+
+;; Or weights drawn from the metric
+(:goal (and (at pkg1 a2)
+            (preference deliver2 (at pkg2 a1))
+            (preference park1 (at-end (at p1 a1)))))
 (:metric minimize (+ (* 3 (is-violated deliver2))
                      (* 7 (is-violated park1))))
 ```
 
-Each preference is compiled to a fresh proposition `(pref-violated <name>)`: the hard clause `(or <body> (pref-violated <name>))` forces it true whenever the body fails, and a soft `(weight (pref-violated <name>) w)` charges the weight `w` (the preference's coefficient in the metric). The planner then solves the problem as weighted MaxSAT, minimizing the total weight, and the answer lists `(pref-violated <name>)` for exactly the violated preferences along with the `*objective*` (the minimized total). The coefficient of `(total-cost)` in the metric scales the action costs and combines with the preference weights in the same objective; if there is no `:metric`, each preference defaults to weight 1 (so the planner minimizes the number of violations). A preference appearing in an action `:precondition` is not supported and is rejected with an error.
+An inline weight takes precedence over a `:metric` coefficient for the same preference (a warning is issued if both are given). If a preference has neither an inline weight nor a metric coefficient, it defaults to weight 1 when there is no `:metric` (so the planner minimizes the number of violations) and to 0 (ignored) when a metric is present but does not mention it.
+
+Each preference is compiled to a fresh proposition `(pref-violated <name>)`: the hard clause `(or <body> (pref-violated <name>))` forces it true whenever the body fails, and a soft `(weight (pref-violated <name>) w)` charges the weight `w`. The planner then solves the problem as weighted MaxSAT, minimizing the total weight, and the answer lists `(pref-violated <name>)` for exactly the violated preferences along with the `*objective*` (the minimized total). The coefficient of `(total-cost)` in the metric scales the action costs and combines with the preference weights in the same objective. A preference appearing in an action `:precondition` is not supported and is rejected with an error.
 
 Because the planner searches for the *smallest* feasible horizon and only then minimizes weight, preference satisfaction is optimized at that smallest horizon (a preference satisfiable only at a larger horizon will be reported violated) — the same makespan-then-cost tradeoff used for action costs.
 
