@@ -9,7 +9,7 @@ FiFO is a language for specifying logical theories using finite-domain first-ord
 
 The FiFO interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use FiFO.
 
-## Examples of FiFO
+## Example of FiFO
 
 ```
 ;; Define set domains boy, girl, and child
@@ -23,25 +23,6 @@ The FiFO interpreter is written in Common Lisp, but it is not necessary to know 
 						(loves c1 g)
 						(loves c2 g)
 						(loves c3 g))))
-
-;; STRIPS planning
-;; Define range domain time
-(domain time (range 1 100))
-;; Define set domain block
-(domain block (A B C))
-;; Preconditions and effects of move
-(all t time true
-    (all (x y z) block (alldiff x y z)
-         (implies (move x y z t)
-                  (and
-                      ;; Preconditions hold at time t
-                      (clear x t)
-                      (on x y t)
-                      (clear z t)
-                      ;; Effects hold at time t+1
-                      (on y z (+ t 1))
-                      (clear y (+ t 1))
-                      ((not (clear z (+ t 1))))))))
 ```
 
 Common Lisp API
