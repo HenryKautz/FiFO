@@ -35,7 +35,7 @@
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
     "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "GOAL-FLUENTS"
-    "CONSTRAINT-FLUENTS" "NUMSLICES")
+    "CONSTRAINT-FLUENTS" "PREF-FLUENTS" "FLUENTCOST-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
 (defparameter *static-dummy* 'pddl2fifo-static-dummy
@@ -518,6 +518,36 @@ if absent), and weight-alist maps each preference name to its summed coefficient
                     (if cell (incf (cdr cell) k) (push (cons name k) weights))))))
           (values coeff weights t)))))
 
+;;; Per-step fluent costs.
+;;;
+;;; A problem may contain one or more (:fluent-cost <literal> <cost>) forms.  Each
+;;; charges <cost> for every slice in which <literal> holds (a FiFO-specific
+;;; extension with no standard PDDL counterpart -- PDDL costs attach to actions,
+;;; not states).  It compiles to a per-slice weight, the same pattern satplan.wff
+;;; uses for action costs: (all s slices true (weight (holds <literal> s) <cost>)).
+
+(defun parse-fluent-cost (s)
+  "Parse one (:fluent-cost <literal> <cost>) form into (literal . cost)."
+  (let ((lit (second s)) (cost (third s)))
+    (unless (and (= (length s) 3) (consp lit) (numberp cost))
+      (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>))" s))
+    (when (minusp cost)
+      (error ":fluent-cost ~s has a negative cost; costs are non-negative penalties" s))
+    (cons lit cost)))
+
+(defun fluent-costs (problem-def)
+  "All (:fluent-cost ...) forms in PROBLEM-DEF, as a list of (literal . cost)."
+  (loop for s in (define-sections problem-def)
+        when (and (consp s) (eq (first s) :fluent-cost))
+          collect (parse-fluent-cost s)))
+
+(defun fluent-cost-weight-literal (lit)
+  "The weighted literal for a per-step fluent cost on LIT over the slice S:
+(holds <atom> s), or (not (holds <atom> s)) when LIT is negated."
+  (if (negation-p lit)
+      `(not (holds ,(second lit) s))
+      `(holds ,lit s)))
+
 (defun goal-satisfiable-relaxed-p (g reachable)
   "Whether goal G can be satisfied given the REACHABLE atom set, for the relaxed
 reachability analysis.  Negative and implicative subgoals are treated
@@ -800,6 +830,13 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                                (loop for entry in active-prefs
                                      append (collect-preference-fluents (second entry)))
                                :test #'equal))
+               ;; Per-step fluent costs (:fluent-cost forms).  Like preferences,
+               ;; the named fluents need Holds variables and frame axioms.
+               (fluent-cost-list (fluent-costs problem-def))
+               (fluentcost-fluents (remove-duplicates
+                                     (loop for fc in fluent-cost-list
+                                           append (collect-goal-fluents (car fc)))
+                                     :test #'equal))
                ;; Reachability lower bound on the horizon (see reachable-min-slices).
                (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
                (types-used '())
@@ -900,6 +937,9 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
               ;; Fluents named only by preference bodies.
               (when pref-fluents
                 (write-form out `(domain pref-fluents (set ,@pref-fluents))))
+              ;; Fluents named only by per-step fluent costs.
+              (when fluentcost-fluents
+                (write-form out `(domain fluentcost-fluents (set ,@fluentcost-fluents))))
               (terpri out)
               (format out ";; Domains derived from the observed action schemas~%")
               (write-form out
@@ -921,7 +961,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (when goal- '(negative-goal-state))
                               (when general-goal '(goal-fluents))
                               (when constraint-fluents '(constraint-fluents))
-                              (when pref-fluents '(pref-fluents))))))
+                              (when pref-fluents '(pref-fluents))
+                              (when fluentcost-fluents '(fluentcost-fluents))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
@@ -954,6 +995,15 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                     (write-form out
                       `(or ,(translate-preference-body body) (pref-violated ,name)))
                     (write-form out `(weight (pref-violated ,name) ,w)))))
+              ;; Per-step fluent costs: charge the cost for every slice the fluent holds.
+              (when fluent-cost-list
+                (terpri out)
+                (format out ";; Per-step fluent costs (:fluent-cost): charged once~%")
+                (format out ";; per slice in which the fluent holds~%")
+                (dolist (fc fluent-cost-list)
+                  (destructuring-bind (lit . c) fc
+                    (write-form out
+                      `(all s slices true (weight ,(fluent-cost-weight-literal lit) ,c))))))
               (terpri out)
               (write-form out (list 'include satplan-path))))
           (format t "Wrote ~a~%" (namestring out-path))

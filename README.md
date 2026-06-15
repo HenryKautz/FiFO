@@ -873,6 +873,21 @@ Each preference is compiled to a fresh proposition `(pref-violated <name>)`: the
 
 Because the planner searches for the *smallest* feasible horizon and only then minimizes weight, preference satisfaction is optimized at that smallest horizon (a preference satisfiable only at a larger horizon will be reported violated) — the same makespan-then-cost tradeoff used for action costs.
 
+#### Per-step fluent costs
+
+Standard PDDL attaches costs to actions, never to states. The FiFO-specific `(:fluent-cost <literal> <cost>)` form attaches a cost to a *fluent*: it charges `<cost>` for every time slice in which the literal holds. A problem may contain any number of these forms.
+
+```lisp
+(:fluent-cost (congested r1) 2)         ; +2 for each slice (congested r1) is true
+(:fluent-cost (not (powered pump)) 5)   ; +5 for each slice the pump is unpowered
+```
+
+Each compiles to a per-slice weight — the same pattern satplan.wff uses for action costs — `(all s slices true (weight (holds <literal> s) <cost>))` (with `(not (holds ...))` for a negated literal), so the total contribution is `<cost>` times the number of slices the literal holds. This lets you express things PDDL cannot: fuel/time burned while a condition persists, occupancy costs, "minimize time spent in a bad state," and (by negating the literal) a per-slice *reward* for keeping something true. The literal must name a dynamic fluent. Like preferences, fluent costs make the problem a weighted-MaxSAT instance and add to the same `*objective*`; because cost accrues per slice, a fluent cost is sensitive to the horizon (a longer plan can accrue more). Costs are non-negative.
+
+#### The `:metric` is optional
+
+`:metric` is now an *override*, not a requirement. Action costs (whether written as `:cost` slots or `(increase (total-cost) …)` effects), inline preference weights, and `:fluent-cost` forms all declare their own weights, and the objective is implicitly "minimize the sum of all of them." So a problem can omit `:metric` entirely and still be optimized. Supply `:metric minimize …` only when you want to (a) give preference weights without writing them inline (via `(is-violated <name>)` terms) or (b) scale the action-cost total with a coefficient on `(total-cost)`. An inline preference weight overrides the corresponding metric term, and `:fluent-cost` weights are independent of the metric.
+
 To run from the shell:
 
 ```sh
