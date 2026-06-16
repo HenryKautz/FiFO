@@ -363,6 +363,7 @@ One important caveat: MaxHS uses CPLEX from IBM as its MIP solver, so you need t
 **TT-Open-WBO-Inc**
 
 - Source: https://github.com/alexander-nadel-academic/tt-open-wbo-inc (the GitHub version corresponds to the MaxSAT Evaluation 2023 submission)
+- Fork updated to compile cleanly on Mac OSX: https://github.com/HenryKautz/tt-open-wbo-inc-osx
 
 Standard C++ build (make), no commercial dependencies; reads WCNF and prints improving solutions as it finds them (o lines), with the best model on the v line.
 
