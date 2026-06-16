@@ -375,6 +375,28 @@ Standard C++ build (make), no commercial dependencies; reads WCNF and prints imp
 
 No license hassle, no compilation, and the Python API is pleasant. Note CP-SAT takes its own model format rather than WCNF, so you'd build the model programmatically (clauses as AddBoolOr, objective as Minimize).  Utilities for converting wcnf files to Python code for CP-SAT are included in [wcnfsolvers](https://github.com/HenryKautz/wcnfsolvers).
 
+### SAT solvers
+
+The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected (via the `sat-solver` variable, or the planner's `SAT_SOLVER` / `--solver` setting). Some options:
+
+**Kissat**
+
+- Source: https://github.com/arminbiere/kissat
+
+A fast, self-contained sequential SAT solver in C by Armin Biere (a "keep it simple and clean" reimplementation of the CaDiCaL ideas). Standard `./configure && make` build, no dependencies; the default solver here.
+
+**MallobSat (Mallob)**
+
+- Source: https://github.com/domschrei/mallob
+
+A distributed, malleable SAT solver by Dominik Schreiber that scales across many cores and machines via MPI, and has won the International SAT Competition's Cloud Track repeatedly. Useful when a single machine is not enough.
+
+**Painless**
+
+- Source: https://github.com/lip6/painless
+
+A framework for parallel (and, via D-Painless, distributed) SAT solving that composes existing sequential solvers with configurable clause-sharing strategies; a key contributor is Mazigh Saoudi (see also https://github.com/S-Mazigh). Painless-based solvers have placed first in recent SAT Competition parallel tracks.
+
 Deduction 
 ---------------------------------------
 
