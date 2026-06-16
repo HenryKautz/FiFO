@@ -376,9 +376,9 @@ final time slice (numslices)."
 ;;; Trajectory constraints (the :constraints section).  We support four modal
 ;;; operators over the slice timeline (slice 1 = initial state, numslices =
 ;;; final): (always phi), (at-end phi), (hold-during t1 t2 phi), and
-;;; (occur-during t1 t2 <ground-action>).  Time bounds t1..t2 are inclusive
+;;; (occur-sometime t1 t2 <ground-action>).  Time bounds t1..t2 are inclusive
 ;;; integer slice numbers.  phi is a state description; the action of
-;;; occur-during is a fully instantiated action term.
+;;; occur-sometime is a fully instantiated action term.
 
 (defun constraint-time-bound (x role c)
   (unless (integerp x)
@@ -387,17 +387,17 @@ final time slice (numslices)."
 
 (defun collect-constraint-fluents (c)
   "Fluents referenced by a state-formula constraint, so they get Holds variables
-and frame axioms.  occur-during refers to an action, not a fluent, and a single
+and frame axioms.  occur-sometime refers to an action, not a fluent, and a single
 state may be referenced at any slice, so its fluents come via collect-goal-fluents."
   (cond ((and (consp c) (sym-name= (first c) "ALWAYS")) (collect-goal-fluents (second c)))
         ((and (consp c) (sym-name= (first c) "AT-END")) (collect-goal-fluents (second c)))
         ((and (consp c) (sym-name= (first c) "HOLD-DURING")) (collect-goal-fluents (fourth c)))
-        ((and (consp c) (sym-name= (first c) "OCCUR-DURING")) '())
+        ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME")) '())
         (t '())))
 
 (defun translate-constraint (c)
   "Translate one (:constraints ...) modal formula into a FiFO formula over the
-slice timeline.  Supported: always, at-end, hold-during, occur-during."
+slice timeline.  Supported: always, at-end, hold-during, occur-sometime."
   (cond
     ((and (consp c) (sym-name= (first c) "ALWAYS"))
      `(all s slices true ,(translate-state-formula (second c) 's)))
@@ -408,13 +408,13 @@ slice timeline.  Supported: always, at-end, hold-during, occur-during."
            (t2 (constraint-time-bound (third c) "second time bound" c)))
        `(all s slices (and (>= s ,t1) (<= s ,t2))
           ,(translate-state-formula (fourth c) 's))))
-    ((and (consp c) (sym-name= (first c) "OCCUR-DURING"))
+    ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME"))
      (let ((t1 (constraint-time-bound (second c) "first time bound" c))
            (t2 (constraint-time-bound (third c) "second time bound" c)))
        `(exists s actslices (and (>= s ,t1) (<= s ,t2))
           (occurs ,(fourth c) s))))
     (t (error "Unsupported trajectory constraint ~s~@
-               (supported: always, at-end, hold-during, occur-during)" c))))
+               (supported: always, at-end, hold-during, occur-sometime)" c))))
 
 ;;; Preferences (soft goals / soft constraints).
 ;;;
@@ -459,7 +459,7 @@ each preference is (name body weight) -- weight nil unless given inline."
 (defun constraint-head-p (body)
   "True if BODY is a trajectory-constraint modal formula (vs. a state description)."
   (and (consp body)
-       (member (first body) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-DURING")
+       (member (first body) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
                :test #'sym-name=)))
 
 (defun translate-preference-body (body)
@@ -931,7 +931,7 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                       `(domain goal-fluents (set ,@goal-fluents))
                       '(domain goal-fluents (set-difference fluents fluents)))))
               ;; Fluents named only by trajectory constraints (always/at-end/
-              ;; hold-during).  occur-during contributes no fluents.
+              ;; hold-during).  occur-sometime contributes no fluents.
               (when constraint-fluents
                 (write-form out `(domain constraint-fluents (set ,@constraint-fluents))))
               ;; Fluents named only by preference bodies.

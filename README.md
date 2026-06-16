@@ -173,7 +173,7 @@ This formula is satisfiable, so the unwanted conclusion does not hold.
 
 ## Functions and Equality
 
-FiFO includes both interpreted and uninterpreted functions.  Interpreted functions include mathematical operations and set operations.  A term that does not begin with the name of an interpreted function is taken to be an uninterpreted function.  Thus, the formula using the interpreted function + and the uninterpreted function symbol node
+FiFO includes both interpreted and uninterpreted functions.  Interpreted functions include mathematical operations and set operations.  A term that does not begin with the name of an interpreted function is taken to be an uninterpreted function.  Thus, the formula using the interpreted function + and the uninterpreted function symbol `vertex`
 
 ```
 (all i (range 1 3) true (edge (vertex x) (vertex (+ x 1))))
@@ -816,16 +816,16 @@ With `:constraints`, the problem may carry a `(:constraints ...)` section of har
 | `(always φ)` | φ holds in every state | `(all s slices true (holds φ s))` |
 | `(at-end φ)` | φ holds in the final state | `(holds φ numslices)` |
 | `(hold-during t1 t2 φ)` | φ holds in every state of the inclusive slice window `[t1, t2]` | `(all s slices (and (>= s t1) (<= s t2)) (holds φ s))` |
-| `(occur-during t1 t2 a)` | the ground action `a` occurs at some slice in `[t1, t2]` | `(exists s actslices (and (>= s t1) (<= s t2)) (occurs a s))` |
+| `(occur-sometime t1 t2 a)` | the ground action `a` occurs at some slice in `[t1, t2]` | `(exists s actslices (and (>= s t1) (<= s t2)) (occurs a s))` |
 
-Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combination of literals) and `a` is a fully instantiated action term, e.g. `(fly-airplane p1 a1 a2)`. The time bounds `t1`/`t2` are inclusive integer slice numbers. `occur-during` is a FiFO-specific extension (it has no standard PDDL counterpart). Constraints only restrict the set of valid plans, so they do not change the reachability lower bound on `minslices`. φ must refer to dynamic fluents (predicates that some action adds or deletes); a constraint over a static predicate, or any unsupported operator, is rejected with an error. For example:
+Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combination of literals) and `a` is a fully instantiated action term, e.g. `(fly-airplane p1 a1 a2)`. The time bounds `t1`/`t2` are inclusive integer slice numbers. `occur-sometime` is a FiFO-specific extension (it has no standard PDDL counterpart). Constraints only restrict the set of valid plans, so they do not change the reachability lower bound on `minslices`. φ must refer to dynamic fluents (predicates that some action adds or deletes); a constraint over a static predicate, or any unsupported operator, is rejected with an error. For example:
 
 ```lisp
 (:constraints
    (and
       (always (not (at pkg1 l2)))            ; pkg1 never passes through l2
       (hold-during 1 2 (in pkg1 t1))         ; pkg1 stays in t1 for the first two slices
-      (occur-during 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
+      (occur-sometime 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
 ```
 
 #### Forcing Plan to Incorporate Known Facts
@@ -839,11 +839,11 @@ Trajectory constraints are also useful for pinning a plan to facts you already k
 (:goal (at plane1 boston))
 (:constraints
    (and
-      (occur-during 3 5 (fly-airplane plane1 washington boston))  ; flight fires in step 3..5
+      (occur-sometime 3 5 (fly-airplane plane1 washington boston))  ; flight fires in step 3..5
       (hold-during 1 4 (at pkg1 boston))))                        ; pkg1 at boston in steps 1..4
 ```
 
-The plan must reach the goal *and* respect both constraints, so the planner holds the plane in Washington and fires the flight at the earliest allowed step (3, landing in Boston at step 4), while `pkg1` — which starts at Boston and is never moved — satisfies the `hold-during` window. Recall the windows use absolute slice numbers and do not raise the reachability bound, so ensure the search horizon reaches them (here the `occur-during` window already forces a horizon of 4); the `hold-during` body must name a dynamic fluent.
+The plan must reach the goal *and* respect both constraints, so the planner holds the plane in Washington and fires the flight at the earliest allowed step (3, landing in Boston at step 4), while `pkg1` — which starts at Boston and is never moved — satisfies the `hold-during` window. Recall the windows use absolute slice numbers and do not raise the reachability bound, so ensure the search horizon reaches them (here the `occur-sometime` window already forces a horizon of 4); the `hold-during` body must name a dynamic fluent.
 
 #### Preferences (soft goals and soft constraints)
 
