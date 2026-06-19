@@ -7,6 +7,8 @@ henry.kautz@gmail.com
 
 FiFO is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The FiFO interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
 
+FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). The main differences are that it restricts weights to literals and provides a richer set of operators for working with observed predicates and domains.
+
 The FiFO interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use FiFO.
 
 ## Example of FiFO
