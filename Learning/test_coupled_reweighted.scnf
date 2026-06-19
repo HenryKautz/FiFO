@@ -1,0 +1,11 @@
+; reweighted from test_coupled.scnf
+; method: exact iterative MaxEnt over the feasible set; scale: 100
+; fit: converged in 22 iterations (tol 1.0d-5); real weight = integer / 100
+; marginal (P A) target 0.6000 achieved 0.6000
+; marginal (P B) target 0.6000 achieved 0.6000
+; original probability assertions echoed below as ;; comments
+;; (PROBABILITY (P A) 0.6)
+;; (PROBABILITY (P B) 0.6)
+(OR (P A) (P B))
+(WEIGHT (P A) 69)
+(WEIGHT (P B) 69)

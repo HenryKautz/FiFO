@@ -1,0 +1,145 @@
+# FiFO Weight Learning — Pipeline Guide
+
+This directory implements weight learning for FiFO weighted-MaxSAT theories: given
+**target marginal probabilities** for the weighted atoms, recover the integer
+literal weights that realize them.
+
+For the theory — the full range of data regimes, the regret / moment-matching
+views, and the provenance — see [fifo-weight-learning.md](fifo-weight-learning.md).
+This file covers only **how to run** the pipeline that is implemented so far,
+which is Case 4 of that document (*beliefs about marginals*).
+
+## What the pipeline does
+
+**Input:** an instantiated `.scnf` file (the output of FiFO's `instantiate`) whose
+`(PROBABILITY <literal> p)` lines carry a **target marginal probability**
+`p ∈ [0.0, 1.0]` — the probability that `<literal>` should be true.
+
+`PROBABILITY` is a distinct keyword from FiFO's `(WEIGHT <literal> c)` cost form
+on purpose: the pipeline's **input** speaks probabilities (`PROBABILITY`) and its
+**output** speaks integer costs (`WEIGHT`). They never share syntax, so an output
+file is not a valid input — re-running the pipeline on its own output is rejected
+rather than silently misread.
+
+**Output:** `<root>_reweighted.scnf`, identical to the input except that every
+`PROBABILITY` line is replaced by a **positive-integer** `WEIGHT` on a single
+polarity (the other polarity is implicitly zero), per the README shift+scale
+convention. Degenerate certainties (`p = 0` / `p = 1`) become hard unit clauses
+rather than infinite weights. The original `PROBABILITY` assertions are echoed
+into the output as `;;` comment lines, recording the provenance of the weights.
+The result feeds straight into FiFO's `propositionalize` → MaxSAT (the `;`/`;;`
+comment lines are skipped by the reader).
+
+The model is the Gibbs distribution `P(x) ∝ exp(-Σ θ·Φ(x))` over the feasible set,
+where a `WEIGHT w L` is the cost paid when literal `L` is true. A target marginal
+`p` maps to the cost-when-true `θ = log((1-p)/p)`; the sign of `θ` decides which
+polarity carries the (positive) weight.
+
+## Two estimators
+
+| File | Function | Method | Use when |
+|---|---|---|---|
+| `reweight.lisp` | `reweight` | Independent log-odds (closed form) | Atoms are (near-)independent; fast, no solver |
+| `maxent.lisp` | `maxent-reweight` | Exact iterative MaxEnt over the feasible set | Hard clauses couple the weighted atoms |
+
+`reweight` ignores the clauses and sets `θ = log((1-p)/p)` per atom directly.
+`maxent-reweight` corrects for clause coupling: it enumerates the feasible set
+once and iterates `θ` until the model's marginals match the targets. When the
+atoms happen to be independent, the two agree exactly.
+
+## Running it
+
+Requires SBCL (the same toolchain as FiFO). Run from inside `Learning/`.
+
+### Independent log-odds
+
+```sh
+sbcl --non-interactive \
+     --eval '(load "reweight.lisp")' \
+     --eval '(reweight "myfile.scnf")'
+```
+
+Writes `myfile_reweighted.scnf`. Options:
+
+- `:out-file "path.scnf"` — override the output path.
+- `:scale N` — integer resolution (default `100`); real weight of any emitted
+  line is `integer / N`. Larger `N` = finer resolution (and a sharper / lower-
+  temperature distribution).
+
+### Exact iterative MaxEnt
+
+```sh
+sbcl --non-interactive \
+     --eval '(load "maxent.lisp")' \
+     --eval '(maxent-reweight "myfile.scnf")'
+```
+
+(`maxent.lisp` loads `reweight.lisp` for the shared helpers.) It prints a
+target-vs-achieved marginal report and writes the same report as comment lines in
+the output. Options:
+
+- `:out-file`, `:scale` — as above.
+- `:eta` — step size for the damped diagonal-Newton update (default `1.0`).
+- `:tol` — convergence tolerance on `max |achieved − target|` (default `1e-5`).
+- `:max-iters` — iteration cap (default `5000`).
+- `:verbose` — print the report to stdout (default `t`).
+
+### Downstream
+
+Either output is an ordinary `.scnf`. To compile and solve:
+
+```sh
+# from the FiFO project root, with FiFO.lisp loaded
+(propositionalize "Learning/myfile_reweighted.scnf")   ; -> .cnf/.wcnf + .map
+(satisfy ...)                                           ; or run a MaxSAT solver
+```
+
+Add `(OPTION WEIGHTS WCNF)` to the input (it is passed through) to get a `.wcnf`
+for a MaxSAT solver; otherwise `propositionalize` emits plain `.cnf` with
+`cw` comment lines.
+
+## Input format example
+
+```lisp
+(OR (BUY BANANA) (BUY STEAK) (BUY MILK))   ; a hard clause
+(PROBABILITY (BUY BANANA) 0.5)             ; target marginal probabilities
+(PROBABILITY (BUY STEAK) 0.25)
+(PROBABILITY (BUY MILK) 0.9)
+(PROBABILITY (NOT (BUY EGGS)) 0.2)         ; target on a negated literal: P(EGGS)=0.8
+(PROBABILITY (BUY SPAM) 0.0)               ; certainty -> hard clause
+(PROBABILITY (BUY BREAD) 1.0)              ; certainty -> hard clause
+(OPTION WEIGHTS WCNF)                      ; passed through
+```
+
+A target on `(NOT L)` is normalized to the positive atom (`p` on `(NOT L)` means
+`P(L)=1-p`). Specifying the same atom twice is an error.
+
+The corresponding `<root>_reweighted.scnf` echoes each of these as a `;;` comment
+and emits the learned `(WEIGHT ... <integer>)` lines below them.
+
+## Worked examples in this directory
+
+- `test_marginals.scnf` → `test_marginals_reweighted.scnf` — the example above;
+  the `OR` couples BANANA/STEAK/MILK, so the MaxEnt weights differ from the
+  independent ones, while the uncoupled EGGS is identical under both.
+- `test_coupled.scnf` → `test_coupled_reweighted.scnf` — `(OR A B)` with both
+  targets `0.6`; MaxEnt converges to the analytic `θ = ln 2` (integer weight 69),
+  achieving exactly 0.6, where the independent estimator would get it wrong.
+
+## Limitations (current)
+
+- **Exact MaxEnt is small-instance only.** `maxent-reweight` enumerates the
+  feasible set (node cap ~5M, then it errors). This is the "do the counting on
+  small instances" regime; a sampler / weighted model counter would replace the
+  enumeration for scale.
+- **Infeasible targets don't converge.** If a hard clause forbids a requested
+  marginal, the fit stops at `:max-iters` with `θ` pinned at its clamp and reports
+  the residual gap rather than silently misreporting.
+
+## See also
+
+- [fifo-weight-learning.md](fifo-weight-learning.md) — the theory: all data
+  regimes (complete/optimal, merely-good, partial, beliefs, beliefs+data),
+  convexity, the oracle's role, domain-size dependence, and related work.
+- `../README.md` — FiFO language reference, the `WEIGHT` form, and the weighted
+  CNF output formats (`cnf` / `wcnf-old` / `wcnf`).

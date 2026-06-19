@@ -1,0 +1,17 @@
+; reweighted from test_marginals.scnf
+; method: independent log-odds (theta = log((1-p)/p)); scale: 100
+; recovered real weight of any line below = integer weight / 100
+; original probability assertions echoed below as ;; comments
+;; (PROBABILITY (BUY BANANA) 0.5)
+;; (PROBABILITY (BUY STEAK) 0.25)
+;; (PROBABILITY (BUY MILK) 0.9)
+;; (PROBABILITY (NOT (BUY EGGS)) 0.2)
+;; (PROBABILITY (BUY SPAM) 0.0)
+;; (PROBABILITY (BUY BREAD) 1.0)
+(OR (BUY BANANA) (BUY STEAK) (BUY MILK))
+(OR (NOT (BUY SPAM)))
+(OR (BUY BREAD))
+(WEIGHT (BUY STEAK) 110)
+(WEIGHT (NOT (BUY MILK)) 220)
+(WEIGHT (NOT (BUY EGGS)) 139)
+(OPTION WEIGHTS WCNF)

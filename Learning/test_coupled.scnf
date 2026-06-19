@@ -1,0 +1,3 @@
+(OR (P A) (P B))
+(PROBABILITY (P A) 0.6)
+(PROBABILITY (P B) 0.6)

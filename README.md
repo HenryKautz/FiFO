@@ -403,6 +403,8 @@ No license hassle, no compilation, and the Python API is pleasant. Note CP-SAT t
 
 For a discussion about learning weights in FiFO, see [fifo-weight-learning.md](fifo-weight-learning.md).
 
+For the implemented learning pipeline — turning target marginal probabilities into integer literal weights — and how to run it, see [Learning/learning.md](Learning/learning.md).
+
 Deduction 
 ---------------------------------------
 
