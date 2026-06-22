@@ -505,7 +505,7 @@ The input formulas need not be in conjunctive normal form. Converting a formula 
 > D = size of the largest set appearing in a quantification statement  
 > N = deepest nesting of quantifiers in a formula
 
-the size of the output CNF is $O(M*L*D^N)$.
+the size of the output CNF is $O(MLD^N)$.
 
 When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to a model of the output formula.
 
