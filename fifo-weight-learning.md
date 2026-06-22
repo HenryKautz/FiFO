@@ -134,9 +134,7 @@ When demonstrations are near-optimal but not optimal, the consistency cone is em
 the problem shifts from feasibility to **minimizing total regret**, which stays
 convex. The canonical objective is **Maximum Margin Planning** / structured SVM:
 
-$$\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2
-+ \sum_k \Big[\theta^\top\Phi_k(x^{(k)})
-- \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .$$
+$$\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .$$
 
 A subgradient is $`\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)`$ with $`\hat x_k`$ the
 loss-augmented MaxSAT optimum — the perceptron update, now not driven to zero.
