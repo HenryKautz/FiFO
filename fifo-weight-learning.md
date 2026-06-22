@@ -28,7 +28,7 @@ The objective the solver minimizes is **linear in the weights**:
 $$C_\theta(x) = \sum_a \theta_a N_a(x) = \theta^\top \Phi(x).$$
 
 In planning terms $\Phi(x)$ is the histogram of action types in a plan (summed over
-groundings and time steps), and $C_\theta$ is the total plan cost.
+groundings and time steps), and $`C_\theta`$ is the total plan cost.
 
 ---
 
@@ -67,12 +67,12 @@ is a linear term minus a concave term, hence **convex** in $\theta$. The first t
 is free (counting); the second is a MaxSAT solve.
 
 **Moment matching (probabilistic).** Adopt the Gibbs model
-$P_\theta(x) \propto \exp(-\theta^\top\Phi(x))$ on $\mathcal{F}$. Then learning is
-matching the model's expected features $\mathbb{E}_\theta[\Phi]$ to a target. Every
+$`P_\theta(x) \propto \exp(-\theta^\top\Phi(x))`$ on $\mathcal{F}$. Then learning is
+matching the model's expected features $`\mathbb{E}_\theta[\Phi]`$ to a target. Every
 regime below differs only in **where the target moments come from**:
 
 - complete data → empirical counts $\bar\Phi$
-- partial data → clamped (conditional) expectations $\mathbb{E}_\theta[\Phi \mid o]$
+- partial data → clamped (conditional) expectations $`\mathbb{E}_\theta[\Phi \mid o]`$
 - prior beliefs → believed marginals $\tau$
 
 The two lenses are the high- and low-temperature ends of one spectrum (max replaces
@@ -114,11 +114,11 @@ partition function is identically 1 and the likelihood decomposes, so normalized
 counts **are** the parameters. This FiFO model is **undirected and constrained** —
 the clauses couple the variables — so:
 
-- *Probabilistic view:* the gradient is $\bar\Phi - \mathbb{E}_\theta[\Phi]$. Counting
+- *Probabilistic view:* the gradient is $`\bar\Phi - \mathbb{E}_\theta[\Phi]`$. Counting
   gives the empirical half; the model expectation needs $Z(\theta)$, a global
   $\theta$-dependent sum over $\mathcal{F}$ (weighted model counting, #P-hard).
 - *Discriminative view:* "good weights" are *operationally defined* by what the
-  solver does — evaluating a candidate $\theta$ requires $\min_{x\in\mathcal F}\theta^\top\Phi(x)$,
+  solver does — evaluating a candidate $\theta$ requires $`\min_{x\in\mathcal F}\theta^\top\Phi(x)`$,
   one MaxSAT call. The weights are energies, not frequencies; the map from energies
   to behavior runs through the constrained argmin, which counting cannot invert.
 
@@ -138,7 +138,7 @@ $$\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2
 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)})
 - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .$$
 
-A subgradient is $\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)$ with $\hat x_k$ the
+A subgradient is $`\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)`$ with $`\hat x_k`$ the
 loss-augmented MaxSAT optimum — the perceptron update, now not driven to zero.
 
 Practical points:
@@ -148,14 +148,14 @@ Practical points:
   $R(\theta)$ and the gauge pick among near-equivalent fits (L2 for stability, L1 for
   sparsity).
 - **Validate by regret, not reproduction** — demos are suboptimal, so you *shouldn't*
-  reproduce them. Watch the distribution of residual gaps $g_k(\theta^*)$; gaps that
+  reproduce them. Watch the distribution of residual gaps $`g_k(\theta^*)`$; gaps that
   grow with instance size signal misspecification (see §10), not noise.
 - **Solve the oracle to optimality** — an anytime/suboptimal solution under-estimates
   the min and gives a biased subgradient (relevant for anytime solvers like
   TT-Open-WBO-Inc).
 
 The probabilistic alternative *models* the suboptimality via a Boltzmann demonstrator
-$P_\theta(x)\propto\exp(-\beta\,\theta^\top\Phi)$ (temperature $1/\beta$ = rationality;
+$`P_\theta(x)\propto\exp(-\beta\,\theta^\top\Phi)`$ (temperature $1/\beta$ = rationality;
 $\beta$ shares the gauge with the cost scale). Principled but pays the
 partition-function cost — do the counting on small instances.
 
@@ -179,11 +179,11 @@ latent — **non-convex**. Two approaches:
      minimize $\theta^\top\Phi$ over the rest → best completion $\hat x^{(k)}$.
    - *Update*: a complete-data margin step using the free, loss-augmented MaxSAT.
 
-   The data term becomes $\min_{x\in\mathcal{F}_d(o^{(k)})}\theta^\top\Phi(x)$; CCCP
+   The data term becomes $`\min_{x\in\mathcal{F}_d(o^{(k)})}\theta^\top\Phi(x)`$; CCCP
    linearizes it via the imputation. Reuses one oracle twice — clamped, then free.
 
 2. **EM on the marginal likelihood**, with gradient
-   $\mathbb{E}_\theta[\Phi \mid o^{(k)}] - \mathbb{E}_\theta[\Phi]$ (clamped minus free
+   $`\mathbb{E}_\theta[\Phi \mid o^{(k)}] - \mathbb{E}_\theta[\Phi]`$ (clamped minus free
    expectation). CCCP is the "hard EM" version with a MAP completion in place of the
    expectation.
 
@@ -198,21 +198,21 @@ the classic ill-posed IRL case — the cure is observing part of the plan itself
 
 This is the **maximum-entropy** problem: the weights are the **Lagrange multipliers**
 enforcing your believed marginals. Convert beliefs to target expected counts
-$\tau_a = \sum_{j\in a} p_j$, and solve the moment-matching condition
+$`\tau_a = \sum_{j\in a} p_j`$, and solve the moment-matching condition
 
 $$\mathbb{E}_\theta[\Phi] = \tau,$$
 
-a low-dimensional convex program ($\min_\theta \log Z(\theta) + \theta^\top\tau$),
-solvable by iterative scaling or gradient descent. Each step needs $\mathbb{E}_\theta[\Phi]$
+a low-dimensional convex program ($`\min_\theta \log Z(\theta) + \theta^\top\tau`$),
+solvable by iterative scaling or gradient descent. Each step needs $`\mathbb{E}_\theta[\Phi]`$
 (weighted model counting / sampling over $\mathcal{F}$) — do it on small instances.
 
 - **Scale is now identified.** Unlike optimal-plan data (ratios only), marginals depend
   on the absolute scale of $\theta$ (the temperature), so they pin $\theta$ down fully.
 - **Warm-start.** Ignoring clauses, each literal is logistic, giving
-  $\theta_a^{(0)} = \log\frac{1-p_a}{p_a}$ (log-odds of the belief); the iterative
+  $`\theta_a^{(0)} = \log\frac{1-p_a}{p_a}`$ (log-odds of the belief); the iterative
   inference corrects for the coupling the clauses introduce.
 - **Soft matching.** Beliefs may be jointly infeasible under the clauses; penalize
-  $\|\mathbb{E}_\theta[\Phi]-\tau\|$ with per-constraint confidence weights. Schemas with
+  $`\|\mathbb{E}_\theta[\Phi]-\tau\|`$ with per-constraint confidence weights. Schemas with
   no belief get a prior/regularizer.
 
 With no data there is nothing to validate against — $\theta$ is only as good as the
@@ -222,19 +222,19 @@ beliefs plus the MaxEnt assumption, which is the honest least-committal completi
 
 ## 9. Case 5 — Combining beliefs and data
 
-Both enter through the **same channel**: constraints on $\mathbb{E}_\theta[\Phi]$. Combining
+Both enter through the **same channel**: constraints on $`\mathbb{E}_\theta[\Phi]`$. Combining
 them is combining target moments, weighted by confidence — beliefs act as **pseudo-data
 with an effective sample size** (Bayesian shrinkage / conjugate prior). No data → match
 the beliefs; abundant data → empirical moments dominate; in between, a blend.
 
 **Recommended arrangement for the MaxSAT stack** (decouples expensive from cheap):
 
-1. Solve the marginal MaxEnt **once**, offline, on small instances → prior center $\theta_0$.
+1. Solve the marginal MaxEnt **once**, offline, on small instances → prior center $`\theta_0`$.
 2. Run the discriminative min-regret fit on the data with regularizer
-   $\tfrac{\lambda}{2}\|\theta - \theta_0\|^2$ instead of $\tfrac{\lambda}{2}\|\theta\|^2$.
+   $`\tfrac{\lambda}{2}\|\theta - \theta_0\|^2`$ instead of $\tfrac{\lambda}{2}\|\theta\|^2$.
 
 The costly probabilistic inference happens once (to set the prior); the cheap MaxSAT
-oracle does the data fitting. With no data this returns $\theta_0$; with data it moves
+oracle does the data fitting. With no data this returns $`\theta_0`$; with data it moves
 off as far as the evidence warrants. The beliefs also **supply the scale** that
 optimal-plan data leaves undetermined — the two sources are complementary.
 
@@ -242,10 +242,10 @@ optimal-plan data leaves undetermined — the two sources are complementary.
 
 ## 10. Domain-size dependence (a real caveat)
 
-Schema tying assumes $\theta_a$ is constant across instance sizes. If the true cost has
+Schema tying assumes $`\theta_a`$ is constant across instance sizes. If the true cost has
 size-dependent structure (congestion, economies of scale, fixed overheads), pure tying
 is misspecified — diagnosable as residual regret that **grows systematically with size**.
-The fix stays linear: let $\theta_a(d) = \alpha_a + \beta_a\,g(d)$ for a size function
+The fix stays linear: let $`\theta_a(d) = \alpha_a + \beta_a\,g(d)`$ for a size function
 $g(d)$, adding size-modulated features.
 
 For the max-margin route, also **normalize the per-instance loss** (by plan length or
@@ -266,7 +266,7 @@ one corner here that touches a genuinely open question rather than settled techn
   **1-slack cutting-plane** SVM converges in few oracle calls (each call is a full solve).
 - **Regimes**: convex and oracle-light when features are observed (complete, or
   hidden-unweighted); add CCCP/EM only when the *weighted* variables are hidden;
-  fold prior beliefs in as the regularization center $\theta_0$.
+  fold prior beliefs in as the regularization center $`\theta_0`$.
 - **Scale**: fit on small instances, transfer to large; do any counting/sampling small.
 
 ---
@@ -315,7 +315,7 @@ exhaustive literature search of the exact combination.)
 | Beliefs only | n/a | MaxEnt moment matching | yes | $\mathbb{E}_\theta[\Phi]$ via WMC/sampling |
 | Beliefs + data | varies | data fit + prior $\theta_0$ | per data term | offline WMC once + MaxSAT loop |
 
-**Throughline:** every case is a constraint on $\mathbb{E}_\theta[\Phi]$ (empirical,
+**Throughline:** every case is a constraint on $`\mathbb{E}_\theta[\Phi]`$ (empirical,
 clamped, or believed). Counting supplies the free half; the constrained
 argmin/partition function — the MaxSAT oracle or its counting analogue — supplies the
 half that defines the problem.
