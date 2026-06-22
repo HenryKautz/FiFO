@@ -46,7 +46,7 @@ optional here but better-conditioned.
 
 **Varying domains** (different numbers of packages, trucks, places, time horizon):
 the CNF, variables, and feasible set all change — but the schemas don't, and
-$\Phi_d : \mathcal{F}_d \to \mathbb{Z}_{\ge0}^A$ always lands in the *same* space.
+$`\Phi_d : \mathcal{F}_d \to \mathbb{Z}_{\ge0}^A`$ always lands in the *same* space.
 Here tying is **mandatory**: there is no correspondence between a ground literal in
 a small instance and one in a large instance except through the schema. The payoff
 is transfer — a $\theta$ fit on small instances predicts optimal plans for unseen
