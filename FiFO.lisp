@@ -1248,9 +1248,18 @@ bound.  Referencing a bound domain symbol returns the stored list verbatim."
           ((eql op 'rem) (- e1 (* e2 (floor (/ e1 e2)))))
           ((eql op 'mod) (mod e1 e2))
           ((eql op 'range) (parse-range e1 e2))
-          ((eql op 'union) (union e1 e2 :test #'equalp))
-          ((eql op 'intersection) (intersection e1 e2 :test #'equalp))
-          ((eql op 'set-difference) (set-difference e1 e2 :test #'equalp))
+          ;; Order-preserving set operations: the standard-library union /
+          ;; intersection / set-difference leave result order unspecified, which
+          ;; made instantiation of any domain built from them (and hence its scnf
+          ;; clause order) nondeterministic across runs.  These keep the first
+          ;; operand's order, with union appending only the genuinely new elements
+          ;; of the second.
+          ((eql op 'union)
+           (append e1 (remove-if (lambda (x) (member x e1 :test #'equalp)) e2)))
+          ((eql op 'intersection)
+           (remove-if-not (lambda (x) (member x e2 :test #'equalp)) e1))
+          ((eql op 'set-difference)
+           (remove-if (lambda (x) (member x e2 :test #'equalp)) e1))
           (t (error "Parser error at ~S" op)))))
 
 (defun parse-range (LOW HIGH)
