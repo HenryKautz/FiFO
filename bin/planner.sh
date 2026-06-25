@@ -22,11 +22,14 @@ WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"   # weighted/MaxSAT solver (costs)
 # ----------------------------------------------------------------------------
 
 usage() {
-  echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>]" >&2
+  echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>] [--stop-after <wff|scnf>]" >&2
   echo "  A .pddl problem is translated with pddl2fifo; a .wff is used as-is." >&2
   echo "  Searches horizons for the smallest plan.  --minslices defaults to a reachability" >&2
   echo "  lower bound (2 for a .wff); --maxslices defaults to 2 * minslices." >&2
   echo "  --solver overrides the pure SAT (feasibility) solver; default: $SAT_SOLVER." >&2
+  echo "  --stop-after wff   stops after writing the .wff (translation only, no solving)." >&2
+  echo "  --stop-after scnf  stops after instantiating the .scnf at the smallest horizon" >&2
+  echo "                     (or --numslices), without solving." >&2
   exit 2
 }
 
@@ -34,6 +37,7 @@ PROBLEM=""
 DOMAIN=""
 MINSLICES=""   # empty = let the planner default it from reachability analysis
 MAXSLICES=""   # empty = let the planner default it to 2 * minslices
+STOP_AFTER=""  # empty = run the full pipeline; "wff" or "scnf" stops early
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --maxslices) [[ $# -ge 2 ]] || usage; MAXSLICES="$2"; shift 2 ;;
     --numslices) [[ $# -ge 2 ]] || usage; MINSLICES="$2"; MAXSLICES="$2"; shift 2 ;;  # fixed horizon
     --solver)    [[ $# -ge 2 ]] || usage; SAT_SOLVER="$2";  shift 2 ;;
+    --stop-after) [[ $# -ge 2 ]] || usage; STOP_AFTER="$2"; shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -50,6 +55,9 @@ done
 
 [[ -n "$PROBLEM" ]] || usage
 [[ -f "$PROBLEM" ]] || { echo "problem file not found: $PROBLEM" >&2; exit 2; }
+if [[ -n "$STOP_AFTER" && "$STOP_AFTER" != "wff" && "$STOP_AFTER" != "scnf" ]]; then
+  echo "--stop-after must be wff or scnf, got: $STOP_AFTER" >&2; exit 2
+fi
 for v in MINSLICES MAXSLICES; do
   if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then echo "--${v,,} must be a non-negative integer, got: ${!v}" >&2; exit 2; fi
 done
@@ -88,6 +96,8 @@ MIN_KW=""
 [[ -n "$MINSLICES" ]] && MIN_KW=":minslices $MINSLICES"
 MAX_KW=""
 [[ -n "$MAXSLICES" ]] && MAX_KW=":maxslices $MAXSLICES"
+STOP_KW=""
+[[ -n "$STOP_AFTER" ]] && STOP_KW=":stop-after :$STOP_AFTER"
 
 exec sbcl --noinform --non-interactive \
   --eval "(load \"$FIFO\")" \
@@ -95,6 +105,6 @@ exec sbcl --noinform --non-interactive \
   --eval "(load \"$PLANNER\")" \
   --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
-              $MIN_KW $MAX_KW
+              $MIN_KW $MAX_KW $STOP_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))"

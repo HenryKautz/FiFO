@@ -23,6 +23,7 @@
                   (sat-solver "kissat")
                   (weighted-solver "tt-open-wbo-inc-Glucose4_1")
                   domain-file (satplan-path "satplan.wff")
+                  stop-after
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -39,8 +40,14 @@ plain CNF and testing with the pure SAT solver SAT-SOLVER.  If the domain has no
 action costs that model is the answer.  If it does, phase 2 re-solves at that
 horizon in WCNF with the weighted solver WEIGHTED-SOLVER to minimize total cost.
 
-Returns (values STATUS SLICES ANSWER-FILE): STATUS is :SAT, :UNSAT (no plan in
-range), or :ERROR.  On :SAT the answer is written to <problem-root>.answer.
+STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
+PDDL translation, or the input itself for a .wff), and :SCNF returns after
+instantiating it once at the smallest horizon (MINSLICES / the reachability
+bound, or a fixed --numslices), leaving the .scnf without solving.
+
+Returns (values STATUS SLICES FILE): STATUS is :SAT, :UNSAT (no plan in range),
+:STOPPED-WFF, :STOPPED-SCNF, or :ERROR.  On :SAT the answer is written to
+<problem-root>.answer; on the :STOPPED-* statuses FILE is the generated wff/scnf.
 Progress is printed to STREAM."
   (let* ((problem-path (pathname problem-file))
          (wff (if (string-equal (or (pathname-type problem-path) "") "wff")
@@ -62,6 +69,9 @@ Progress is printed to STREAM."
                        (when domain-file (list :domain-file domain-file)))
               (unless out (error "wff generation failed"))
               (setq reach-min rmin)))
+          (when (eq stop-after :wff)
+            (format stream "Stopped after generating the wff: ~A~%" wff)
+            (return-from plan (values :stopped-wff nil wff)))
           (when (and (not minslices) (integerp reach-min))
             (format stream "Reachability analysis: a plan needs at least ~A time slices.~%"
                     reach-min))
@@ -73,6 +83,12 @@ Progress is printed to STREAM."
           (let* ((lo (or minslices (and (integerp reach-min) reach-min) 2))
                  (hi (or maxslices (* 2 lo)))
                  (found nil) (has-costs nil))
+            (when (eq stop-after :scnf)
+              (setq *satplan-numslices* lo *cnf-format* 'cnf)
+              (unless (instantiate wff :scnfile scnf)
+                (error "instantiation failed at ~A slices" lo))
+              (format stream "Stopped after generating the scnf at ~A time slices: ~A~%" lo scnf)
+              (return-from plan (values :stopped-scnf lo scnf)))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).
             (loop for n from lo to hi until found do
               (format stream "Trying ~A time slices with ~A (cnf)...~%" n sat-solver)
@@ -122,6 +138,9 @@ Progress is printed to STREAM."
        (format t "----------------------------------------~%")
        (with-open-file (s answer :direction :input)
          (loop for line = (read-line s nil) while line do (format t "~A~%" line)))
+       0)
+      ((:stopped-wff :stopped-scnf)
+       (format t "Wrote ~A~%" answer)   ; ANSWER holds the generated wff/scnf path
        0)
       (:unsat
        (format t "UNSATISFIABLE: no plan exists within the given horizon.~%")
