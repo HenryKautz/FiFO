@@ -419,4 +419,6 @@ inconsistent with the hard clauses~@[ and the fixed weights~].~%"
                     (format t "~&  -> ~A~%" out-file))
                   (when wff
                     (rw--write-back wff (or wff-out (rw--default-wff-out wff)) gid->spec scale))
-                  out-file)))))))))
+                  ;; Second value: gid -> spec, for callers that map a learned
+                  ;; weight back onto its source by tie-group (e.g. the PDDL pipeline).
+                  (values out-file gid->spec))))))))))

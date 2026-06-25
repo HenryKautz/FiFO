@@ -874,6 +874,20 @@ The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL 
 
 The two forms are equivalent; giving both on the same action is an error. The cost must be a constant number (a cost that varies with the action's parameters is not supported by either form).
 
+#### Learning action costs from probabilities
+
+Instead of a fixed cost, an action may declare a **`:probability <p>`** slot (with `0 < p < 1`) — the learnable alternative to `:cost`. The probability flows into the wff as a target marginal on the action's occurrence, **tied per schema** (all ground instances of one action share one weight) and learned by the weight pipeline. Costs and probabilities can coexist across a domain; an action may have one or the other, not both.
+
+`bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write a copy of the domain (`<domain>_learned.pddl`) with each `:probability p` replaced by the learned `:cost w` (which may be negative when the action is favored, `p > 0.5`). Costs already present are left untouched. For example:
+
+```lisp
+(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :probability 0.7)
+;; after `learn-pddl.sh prob.pddl --domain dom.pddl`:
+(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :cost -85)
+```
+
+Run `learn-pddl.sh --help` for all options. With `--maxent` the problem must be feasible at the chosen `--numslices`; log-odds is horizon-independent.
+
 With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
 
 #### Trajectory constraints

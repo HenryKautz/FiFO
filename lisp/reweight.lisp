@@ -191,12 +191,12 @@ p must be constant within a group" gid gp p)))
 
 (defun rw--wff-gids (forms)
   "eq-hash mapping each (PROBABILITY ...) form in FORMS to its tie-group id, by
-FiFO's rule: an explicit trailing symbol label, else a document-order integer."
+FiFO's rule: an explicit trailing tie-label (any value), else a doc-order integer."
   (let ((h (make-hash-table :test 'eq)) (counter 0))
     (dolist (form (rw--find-probability-forms forms) h)
       (let ((label (cadddr form)))
         (setf (gethash form h)
-              (if (and label (symbolp label)) label (incf counter)))))))
+              (if label label (incf counter)))))))
 
 (defun rw--spec-replacement (schema-lit spec scale)
   "The replacement .wff form for a (PROBABILITY SCHEMA-LIT ...) given its group
@@ -291,4 +291,6 @@ WFF-OUT (default <wff-root>_weighted.wff).  Returns the .scnf output pathname."
       (dolist (o options) (format out "~S~%" o)))        ; pass options through
     (when wff
       (rw--write-back wff (or wff-out (rw--default-wff-out wff)) gid->spec scale))
-    out-file)))
+    ;; Second value: gid -> spec ((:theta r) | (:hard 0/1)), for callers (e.g. the
+    ;; PDDL pipeline) that map a learned weight back onto its source by tie-group.
+    (values out-file gid->spec))))

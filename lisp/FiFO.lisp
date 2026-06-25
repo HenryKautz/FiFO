@@ -749,11 +749,12 @@ on the auto-assigned ids."
         (t (loop for sub in form append (find-probability-forms sub)))))
 
 (defun probability-form-gid (form counter-cell)
-  "The tie-group id of a (PROBABILITY <lit> <p> [<tie-label>]) FORM: an explicit
-trailing symbol label if given, else the next auto integer from COUNTER-CELL (a
-one-element list used as a mutable counter)."
+  "The tie-group id of a (PROBABILITY <lit> <p> [<tie-label>]) FORM: the explicit
+trailing tie-label if given (any non-nil value -- a symbol, or a structured tag
+such as (:action move) that pddl2fifo uses to mark provenance), else the next auto
+integer from COUNTER-CELL (a one-element list used as a mutable counter)."
   (let ((label (cadddr form)))            ; (probability lit p label)
-    (if (and label (symbolp label))
+    (if label
         label
         (incf (car counter-cell)))))
 

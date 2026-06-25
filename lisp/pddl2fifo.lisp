@@ -611,6 +611,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
            (precondition (getf body :precondition))
            (effect (getf body :effect))
            (cost-slot (getf body :cost))
+           (prob-slot (getf body :probability))
            (bindings
              (mapcar (lambda (p)
                        (unless (pddl-variable-p (car p))
@@ -623,7 +624,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                      param-pairs))
            (vars (mapcar #'cdr bindings))
            (act (if vars (cons name vars) name))
-           (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil))
+           (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil) (prob nil))
       (dolist (p (conjuncts precondition))
         (cond ((preference-p p)
                (error "Action ~a has a precondition preference ~s.~@
@@ -670,9 +671,21 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
         (unless (numberp cost-slot)
           (error "The :cost of action ~a must be a number, got ~s" name cost-slot))
         (setq cost cost-slot))
+      ;; A :probability slot is the learnable alternative to a cost: the action's
+      ;; occurrence gets a target marginal that the learning pipeline turns into a
+      ;; weight.  Mutually exclusive with a cost on the same action.
+      (when prob-slot
+        (when cost
+          (error "Action ~a has both a cost and a :probability; give it one or the other"
+                 name))
+        (unless (and (realp prob-slot) (< 0 prob-slot 1))
+          (error "The :probability of action ~a must be a number strictly between 0 and 1, got ~s"
+                 name prob-slot))
+        (setq prob prob-slot))
       (unless (or adds dels)
         (error "Action ~a has no add or delete effects" name))
       (let* ((negp (consp pre-))
+             (rguard (nreverse guard))
              (facts (append
                       (mapcar (lambda (f) (list 'pre act f)) (nreverse pre+))
                       (mapcar (lambda (f) (list 'preneg act f)) (nreverse pre-))
@@ -683,15 +696,24 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
              ;; Gate the action's facts on its static preconditions: when the
              ;; guard is false (an observed static atom does not hold) the (if ...)
              ;; expands to nothing, pruning that ground action at instantiation.
-             (conj (if guard
-                       (list 'if (cons 'and (nreverse guard)) conj0)
-                       conj0))
+             (conj (if rguard (list 'if (cons 'and rguard) conj0) conj0))
              (quants (mapcar (lambda (b p)
                                (cons (cdr b) (type-set-expression (cdr p))))
-                             bindings param-pairs)))
+                             bindings param-pairs))
+             ;; Per-schema probability form: target the action's Occurs over every
+             ;; slice; the tie-label (:action name) makes all groundings of this
+             ;; schema share one learned weight and maps back to the source action.
+             (prob-form
+               (when prob
+                 (let ((inner (list 'all 's 'actslices 'true
+                                    (list 'probability (list 'occurs act 's) prob
+                                          (list :action name)))))
+                   (wrap-quantifiers quants
+                     (if rguard (list 'if (cons 'and rguard) inner) inner))))))
         (values (wrap-quantifiers quants conj)
                 negp
-                (mapcar #'cdr param-pairs))))))
+                (mapcar #'cdr param-pairs)
+                prob-form)))))
 
 (defun reassemble-conjunction (forms)
   "Rebuild a goal/constraint formula from its top-level conjuncts: nil, the single
@@ -841,6 +863,7 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
                (types-used '())
                (action-forms '())
+               (prob-forms '())          ; per-schema (probability (occurs ...) p tag) forms
                (any-neg-pre nil))
           (unless all-objects
             (error "No objects: ~a has no :objects and ~a has no :constants"
@@ -852,14 +875,16 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
             (pushnew (car p) types-used :test #'string-equal))
           (dolist (s (define-sections domain-def))
             (when (and (consp s) (eq (first s) :action))
-              (multiple-value-bind (form negp param-types)
+              (multiple-value-bind (form negp param-types prob-form)
                   (translate-action s forbidden effect-preds cost-scale)
                 (push form action-forms)
+                (when prob-form (push prob-form prob-forms))
                 (when negp (setq any-neg-pre t))
                 (dolist (tp param-types)
                   (dolist (c (type-components tp))
                     (pushnew c types-used :test #'string-equal))))))
-          (setq action-forms (nreverse action-forms))
+          (setq action-forms (nreverse action-forms)
+                prob-forms (nreverse prob-forms))
           (unless action-forms
             (error "Domain file ~a defines no actions" domain-path))
           (let ((named-types (sort (remove-if (lambda (tp) (sym-name= tp "OBJECT"))
@@ -1005,7 +1030,15 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                     (write-form out
                       `(all s slices true (weight ,(fluent-cost-weight-literal lit) ,c))))))
               (terpri out)
-              (write-form out (list 'include satplan-path))))
+              (write-form out (list 'include satplan-path))
+              ;; Per-schema action probabilities go AFTER the include so that the
+              ;; actslices domain and the Occurs predicate (defined in satplan.wff)
+              ;; are available; each is tied per schema and learned downstream.
+              (when prob-forms
+                (terpri out)
+                (format out ";; Action probabilities (target marginals on Occurs;~%")
+                (format out ";; tied per action schema, learned by the weight pipeline)~%")
+                (dolist (pf prob-forms) (write-form out pf)))))
           (format t "Wrote ~a~%" (namestring out-path))
           ;; Return the wff pathname and the reachability lower bound on numslices
           ;; (an integer, or :unreachable if the relaxed problem has no plan).
