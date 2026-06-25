@@ -12,8 +12,13 @@ which is Case 4 of that document (*beliefs about marginals*).
 ## What the pipeline does
 
 **Input:** an instantiated `.scnf` file (the output of FiFO's `instantiate`) whose
-`(PROBABILITY <literal> p)` lines carry a **target marginal probability**
-`p ∈ [0.0, 1.0]` — the probability that `<literal>` should be true.
+`(PROBABILITY <literal> p [gid])` lines carry a **target marginal probability**
+`p ∈ [0.0, 1.0]` — the probability that `<literal>` should be true. The optional
+`gid` is a **tie-group id**: every ground instance of one source-`.wff`
+`(probability ...)` form shares a `gid`, and the pipeline fits **one** weight per
+group (parameter tying — see [fifo-weight-learning.md](fifo-weight-learning.md)
+§1–2). `instantiate` writes these forms automatically from a `.wff`; a hand-written
+`.scnf` may omit `gid`, in which case each line is its own untied group.
 
 `PROBABILITY` is a distinct keyword from FiFO's `(WEIGHT <literal> c)` cost form
 on purpose: the pipeline's **input** speaks probabilities (`PROBABILITY`) and its
@@ -65,6 +70,10 @@ Writes `myfile_reweighted.scnf`. Options:
 - `:scale N` — integer resolution (default `100`); real weight of any emitted
   line is `integer / N`. Larger `N` = finer resolution (and a sharper / lower-
   temperature distribution).
+- `:wff "source.wff"` — also write the learned weights **back into a copy of the
+  source `.wff`** (see "Tie groups and `.wff` write-back" below).
+- `:wff-out "path.wff"` — override the write-back path (default
+  `<wff-root>_weighted.wff`).
 
 ### Exact iterative MaxEnt
 
@@ -78,11 +87,33 @@ sbcl --non-interactive \
 target-vs-achieved marginal report and writes the same report as comment lines in
 the output. Options:
 
-- `:out-file`, `:scale` — as above.
+- `:out-file`, `:scale`, `:wff`, `:wff-out` — as above. With tie groups the fit
+  uses one shared `θ` per group (sufficient statistic = the group's true-count),
+  matching each group's **mean** marginal to its target; the report is per group.
 - `:eta` — step size for the damped diagonal-Newton update (default `1.0`).
 - `:tol` — convergence tolerance on `max |achieved − target|` (default `1e-5`).
 - `:max-iters` — iteration cap (default `5000`).
 - `:verbose` — print the report to stdout (default `t`).
+
+### Tie groups and `.wff` write-back
+
+The intended end-to-end flow starts and ends at the **`.wff`** level:
+
+1. Write a `.wff` with `(probability <literal> <p> [<tie-label>])` forms and
+   `instantiate` it on a **small** domain → a `.scnf` whose `PROBABILITY` lines
+   carry tie-group ids.
+2. Run `reweight` / `maxent-reweight` with `:wff "source.wff"`. Besides the
+   reweighted `.scnf`, this writes `source_weighted.wff`: a copy of the source in
+   which each `(probability ...)` form is replaced by **one** tied `(weight ...)`
+   cost (or a hard clause for `p = 0`/`1`). Because the weight sits on the schema,
+   re-instantiating gives every grounding the same (tied) cost.
+3. Edit `source_weighted.wff` to enlarge the domains and re-instantiate at full
+   size — schema tying carries the small-domain weights over (cf.
+   [fifo-weight-learning.md](fifo-weight-learning.md) §2, §10).
+
+Two well-formedness checks are enforced when grouping: a literal targeted by two
+different tie groups (**overlapping** forms) is an error, and the target `p` must
+be **constant** within a group.
 
 ### Downstream
 

@@ -4,35 +4,20 @@ Open work items. See [Learning/learning.md](Learning/learning.md) for the
 weight-learning pipeline as it stands and
 [fifo-weight-learning.md](fifo-weight-learning.md) for the theory.
 
-## 1. End-to-end weight learning from an uninstantiated `.wff`
+## 1. End-to-end weight learning from an uninstantiated `.wff` — DONE
 
-Today the learning pipeline starts from an already-instantiated `.scnf` whose
-`(PROBABILITY <literal> p)` lines give target marginals. We want to start one step
-earlier, at the source `.wff`, and end one step later, with an editable weighted
-`.wff`.
-
-Goal: take an **uninstantiated** FiFO `.wff` that contains `(PROBABILITY ...)`
-forms, and:
-
-1. Instantiate it on **small** domains (where exact MaxEnt enumeration is
-   tractable).
-2. Learn the weights on that small instance (independent log-odds or exact
-   iterative MaxEnt, as now).
-3. Emit a FiFO **`.wff`** (not just an `.scnf`) carrying the learned integer
-   `(WEIGHT ...)` costs, which the user can then **edit to change the domains**
-   and re-instantiate at full size — relying on schema tying so the small-domain
-   weights transfer (cf. fifo-weight-learning.md §2, §10 on domain-size
-   dependence).
-
-Open questions / subtasks:
-- Teach the parser/instantiator to accept `(PROBABILITY ...)` in `.wff` files
-  (placement rules analogous to `weight`: in `and`/`all`/`exists`/`if`, not in
-  `or`/`not`/etc.).
-- Decide how learned ground weights map back to a **schema-level** weight in the
-  emitted `.wff` (parameter tying: many ground `PROBABILITY` instances of one
-  schema → one learned `WEIGHT`). Handle conflicts/averaging if ground targets
-  for the same schema disagree.
-- Round-trip: emitted `.wff` should re-instantiate cleanly at a new domain size.
+Implemented. `(PROBABILITY <literal> <p> [<tie-label>])` is now a core FiFO form
+(parsed/placed like `weight`); `instantiate` passes it through to the `.scnf` as
+`(PROBABILITY <literal> <p> <gid>)` with a tie-group id shared by all groundings
+of one source form (auto integer, or an explicit label). The learning pipeline
+(`reweight.lisp`, `maxent.lisp`) groups by `gid`, fits **one** weight per group
+(log-odds is tied automatically; MaxEnt uses a tied estimator whose sufficient
+statistic is the group's true-count), and with `:wff "source.wff"` writes a copy
+of the source `.wff` with each `(probability ...)` replaced by its tied
+`(weight ...)` cost — re-instantiable at a new domain size. `propositionalize`
+rejects an `.scnf` that still contains `PROBABILITY` forms. Overlapping forms
+(one literal under two groups) and non-constant `p` within a group are errors.
+See [Learning/learning.md](Learning/learning.md).
 
 ## 2. Probabilities instead of costs in the SatPlan compiler
 

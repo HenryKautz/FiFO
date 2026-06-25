@@ -31,6 +31,16 @@ exactly where it was."
 ;; 2; (option *satplan-numslices* N) or (setq *satplan-numslices* N) sets it.
 (defvar *satplan-numslices*)
 (defvar Weights nil)
+;; Target marginal probabilities, the input twin of Weights: a (PROBABILITY
+;; <literal> <p> <gid>) carries a target marginal p in [0,1] and a tie-group id
+;; <gid> (shared by every grounding of one source-wff PROBABILITY form, so the
+;; learning pipeline can fit one tied weight per group).  instantiate passes these
+;; through to the scnf; the learning pipeline converts them to (WEIGHT ...).
+(defvar Probabilities nil)
+;; Maps each source (PROBABILITY ...) form (by cons identity) to its tie-group id;
+;; populated by assign-probability-gids before parsing so parse-probability can
+;; stamp each grounding.  See find-probability-forms / assign-probability-gids.
+(defvar *probability-gids* (make-hash-table :test #'eq))
 ;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
 ;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
 (defvar *cnf-format* 'CNF)
@@ -153,6 +163,7 @@ exactly where it was."
                               collect OBSERVATION))))
             (loop for C in CL do (format OUTS "~S~%" C))
             (loop for W in Weights do (format OUTS "~S~%" W))
+            (loop for P in Probabilities do (format OUTS "~S~%" P))
             (when (and Weights (not (eql *cnf-format* 'CNF)))
               (format OUTS "(OPTION WEIGHTS ~S)~%" *cnf-format*))))))
     t))
@@ -167,7 +178,13 @@ exactly where it was."
                        (let ((*read-eval* nil))
                          (loop with clause
                                while (not (eql :EOF (setq clause (read WS nil :EOF))))
-                               do (unless (and (consp clause)
+                               do (when (and (consp clause) (eq (car clause) 'probability))
+                                    (error "~A contains (PROBABILITY ...) forms; it carries target ~
+marginal probabilities, not weights, and cannot be propositionalized directly. ~
+Convert it to a weight-only file first with the learning pipeline (Learning/reweight.lisp ~
+or maxent.lisp)."
+                                           SCNFFILE))
+                                  (unless (and (consp clause)
                                                (member (car clause) '(or weight option)))
                                     (error "malformed scnf form (expected (OR ...), (WEIGHT ...), or (OPTION ...)): ~S"
                                            clause))
@@ -587,6 +604,7 @@ exactly where it was."
 ;; of PREDICATE.
 (defvar ObservedIndex)
 (defvar Weights)
+(defvar Probabilities)
 ;; When true, parse-formula treats observed predicates as plain literals to assert
 ;; (used when processing observation form bodies so newly derived pairs get added).
 (defvar observation-body-mode nil)
@@ -598,6 +616,8 @@ exactly where it was."
   (setq ObservedLiterals (make-hash-table :test #'equal))
   (setq ObservedIndex (make-hash-table :test #'equal))
   (setq Weights nil)
+  (setq Probabilities nil)
+  (clrhash *probability-gids*)
   (setf (gethash 'TRUE ObservedPredicates) 1)
   (setf (gethash 'TRUE ObservedLiterals) 1)
   (setf (gethash 'FALSE ObservedPredicates) 1)
@@ -609,6 +629,7 @@ exactly where it was."
 
 (defun parse-same-env (SCHEMA-LIST &key OBSERVATION-LIST)
   (parse-observations OBSERVATION-LIST)
+  (assign-probability-gids SCHEMA-LIST)
   (mapcar #'(lambda (c) (cons 'or c))
     (remove-valid-clauses
      (parse-schema-list SCHEMA-LIST))))
@@ -700,7 +721,7 @@ exactly where it was."
 (defun parse-schema (SCHEMA)
   (cond ((atom SCHEMA)
          (trace-message "[TRACE] Formula: ~S~%" SCHEMA))
-        ((member (car SCHEMA) '(domain alias option observed include weight)) nil)
+        ((member (car SCHEMA) '(domain alias option observed include weight probability)) nil)
         (t (trace-message "[TRACE] Formula: (~A ...)~%" (car SCHEMA))))
   (cond ((atom SCHEMA) (parse-formula SCHEMA))
         ((eql (car SCHEMA) 'domain) (parse-domain (cdr SCHEMA)))
@@ -709,12 +730,55 @@ exactly where it was."
         ((eql (car SCHEMA) 'observed) (parse-observations (cdr SCHEMA)))
         ((eql (car SCHEMA) 'include) (parse-include (cadr SCHEMA)))
         ((eql (car SCHEMA) 'weight) (parse-weight (cdr SCHEMA)))
+        ((eql (car SCHEMA) 'probability) (parse-probability SCHEMA))
         (t (parse-formula SCHEMA))))
 
 (defun parse-weight (ARGS)
   (let ((lit (parse-literal (car ARGS)))
         (num (normalize-numeric (parse-numeric-expression (cadr ARGS)))))
     (setq Weights (append Weights (list (list 'WEIGHT lit num))))
+    nil))
+
+(defun find-probability-forms (form)
+  "Depth-first list of every (PROBABILITY ...) subform of FORM, in document order.
+Shared by instantiate (to stamp tie-group ids) and the learning pipeline's
+write-back (to map a learned weight back onto its source form), so the two agree
+on the auto-assigned ids."
+  (cond ((not (consp form)) nil)
+        ((eq (car form) 'probability) (list form))
+        (t (loop for sub in form append (find-probability-forms sub)))))
+
+(defun probability-form-gid (form counter-cell)
+  "The tie-group id of a (PROBABILITY <lit> <p> [<tie-label>]) FORM: an explicit
+trailing symbol label if given, else the next auto integer from COUNTER-CELL (a
+one-element list used as a mutable counter)."
+  (let ((label (cadddr form)))            ; (probability lit p label)
+    (if (and label (symbolp label))
+        label
+        (incf (car counter-cell)))))
+
+(defun assign-probability-gids (schema-list)
+  "Populate *probability-gids* (cons -> tie-group id) for every (PROBABILITY ...)
+form in SCHEMA-LIST, in document order.  Unlabeled forms get successive integers;
+labeled forms get their label.  Same traversal the write-back uses, so ids match."
+  (clrhash *probability-gids*)
+  (let ((counter (list 0)))
+    (dolist (form (find-probability-forms schema-list))
+      (setf (gethash form *probability-gids*) (probability-form-gid form counter)))))
+
+(defun parse-probability (SCHEMA)
+  "Parse a (PROBABILITY <literal> <p> [<tie-label>]) schema into a ground
+(PROBABILITY <literal> <p> <gid>) entry on the global Probabilities list, stamping
+the tie-group id assigned to this source form by assign-probability-gids."
+  (let* ((args (cdr SCHEMA))
+         (lit (parse-literal (car args)))
+         (p (normalize-numeric (parse-numeric-expression (cadr args))))
+         (gid (gethash SCHEMA *probability-gids*)))
+    (unless (and (realp p) (<= 0 p) (<= p 1))
+      (error "PROBABILITY target must be a probability in [0,1]: ~S" SCHEMA))
+    (unless gid
+      (error "internal: no tie-group id for PROBABILITY form ~S" SCHEMA))
+    (setq Probabilities (append Probabilities (list (list 'PROBABILITY lit p gid))))
     nil))
 
 (defun resolve-solver-name (NAME)

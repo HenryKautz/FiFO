@@ -113,36 +113,139 @@ error on any form that is not (OR ...), (PROBABILITY ...), or (OPTION ...)."
             (remove-if-not (lambda (f) (eq (car f) 'probability)) forms)
             (remove-if-not (lambda (f) (eq (car f) 'option)) forms))))
 
-(defun rw--collect-targets (probabilities)
-  "Turn a list of (PROBABILITY literal p) forms into an alist
-(atom . prob-atom-true), normalizing negated literals.  Signals an error on a
-malformed form or on an atom given a target more than once."
-  (let ((seen (make-hash-table :test 'equal))
-        (out '()))
-    (dolist (pf probabilities)
-      (unless (= (length pf) 3)
-        (error "malformed PROBABILITY form (expected (PROBABILITY literal p)): ~S" pf))
-      (multiple-value-bind (atom p) (rw--target-marginal (second pf) (third pf))
-        (when (gethash atom seen)
-          (error "atom ~S is given a target probability more than once" atom))
-        (setf (gethash atom seen) t)
-        (push (cons atom p) out)))
-    (nreverse out)))
+(defun rw--probability-gid (pf)
+  "The tie-group id of a (PROBABILITY literal p [gid]) form -- the 4th element if
+present, else NIL (the caller treats a missing gid as an untied singleton)."
+  (when (>= (length pf) 4) (fourth pf)))
 
-(defun reweight (scnf-file &key out-file (scale 100))
-  "Read SCNF-FILE, whose (WEIGHT literal p) lines give target marginal
+(defun rw--collect-groups (probabilities)
+  "Group (PROBABILITY literal p [gid]) forms by tie-group id.  Returns an ordered
+list of (gid p . atoms): GID the group id, P its shared target marginal P(atom
+true) (constant within the group), ATOMS the group's positive atoms in first-seen
+order.  Forms with no gid are each their own singleton group.  Signals an error if
+one literal is targeted under two different gids (overlapping forms) or if P is
+not constant within a gid."
+  (let ((order '())
+        (gid->p (make-hash-table :test 'equal))
+        (gid->atoms (make-hash-table :test 'equal))
+        (atom->gid (make-hash-table :test 'equal))
+        (singletons 0))
+    (dolist (pf probabilities)
+      (unless (and (consp pf) (member (length pf) '(3 4)))
+        (error "malformed PROBABILITY form (expected (PROBABILITY literal p [gid])): ~S" pf))
+      (multiple-value-bind (atom p) (rw--target-marginal (second pf) (third pf))
+        (let ((gid (or (rw--probability-gid pf) (list :untied (incf singletons)))))
+          ;; overlap: a literal targeted by two different tie groups
+          (let ((prev (gethash atom atom->gid)))
+            (when (and prev (not (equal prev gid)))
+              (error "literal ~S is targeted by two different tie groups (~S and ~S); ~
+overlapping PROBABILITY forms are not allowed" atom prev gid))
+            (setf (gethash atom atom->gid) gid))
+          ;; p constant within a group
+          (multiple-value-bind (gp present) (gethash gid gid->p)
+            (cond (present
+                   (unless (= gp p)
+                     (error "tie group ~S has a non-constant target probability (~S vs ~S); ~
+p must be constant within a group" gid gp p)))
+                  (t (setf (gethash gid gid->p) p)
+                     (push gid order))))
+          (unless (member atom (gethash gid gid->atoms) :test 'equal)
+            (push atom (gethash gid gid->atoms))))))
+    (loop for gid in (nreverse order)
+          collect (list* gid (gethash gid gid->p) (nreverse (gethash gid gid->atoms))))))
+
+;;; ----------------------------------------------------------------------------
+;;; Write-back: replace (PROBABILITY ...) forms in the source .wff with the
+;;; learned tied (WEIGHT ...) costs.  find-probability-forms and the gid rule
+;;; MUST match FiFO.lisp (find-probability-forms / probability-form-gid) so the
+;;; ids assigned here line up with the ones instantiate stamped into the .scnf.
+;;; ----------------------------------------------------------------------------
+
+(defun rw--find-probability-forms (form)
+  "Depth-first list of every (PROBABILITY ...) subform of FORM, document order."
+  (cond ((not (consp form)) nil)
+        ((eq (car form) 'probability) (list form))
+        (t (loop for sub in form append (rw--find-probability-forms sub)))))
+
+(defun rw--wff-gids (forms)
+  "eq-hash mapping each (PROBABILITY ...) form in FORMS to its tie-group id, by
+FiFO's rule: an explicit trailing symbol label, else a document-order integer."
+  (let ((h (make-hash-table :test 'eq)) (counter 0))
+    (dolist (form (rw--find-probability-forms forms) h)
+      (let ((label (cadddr form)))
+        (setf (gethash form h)
+              (if (and label (symbolp label)) label (incf counter)))))))
+
+(defun rw--spec-replacement (schema-lit spec scale)
+  "The replacement .wff form for a (PROBABILITY SCHEMA-LIT ...) given its group
+SPEC = (:theta r) | (:hard 1) | (:hard 0): a (WEIGHT ...) cost on the positive
+atom (polarity from the sign of r), a hard unit (OR ...) for a certainty, or a
+tautology no-op when the weight rounds away."
+  (let ((atom (rw--literal-atom-and-sign schema-lit)))   ; positive atom; p already normalized to it
+    (destructuring-bind (kind val) spec
+      (ecase kind
+        (:hard  (if (= val 1) (list 'or atom) (list 'or (list 'not atom))))
+        (:theta (or (rw--emit-for-theta atom val scale)
+                    (list 'or atom (list 'not atom))))))))   ; rounds to 0 -> unconstrained
+
+(defun rw--subst-probability (form repl)
+  "Copy FORM, replacing each (PROBABILITY ...) subform with its value in the
+eq-hash REPL."
+  (cond ((not (consp form)) form)
+        ((eq (car form) 'probability) (or (gethash form repl) form))
+        (t (mapcar (lambda (sub) (rw--subst-probability sub repl)) form))))
+
+(defun rw--write-back (wff-file out-file gid->spec scale)
+  "Read WFF-FILE and write OUT-FILE, identical except each (PROBABILITY ...) form
+is replaced by the (WEIGHT ...)/hard form for its tie group from GID->SPEC."
+  (let* ((forms (let ((*read-eval* nil))
+                  (with-open-file (in wff-file :direction :input)
+                    (loop for f = (read in nil :eof) until (eq f :eof) collect f))))
+         (gids (rw--wff-gids forms))
+         (repl (make-hash-table :test 'eq)))
+    (maphash (lambda (form gid)
+               (let ((spec (gethash gid gid->spec)))
+                 (unless spec
+                   (error "no learned weight for tie group ~S; the .wff and .scnf disagree ~
+(was the .scnf produced by instantiating this .wff?)" gid))
+                 (setf (gethash form repl) (rw--spec-replacement (second form) spec scale))))
+             gids)
+    (with-open-file (out out-file :direction :output :if-exists :supersede :if-does-not-exist :create)
+      (format out "; weights written back into ~A~%" (file-namestring wff-file))
+      (format out "; each (PROBABILITY ...) replaced by its learned tied (WEIGHT ...) cost~%")
+      (dolist (f forms) (format out "~S~%" (rw--subst-probability f repl))))
+    out-file))
+
+(defun rw--default-wff-out (wff-file)
+  (cl-ppcre:regex-replace "\\.[^.]*$" wff-file "_weighted.wff"))
+
+(defun reweight (scnf-file &key out-file (scale 100) wff wff-out)
+  "Read SCNF-FILE, whose (PROBABILITY literal p [gid]) lines give target marginal
 probabilities, and write <root>_reweighted.scnf with integer weights produced by
-the independent log-odds estimator.  SCALE (default 100) sets the integer
-resolution / temperature.  Returns the output pathname."
+the independent log-odds estimator.  Tie groups (shared gid) share one weight --
+automatic here, since the weight depends only on p.  SCALE (default 100) sets the
+integer resolution / temperature.
+
+If WFF is given (the source .wff that produced SCNF-FILE), also write a copy of it
+with each (PROBABILITY ...) form replaced by its tied (WEIGHT ...) cost, to
+WFF-OUT (default <wff-root>_weighted.wff).  Returns the .scnf output pathname."
   (unless (and (integerp scale) (plusp scale))
     (error "scale must be a positive integer; got ~S" scale))
   (multiple-value-bind (clauses probabilities options) (rw--read-scnf scnf-file)
-   (let ((new-weights '())
-         (new-hard '()))
-    (dolist (tg (rw--collect-targets probabilities))
-      (multiple-value-bind (weight-form hard-form) (rw--emit-for-atom (car tg) (cdr tg) scale)
-        (when weight-form (push weight-form new-weights))
-        (when hard-form (push hard-form new-hard))))
+   (let ((groups (rw--collect-groups probabilities))
+         (new-weights '())
+         (new-hard '())
+         (gid->spec (make-hash-table :test 'equal)))
+    (dolist (g groups)
+      (destructuring-bind (gid p . atoms) g
+        (setf (gethash gid gid->spec)
+              (cond ((= p 0d0) (list :hard 0))
+                    ((= p 1d0) (list :hard 1))
+                    (t (list :theta (log (/ (- 1d0 p) p))))))
+        (dolist (atom atoms)
+          (multiple-value-bind (weight-form hard-form) (rw--emit-for-atom atom p scale)
+            (when weight-form (push weight-form new-weights))
+            (when hard-form (push hard-form new-hard))))))
     (setq new-weights (nreverse new-weights)
           new-hard (nreverse new-hard))
     (unless out-file
@@ -157,4 +260,6 @@ resolution / temperature.  Returns the output pathname."
       (dolist (c new-hard) (format out "~S~%" c))        ; certainties (p=0 / p=1)
       (dolist (w new-weights) (format out "~S~%" w))     ; integer-weighted literals
       (dolist (o options) (format out "~S~%" o)))        ; pass options through
+    (when wff
+      (rw--write-back wff (or wff-out (rw--default-wff-out wff)) gid->spec scale))
     out-file)))

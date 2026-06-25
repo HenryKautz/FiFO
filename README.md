@@ -349,6 +349,20 @@ And conditional weights work too:
 
 `weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses.
 
+### Probabilities (target marginals)
+
+Instead of stating a weight directly, you can state a **target marginal probability** with the **probability** form, and let the learning pipeline ([Learning/](Learning/)) compute the weight that realizes it:
+
+```
+(probability <literal> <p> [<tie-label>])
+```
+
+`<p>` is the desired probability (in `[0,1]`) that `<literal>` is true. `probability` is parsed and placed exactly like `weight` (top level, or in the body of `and`/`all`/`exists`/`if`), and `instantiate` passes it through to the `.scnf` as `(PROBABILITY <literal> <p> <gid>)`.
+
+**Tie groups.** Every ground instance of one source `probability` form shares a **tie-group id** `<gid>`, so the learner fits **one** weight for the whole group (parameter tying — see [fifo-weight-learning.md](fifo-weight-learning.md)). By default each `probability` form is its own group (an auto-assigned integer); an optional trailing symbol `<tie-label>` overrides this to merge forms into a shared group or split them. For example, `(all x items true (probability (faulty x) 0.05))` gives every `(faulty x)` the same target and the same learned weight.
+
+A `.scnf` containing `(PROBABILITY ...)` forms carries *target probabilities, not weights*, so `propositionalize` rejects it with an error: convert it to a weight-only file first with the learning pipeline. That pipeline can also write the learned weights back into a copy of the source `.wff` (replacing each `probability` form with the tied `weight`), which you can then edit and re-instantiate at a different domain size. See [Learning/learning.md](Learning/learning.md).
+
 ### Weighted CNF output formats
 
 The option `(option weights <format>)` controls how weights appear in the DIMACS `.cnf` file produced by `propositionalize`. It has no effect when the problem contains no weights.
