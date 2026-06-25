@@ -2,7 +2,7 @@
 
 Open work items. See [Learning/learning.md](Learning/learning.md) for the
 weight-learning pipeline as it stands and
-[fifo-weight-learning.md](fifo-weight-learning.md) for the theory.
+[Learning/fifo-weight-learning.md](Learning/fifo-weight-learning.md) for the theory.
 
 ## 1. End-to-end weight learning from an uninstantiated `.wff` — DONE
 
@@ -38,13 +38,13 @@ Open questions / subtasks:
 - What the marginal *means* for a planning fluent/action (per time slice? over the
   whole plan?), and whether the feasible set for MaxEnt is the set of valid plans.
 - Tie into the planner's horizon search: learn on a small horizon, transfer.
-- Connect to fifo-weight-learning.md §10 (domain-size dependence) — plan cost may
+- Connect to Learning/fifo-weight-learning.md §10 (domain-size dependence) — plan cost may
   not be size-invariant; may need size-modulated features.
 
 ## Note: validating the small-domain → full-size transfer
 
 Both items hinge on **schema tying** — the assumption that weights learned on
-small domains transfer unchanged to larger ones. fifo-weight-learning.md §10 warns
+small domains transfer unchanged to larger ones. Learning/fifo-weight-learning.md §10 warns
 this can be **misspecified** when the true cost has size-dependent structure
 (congestion, economies of scale, fixed overheads). When we build and validate the
 transfer, keep the §10 diagnostic in mind: residual regret that **grows
