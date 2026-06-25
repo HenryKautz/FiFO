@@ -21,7 +21,7 @@ install:
 	mkdir -p $(BINDIR) $(LISPDIR)
 	cp bin/*  $(BINDIR)/
 	cp lisp/* $(LISPDIR)/
-	chmod +x $(BINDIR)/planner.sh $(BINDIR)/run_regression_tests.sh
+	chmod +x $(BINDIR)/*.sh
 	@echo "Installed scripts -> $(BINDIR)"
 	@echo "Installed lisp    -> $(LISPDIR)"
 	@echo "Make sure $(BINDIR) is on your PATH."

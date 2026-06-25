@@ -433,6 +433,16 @@ For a discussion about learning weights in FiFO, see [Learning/fifo-weight-learn
 
 For the implemented learning pipeline — turning target marginal probabilities into integer literal weights — and how to run it, see [Learning/learning.md](Learning/learning.md).
 
+The driver `bin/learn.sh` wraps the pipeline: it reads an instantiated `.scnf` of `(PROBABILITY ...)` targets and writes a reweighted `.scnf` of integer `(WEIGHT ...)` costs (and, with `--wff`, a weighted copy of the source `.wff`). It selects the estimator with `--method log-odds` (default) or `--maxent`. Run `learn.sh --help` for the full list of options.
+
+```sh
+# log-odds reweight, also writing the weights back into a copy of the source wff
+bin/learn.sh myproblem.scnf --wff myproblem.wff
+
+# exact tied max-ent (small instances), custom output
+bin/learn.sh myproblem.scnf --maxent --out learned.scnf
+```
+
 Deduction 
 ---------------------------------------
 

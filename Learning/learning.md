@@ -54,9 +54,19 @@ atoms happen to be independent, the two agree exactly.
 
 ## Running it
 
-Requires SBCL (the same toolchain as FiFO). The estimators live in `lisp/`
-(installed to `~/lib/fifo/lisp`); load them by path. The example `.scnf` files
-referenced below are in this `Learning/` directory.
+The shell wrapper `bin/learn.sh` is the easiest entry point — it selects the
+estimator (`--method log-odds` (default) or `--maxent`), exposes every option
+below as a flag, and prints them all with `learn.sh --help`:
+
+```sh
+bin/learn.sh myfile.scnf                 # log-odds -> myfile_reweighted.scnf
+bin/learn.sh myfile.scnf --maxent --wff myfile.wff   # max-ent + .wff write-back
+```
+
+To call the estimators directly: SBCL is required (the same toolchain as FiFO).
+The estimators live in `lisp/` (installed to `~/lib/fifo/lisp`); load them by
+path. The example `.scnf` files referenced below are in this `Learning/`
+directory.
 
 ### Independent log-odds
 
