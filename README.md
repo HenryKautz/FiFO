@@ -874,11 +874,19 @@ The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL 
 
 The two forms are equivalent; giving both on the same action is an error. The cost must be a constant number (a cost that varies with the action's parameters is not supported by either form).
 
-#### Learning action costs from probabilities
+#### Learning costs and weights from probabilities
 
-Instead of a fixed cost, an action may declare a **`:probability <p>`** slot (with `0 < p < 1`) — the learnable alternative to `:cost`. The probability flows into the wff as a target marginal on the action's occurrence, **tied per schema** (all ground instances of one action share one weight) and learned by the weight pipeline. Costs and probabilities can coexist across a domain; an action may have one or the other, not both.
+Anywhere a cost or weight is specified, you can instead give a **`:probability <p>`** (with `0 < p < 1`) — the learnable alternative. The probability flows into the wff as a target marginal, is **tied** so related ground instances share one weight, and is learned by the weight pipeline. The three places, and what each becomes in the *learned* copy:
 
-`bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write a copy of the domain (`<domain>_learned.pddl`) with each `:probability p` replaced by the learned `:cost w` (which may be negative when the action is favored, `p > 0.5`). Costs already present are left untouched. For example:
+| Spec (in PDDL) | Where | `:probability` means | Tied | Becomes |
+|---|---|---|---|---|
+| action `:probability p` | domain | P(the action occurs, per slice) | per action schema | action `:cost w` |
+| `(preference n body :probability p)` | instance (in `:goal`/`:constraints`) | P(the preference is **satisfied**) | per preference | `(preference n body w)` |
+| `(:fluent-cost lit :probability p)` | instance | P(the fluent holds, per slice) | per fluent | `(:fluent-cost lit w)` |
+
+A cost/weight and a probability are alternatives for the same spec (not both at once); existing fixed costs/weights are left untouched. Learned weights may be **negative** (a signed cost — when the target probability favors the penalized state), which the forms now accept.
+
+`bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write `<domain>_learned.pddl` and/or `<problem>_learned.pddl` (whichever carried probabilities) with each `:probability` replaced by the learned value. For example:
 
 ```lisp
 (:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :probability 0.7)

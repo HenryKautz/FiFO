@@ -30,7 +30,10 @@ Options:
   --numslices <int>     instantiation horizon used for learning (default: 3).
                         For --maxent the problem must be feasible at this horizon;
                         log-odds is horizon-independent.
-  --domain-out <file>   learned domain path (default: <domain-root>_learned.pddl)
+  --domain-out <file>   learned domain path  (default: <domain-root>_learned.pddl)
+  --problem-out <file>  learned problem path (default: <problem-root>_learned.pddl;
+                        written only if the instance has preference/:fluent-cost
+                        probabilities)
   -h, --help            show this help
 
 An action specifies a probability with a :probability <p> slot (0<p<1), the
@@ -45,7 +48,7 @@ EOF
 
 die() { echo "learn-pddl.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 
-PROBLEM=""; DOMAIN=""; METHOD="log-odds"; SCALE="100"; NUMSLICES="3"; DOMAIN_OUT=""
+PROBLEM=""; DOMAIN=""; METHOD="log-odds"; SCALE="100"; NUMSLICES="3"; DOMAIN_OUT=""; PROBLEM_OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --scale)       [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --numslices)   [[ $# -ge 2 ]] || die "--numslices needs an argument"; NUMSLICES="$2"; shift 2 ;;
     --domain-out)  [[ $# -ge 2 ]] || die "--domain-out needs an argument"; DOMAIN_OUT="$2"; shift 2 ;;
+    --problem-out) [[ $# -ge 2 ]] || die "--problem-out needs an argument"; PROBLEM_OUT="$2"; shift 2 ;;
     --)            shift; break ;;
     -*)            die "unknown option: $1" ;;
     *)             if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else die "unexpected argument: $1"; fi ;;
@@ -74,8 +78,9 @@ case "$METHOD" in log-odds) M=":log-odds" ;; maxent) M=":maxent" ;; *) die "--me
 PROBLEM="$(cd "$(dirname "$PROBLEM")" && pwd)/$(basename "$PROBLEM")"
 [[ -n "$DOMAIN" ]] && DOMAIN="$(cd "$(dirname "$DOMAIN")" && pwd)/$(basename "$DOMAIN")"
 
-DOMAIN_KW="";    [[ -n "$DOMAIN" ]]     && DOMAIN_KW=":domain-file \"$DOMAIN\""
-DOMAIN_OUT_KW=""; [[ -n "$DOMAIN_OUT" ]] && DOMAIN_OUT_KW=":domain-out \"$DOMAIN_OUT\""
+DOMAIN_KW="";     [[ -n "$DOMAIN" ]]      && DOMAIN_KW=":domain-file \"$DOMAIN\""
+DOMAIN_OUT_KW=""; [[ -n "$DOMAIN_OUT" ]]  && DOMAIN_OUT_KW=":domain-out \"$DOMAIN_OUT\""
+PROBLEM_OUT_KW=""; [[ -n "$PROBLEM_OUT" ]] && PROBLEM_OUT_KW=":problem-out \"$PROBLEM_OUT\""
 
 # maxent.lisp loads reweight.lisp, so loading it provides both estimators.
 exec sbcl --noinform --non-interactive \
@@ -87,6 +92,6 @@ exec sbcl --noinform --non-interactive \
             (progn
               (learn-pddl \"$PROBLEM\" $DOMAIN_KW :method $M :scale $SCALE
                           :numslices $NUMSLICES :satplan-path \"$FIFO_LISP/satplan.wff\"
-                          $DOMAIN_OUT_KW)
+                          $DOMAIN_OUT_KW $PROBLEM_OUT_KW)
               (sb-ext:exit :code 0))
             (error (e) (format *error-output* \"learn-pddl.sh: ~A~%\" e) (sb-ext:exit :code 1)))"

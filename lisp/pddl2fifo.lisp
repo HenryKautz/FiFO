@@ -431,24 +431,27 @@ slice timeline.  Supported: always, at-end, hold-during, occur-sometime."
   (and (consp x) (sym-name= (first x) "PREFERENCE")))
 
 (defun parse-preference (f)
-  "Parse (preference <name> <body> [<weight>]) into the list (name body weight),
-where weight is the inline non-negative number, or nil when omitted (the weight
-then comes from the :metric, defaulting to 1)."
+  "Parse (preference <name> <body> [<weight> | :probability <p>]) into the list
+(name body weight prob): WEIGHT is the inline numeric weight (signed -- a learned
+weight may be negative) or nil; PROB is the target probability that the preference
+is SATISFIED (0<p<1) or nil.  At most one is given; with neither, the weight comes
+from the :metric."
   (let ((name (second f)) (body (third f)) (extra (cdddr f)))
     (unless (and name body)
-      (error "Malformed preference ~s (expected (preference <name> <body> [<weight>]))" f))
-    (cond ((null extra) (list name body nil))
+      (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>]))" f))
+    (cond ((null extra) (list name body nil nil))
           ((and (null (cdr extra)) (numberp (car extra)))
-           (when (minusp (car extra))
-             (error "Preference ~a has a negative weight ~s; weights are non-negative penalties ~
-                     (to prefer that something not hold, negate the body instead)"
-                    name (car extra)))
-           (list name body (car extra)))
-          (t (error "Malformed preference ~s (expected (preference <name> <body> [<weight>]))" f)))))
+           (list name body (car extra) nil))
+          ((and (eq (car extra) :probability) (cdr extra) (null (cddr extra)))
+           (let ((p (cadr extra)))
+             (unless (and (realp p) (< 0 p 1))
+               (error "Preference ~a :probability must be strictly between 0 and 1, got ~s" name p))
+             (list name body nil p)))
+          (t (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>]))" f)))))
 
 (defun split-preferences (forms)
   "Partition a list of top-level conjuncts into (values hard preferences), where
-each preference is (name body weight) -- weight nil unless given inline."
+each preference is (name body weight prob) -- weight/prob nil unless given inline."
   (let ((hard '()) (prefs '()))
     (dolist (f forms)
       (if (preference-p f)
@@ -527,16 +530,23 @@ if absent), and weight-alist maps each preference name to its summed coefficient
 ;;; uses for action costs: (all s slices true (weight (holds <literal> s) <cost>)).
 
 (defun parse-fluent-cost (s)
-  "Parse one (:fluent-cost <literal> <cost>) form into (literal . cost)."
-  (let ((lit (second s)) (cost (third s)))
-    (unless (and (= (length s) 3) (consp lit) (numberp cost))
-      (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>))" s))
-    (when (minusp cost)
-      (error ":fluent-cost ~s has a negative cost; costs are non-negative penalties" s))
-    (cons lit cost)))
+  "Parse (:fluent-cost <literal> <cost>) or (:fluent-cost <literal> :probability <p>)
+into (literal cost prob): COST a signed number or nil; PROB the target marginal
+P(literal holds), 0<p<1, or nil.  Exactly one of cost/prob is given."
+  (let ((lit (second s)) (rest (cddr s)))
+    (unless (and (consp lit) rest)
+      (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>))" s))
+    (cond ((and (null (cdr rest)) (numberp (car rest)))
+           (list lit (car rest) nil))
+          ((and (eq (car rest) :probability) (cdr rest) (null (cddr rest)))
+           (let ((p (cadr rest)))
+             (unless (and (realp p) (< 0 p 1))
+               (error ":fluent-cost ~s :probability must be strictly between 0 and 1, got ~s" s p))
+             (list lit nil p)))
+          (t (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>))" s)))))
 
 (defun fluent-costs (problem-def)
-  "All (:fluent-cost ...) forms in PROBLEM-DEF, as a list of (literal . cost)."
+  "All (:fluent-cost ...) forms in PROBLEM-DEF, as a list of (literal cost prob)."
   (loop for s in (define-sections problem-def)
         when (and (consp s) (eq (first s) :fluent-cost))
           collect (parse-fluent-cost s)))
@@ -828,29 +838,39 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                ;; only consulted when preferences exist, so cost-only problems are
                ;; unaffected (they keep cost-scale 1 and ignore :metric, as before).
                (cost-scale 1)
-               (active-prefs                       ; (name body . weight), weight > 0
-                 (when preferences
+               ;; Preferences with a :probability are learned; they go to prob-prefs
+               ;; as (name body p).  The rest are weight-bearing (active-prefs).
+               (prob-prefs
+                 (loop for (name body inline-w prob) in preferences
+                       when prob collect (list name body prob)))
+               (active-prefs                       ; (name body . weight), weight /= 0
+                 (when (some (lambda (pr) (null (fourth pr))) preferences)
                    (multiple-value-bind (coeff weights metric-present)
                        (parse-metric problem-def)
                      (when metric-present (setq cost-scale coeff))
                      ;; Weight precedence: an inline weight wins; else the :metric
                      ;; coefficient; else 0 when a metric is present (preference is
                      ;; ignored) or 1 when none is (minimize # of violations).
-                     (loop for (name body inline-w) in preferences
-                           for metric-w = (and metric-present
-                                               (cdr (assoc name weights :test #'sym-name=)))
-                           for w = (cond (inline-w inline-w)
-                                         (metric-w metric-w)
-                                         (metric-present 0)
-                                         (t 1))
-                           do (when (and inline-w metric-w)
-                                (warn "Preference ~a has an inline weight ~a; ignoring its ~
-                                       :metric coefficient ~a" name inline-w metric-w))
-                           when (plusp w)
-                             collect (list* name body w)))))
+                     (loop for (name body inline-w prob) in preferences
+                           unless prob
+                           collect (let ((metric-w (and metric-present
+                                                        (cdr (assoc name weights :test #'sym-name=)))))
+                                     (when (and inline-w metric-w)
+                                       (warn "Preference ~a has an inline weight ~a; ignoring its ~
+                                              :metric coefficient ~a" name inline-w metric-w))
+                                     (list* name body
+                                            (cond (inline-w inline-w)
+                                                  (metric-w metric-w)
+                                                  (metric-present 0)
+                                                  (t 1))))
+                             into prs
+                           finally (return (remove-if (lambda (pr) (zerop (cddr pr))) prs))))))
                (pref-fluents (remove-duplicates
-                               (loop for entry in active-prefs
-                                     append (collect-preference-fluents (second entry)))
+                               (append
+                                 (loop for entry in active-prefs
+                                       append (collect-preference-fluents (second entry)))
+                                 (loop for entry in prob-prefs
+                                       append (collect-preference-fluents (second entry))))
                                :test #'equal))
                ;; Per-step fluent costs (:fluent-cost forms).  Like preferences,
                ;; the named fluents need Holds variables and frame axioms.
@@ -1020,15 +1040,32 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                     (write-form out
                       `(or ,(translate-preference-body body) (pref-violated ,name)))
                     (write-form out `(weight (pref-violated ,name) ,w)))))
+              ;; Preference probabilities: reify as above, but give (pref-violated
+              ;; <name>) a target marginal -- the weight is learned downstream.  The
+              ;; :probability is P(satisfied)=p, so P(pref-violated)=1-p.  Tie-tag
+              ;; (:pref <name>) maps the learned weight back to the source form.
+              (when prob-prefs
+                (terpri out)
+                (format out ";; Preference probabilities (target P(satisfied); learned)~%")
+                (dolist (entry prob-prefs)
+                  (destructuring-bind (name body p) entry
+                    (write-form out
+                      `(or ,(translate-preference-body body) (pref-violated ,name)))
+                    (write-form out
+                      `(probability (pref-violated ,name) ,(- 1 p) (:pref ,name))))))
               ;; Per-step fluent costs: charge the cost for every slice the fluent holds.
               (when fluent-cost-list
                 (terpri out)
-                (format out ";; Per-step fluent costs (:fluent-cost): charged once~%")
-                (format out ";; per slice in which the fluent holds~%")
+                (format out ";; Per-step fluent costs (:fluent-cost): charged/targeted~%")
+                (format out ";; once per slice in which the fluent holds~%")
                 (dolist (fc fluent-cost-list)
-                  (destructuring-bind (lit . c) fc
+                  (destructuring-bind (lit c p) fc
                     (write-form out
-                      `(all s slices true (weight ,(fluent-cost-weight-literal lit) ,c))))))
+                      (if p
+                          ;; target P(literal holds)=p per slice, tied across slices
+                          `(all s slices true
+                                (probability ,(fluent-cost-weight-literal lit) ,p (:fluent ,lit)))
+                          `(all s slices true (weight ,(fluent-cost-weight-literal lit) ,c)))))))
               (terpri out)
               (write-form out (list 'include satplan-path))
               ;; Per-schema action probabilities go AFTER the include so that the

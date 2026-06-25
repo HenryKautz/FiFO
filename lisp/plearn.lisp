@@ -52,6 +52,33 @@ learned weight for tie group (:action NAME); other actions are returned unchange
                            (getf (cddr sec) :probability)))
         (cddr define-form)))
 
+;;; ---- instance rewrite: preference / :fluent-cost :probability -> weight ----
+
+(defun pl--instance-has-probability-p (form)
+  "True if FORM (anywhere) has a (preference ... :probability ...) or
+(:fluent-cost ... :probability ...)."
+  (cond ((not (consp form)) nil)
+        ((and (eq (car form) 'preference) (eq (fourth form) :probability)) t)
+        ((and (eq (car form) :fluent-cost) (eq (third form) :probability)) t)
+        (t (some #'pl--instance-has-probability-p form))))
+
+(defun pl--rewrite-instance-form (form gid->spec scale)
+  "Recursively rewrite (preference name body :probability p) -> (preference name
+body w) and (:fluent-cost lit :probability p) -> (:fluent-cost lit w), using the
+learned weight for tie group (:pref name) / (:fluent lit)."
+  (cond ((not (consp form)) form)
+        ((and (eq (car form) 'preference) (eq (fourth form) :probability))
+         (let ((name (second form)) (body (third form)))
+           (list 'preference name body
+                 (pl--spec->cost (gethash (list :pref name) gid->spec) scale
+                                 (format nil "preference ~a" name)))))
+        ((and (eq (car form) :fluent-cost) (eq (third form) :probability))
+         (let ((lit (second form)))
+           (list :fluent-cost lit
+                 (pl--spec->cost (gethash (list :fluent lit) gid->spec) scale
+                                 (format nil "fluent-cost ~s" lit)))))
+        (t (mapcar (lambda (x) (pl--rewrite-instance-form x gid->spec scale)) form))))
+
 ;;; ---- writing a PDDL file ---------------------------------------------------
 
 (defun pl--write-pddl (define-form out-path)
@@ -82,23 +109,26 @@ the problem (from its (:domain ...) form)."
 
 (defun learn-pddl (problem-file
                    &key domain-file (method :log-odds) (scale 100) (numslices 3)
-                        satplan-path domain-out (verbose t))
+                        satplan-path domain-out problem-out (verbose t))
   "Translate PROBLEM-FILE (+ its domain) to a wff, instantiate it at NUMSLICES,
-learn weights for the (:probability ...) action specs with METHOD (:log-odds or
-:maxent), and write a copy of the domain with each :probability replaced by the
-learned :cost.  Returns the learned-domain pathname (or NIL if there were no
-probabilities)."
+learn weights for every (:probability ...) spec -- action slots in the domain and
+preference / :fluent-cost specs in the instance -- with METHOD (:log-odds or
+:maxent), and write copies of whichever files carried probabilities with each
+:probability replaced by the learned cost/weight.  Returns (values domain-out
+problem-out) for the files written (NIL where nothing was)."
   (let* ((problem-path (pathname problem-file))
          (root (pathname-name problem-path))
          (scnf (merge-pathnames (make-pathname :name root :type "scnf") problem-path))
          (rwout (merge-pathnames (make-pathname :name (concatenate 'string root "_reweighted")
                                                 :type "scnf") problem-path))
          (dom-path (pl--domain-path problem-path domain-file))
-         (ddef (find-define (read-pddl-file dom-path) "DOMAIN" dom-path)))
-    (unless (pl--has-action-probability-p ddef)
-      (when verbose (format t "No (:probability ...) actions in ~A; nothing to learn.~%"
-                            (file-namestring dom-path)))
-      (return-from learn-pddl nil))
+         (ddef (find-define (read-pddl-file dom-path) "DOMAIN" dom-path))
+         (pdef (find-define (read-pddl-file problem-path) "PROBLEM" problem-path))
+         (has-action (pl--has-action-probability-p ddef))
+         (has-instance (pl--instance-has-probability-p pdef)))
+    (unless (or has-action has-instance)
+      (when verbose (format t "No (:probability ...) specs found; nothing to learn.~%"))
+      (return-from learn-pddl (values nil nil)))
     ;; 1. PDDL -> wff
     (let ((wff (apply #'pddl2fifo (namestring problem-path)
                       (append (when domain-file (list :domain-file domain-file))
@@ -113,10 +143,14 @@ probabilities)."
             (:maxent   (maxent-reweight (namestring scnf) :out-file (namestring rwout)
                                         :scale scale :verbose verbose)))
         (declare (ignore out))
-        ;; 4. write the learned domain copy
-        (let ((dout (or domain-out (pl--default-out dom-path "_learned"))))
-          (pl--write-pddl (pl--rewrite-domain-define ddef gid->spec scale) dout)
-          (when verbose
-            (format t "Learned domain: ~A~%" dout)
-            (format t "Reweighted SCNF: ~A~%" rwout))
-          dout)))))
+        ;; 4. write the learned copies of whichever files had probabilities
+        (let ((dout (when has-action (or domain-out (pl--default-out dom-path "_learned"))))
+              (pout (when has-instance (or problem-out (pl--default-out problem-path "_learned")))))
+          (when has-action
+            (pl--write-pddl (pl--rewrite-domain-define ddef gid->spec scale) dout)
+            (when verbose (format t "Learned domain:  ~A~%" dout)))
+          (when has-instance
+            (pl--write-pddl (pl--rewrite-instance-form pdef gid->spec scale) pout)
+            (when verbose (format t "Learned problem: ~A~%" pout)))
+          (when verbose (format t "Reweighted SCNF: ~A~%" rwout))
+          (values dout pout))))))
