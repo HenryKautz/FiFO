@@ -9,6 +9,12 @@ views, and the provenance — see [fifo-weight-learning.md](fifo-weight-learning
 This file covers only **how to run** the pipeline that is implemented so far,
 which is Case 4 of that document (*beliefs about marginals*).
 
+For **PDDL planning** problems, you usually don't run this pipeline directly:
+write `:probability` specs on actions / preferences / `:fluent-cost` forms and use
+`bin/learn-pddl.sh`, which translates, learns with the estimators below, and writes
+the learned costs back into copies of the PDDL files. See the README's
+"Learning costs and weights from probabilities".
+
 ## What the pipeline does
 
 **Input:** an instantiated `.scnf` file (the output of FiFO's `instantiate`) whose
