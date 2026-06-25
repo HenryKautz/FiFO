@@ -334,30 +334,22 @@ or maxent.lisp)."
         (satout-file (format nil "~a.satout" scratch-file))
         (soln-file (format nil "~a.soln" scratch-file))
         (map-file (format nil "~a.map" scratch-file)))
-    (labels ((cleanup-scratch-files ()
-               (unless *tracing*
-                 (dolist (file (list scnf-file cnf-file satout-file soln-file map-file))
-                   (when (probe-file file)
-                     (delete-file file))))))
-      (if debugp
-          (format t ";;test-scnf ~S~%" scnf))
-      (when (member debugp '(SAT UNSAT))
-        (return-from test-scnf (values debugp nil)))
-      (unwind-protect
-           (progn
-             (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
-               (dolist (c scnf) (format SCNF-STREAM "~S~%" c))
-               (dolist (w Weights) (format SCNF-STREAM "~S~%" w))
-               (when (and Weights (not (eql *cnf-format* 'CNF)))
-                 (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" *cnf-format*)))
-             (propositionalize scnf-file :cnffile cnf-file :mapfile map-file)
-             (unless (satisfy cnf-file)
-               (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
-                      *solver* cnf-file))
-             (interpret satout-file :mapfile map-file :solnfile soln-file)
-             (let ((results (read-sexprs-from-file soln-file)))
-               (values (car results) (cdr results))))
-        (cleanup-scratch-files)))))
+    (if debugp
+        (format t ";;test-scnf ~S~%" scnf))
+    (when (member debugp '(SAT UNSAT))
+      (return-from test-scnf (values debugp nil)))
+    (with-open-file (SCNF-STREAM scnf-file :direction :output :if-exists :supersede)
+      (dolist (c scnf) (format SCNF-STREAM "~S~%" c))
+      (dolist (w Weights) (format SCNF-STREAM "~S~%" w))
+      (when (and Weights (not (eql *cnf-format* 'CNF)))
+        (format SCNF-STREAM "(OPTION WEIGHTS ~S)~%" *cnf-format*)))
+    (propositionalize scnf-file :cnffile cnf-file :mapfile map-file)
+    (unless (satisfy cnf-file)
+      (error "SAT solver ~A failed on ~A (output contains neither SAT nor UNSAT)"
+             *solver* cnf-file))
+    (interpret satout-file :mapfile map-file :solnfile soln-file)
+    (let ((results (read-sexprs-from-file soln-file)))
+      (values (car results) (cdr results)))))
 
 (defun lit2prop (CL &key weights)
   (let ((cnfdata nil) (mapdata nil) (weightdata nil)
