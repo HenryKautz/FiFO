@@ -215,50 +215,67 @@ theta_a += eta * (m_a - tau_a) / max(m_a (1-m_a), 1e-3)."
     (values theta m iters converged)))
 
 (defun mx--fit-tied (entries taus group-of ngroups
-                     &key (eta 1.0d0) (tol 1.0d-5) (max-iters 5000) (theta-max 40.0d0))
-  "Tied variant of mx--fit: soft atom a belongs to group (aref GROUP-OF a), and
-all atoms in a group share one theta -- so the model energy is sum_g theta_g
-N_g(x), with N_g the count of true group-g atoms (the schema-tying sufficient
-statistic, fifo-weight-learning.md S1).  TAUS is the per-atom target (constant
-within a group).  Fits each group's mean marginal to its target
-(E[N_g] = |g| p_g) by damped diagonal Newton on the aggregated group residual.
+                     &key (eta 1.0d0) (tol 1.0d-5) (max-iters 5000) (theta-max 40.0d0)
+                          (max-step 2.0d0) fixed-theta)
+  "Tied variant of mx--fit over tracked atoms 0..N-1.  Atom a with (aref GROUP-OF a)
+>= 0 is a SOFT atom in that group; all soft atoms of a group share one theta, so
+the model energy is sum_g theta_g N_g(x) (+ the fixed part below), N_g the count of
+true group-g atoms (the schema-tying sufficient statistic, fifo-weight-learning.md
+S1).  Atom a with group -1 is a FIXED atom whose theta is held at (aref FIXED-THETA
+a) -- its explicit weight's cost-when-true -- and never updated, so the soft groups
+are fit in the PRESENCE of the fixed weights.  TAUS is the per-atom target
+(constant within a group; unused for fixed atoms).  Fits each group's mean marginal
+to its target (E[N_g] = |g| p_g) by damped diagonal Newton on the group residual.
 Returns (values group-thetas per-atom-marginals iters converged)."
   (let* ((nsoft (length taus))
+         (ng (max ngroups 1))
          (tau (make-array nsoft :element-type 'double-float
                                 :initial-contents (mapcar (lambda (p) (float p 1d0)) taus)))
-         (gtheta (make-array ngroups :element-type 'double-float :initial-element 0d0))
+         (gtheta (make-array ng :element-type 'double-float :initial-element 0d0))
          (theta (make-array nsoft :element-type 'double-float :initial-element 0d0))
-         (gsize (make-array ngroups :element-type 'fixnum :initial-element 0))
+         (gsize (make-array ng :element-type 'fixnum :initial-element 0))
          (m (make-array nsoft :element-type 'double-float :initial-element 0d0))
          (work (mapcar (lambda (e) (list* (car e) (coerce (cdr e) 'double-float) 0d0)) entries))
          (converged nil) (iters 0))
-    (dotimes (a nsoft) (incf (aref gsize (aref group-of a))))
+    ;; count soft group sizes; pin fixed atoms' theta
+    (dotimes (a nsoft)
+      (let ((g (aref group-of a)))
+        (if (>= g 0)
+            (incf (aref gsize g))
+            (setf (aref theta a) (if fixed-theta (aref fixed-theta a) 0d0)))))
     (flet ((clamp (x) (max (- theta-max) (min theta-max x)))
-           (broadcast () (dotimes (a nsoft) (setf (aref theta a) (aref gtheta (aref group-of a))))))
-      ;; warm start: each group's independent log-odds (any member's tau works)
-      (let ((seen (make-array ngroups :initial-element nil)))
+           (broadcast () (dotimes (a nsoft)
+                           (let ((g (aref group-of a)))
+                             (when (>= g 0) (setf (aref theta a) (aref gtheta g)))))))
+      ;; warm start each soft group at its independent log-odds
+      (let ((seen (make-array ng :initial-element nil)))
         (dotimes (a nsoft)
           (let ((g (aref group-of a)))
-            (unless (aref seen g)
+            (when (and (>= g 0) (not (aref seen g)))
               (setf (aref seen g) t
                     (aref gtheta g) (clamp (log (/ (- 1d0 (aref tau a)) (aref tau a)))))))))
       (broadcast)
       (dotimes (it max-iters)
         (setf iters (1+ it))
         (mx--marginals work theta nsoft m)
-        (let ((gres (make-array ngroups :element-type 'double-float :initial-element 0d0))
-              (gcur (make-array ngroups :element-type 'double-float :initial-element 0d0))
+        (let ((gres (make-array ng :element-type 'double-float :initial-element 0d0))
+              (gcur (make-array ng :element-type 'double-float :initial-element 0d0))
               (maxres 0d0))
           (dotimes (a nsoft)
             (let ((g (aref group-of a)) (ma (aref m a)))
-              (incf (aref gres g) (- ma (aref tau a)))         ; E[N_g] - |g| p_g
-              (incf (aref gcur g) (* ma (- 1d0 ma)))))
+              (when (>= g 0)
+                (incf (aref gres g) (- ma (aref tau a)))         ; E[N_g] - |g| p_g
+                (incf (aref gcur g) (* ma (- 1d0 ma))))))
           (dotimes (g ngroups)
             (setf maxres (max maxres (abs (/ (aref gres g) (max (aref gsize g) 1))))))
           (when (< maxres tol) (setf converged t) (return))
+          ;; Damped diagonal Newton.  The per-atom-variance curvature underestimates
+          ;; the true (coupled) curvature, so cap each step to avoid overshoot and
+          ;; oscillation when fixed weights / clauses couple a group strongly.
           (dotimes (g ngroups)
-            (setf (aref gtheta g)
-                  (clamp (+ (aref gtheta g) (/ (* eta (aref gres g)) (max (aref gcur g) 1.0d-3))))))
+            (let ((step (/ (* eta (aref gres g)) (max (aref gcur g) 1.0d-3))))
+              (setf step (max (- max-step) (min max-step step)))
+              (setf (aref gtheta g) (clamp (+ (aref gtheta g) step)))))
           (broadcast)))
       (mx--marginals work theta nsoft m))
     (values gtheta m iters converged)))
@@ -268,20 +285,33 @@ Returns (values group-thetas per-atom-marginals iters converged)."
 ;;; ----------------------------------------------------------------------------
 
 (defun maxent-reweight (scnf-file &key out-file (scale 100) (eta 1.0d0) (tol 1.0d-5)
-                                       (max-iters 5000) (verbose t) wff wff-out)
+                                       (max-iters 5000) (verbose t) wff wff-out
+                                       (consider-weights t))
   "Read SCNF-FILE, whose (PROBABILITY literal p [gid]) lines give target marginal
 probabilities, fit weights by exact iterative maximum entropy over the feasible
 set, and write <root>_reweighted.scnf with positive-integer weights.  Atoms that
 share a tie-group gid share one fitted weight (the fit matches each group's mean
-marginal to its target).  Returns the .scnf output pathname; prints a
-target-vs-achieved report per group when VERBOSE.
+marginal to its target).  Only the probability-derived weights are adjusted.
+
+Explicit (WEIGHT ...) lines already in the file are always passed through to the
+output unchanged.  CONSIDER-WEIGHTS (default t) controls whether they also take
+part in the fit: when t they are held FIXED in the model energy so the
+probability weights are learned in their presence (the realized marginals then
+account for them); when nil the fit ignores them (faster, but the achieved
+marginals will not account for the explicit weights present at solve time).
+
+Returns the .scnf output pathname; prints a target-vs-achieved report per group
+when VERBOSE.  A fit that does not converge is flagged prominently -- the usual
+cause is a target set that is inconsistent with the hard clauses (and/or the
+fixed weights).
 
 If WFF is given (the source .wff), also writes a copy with each (PROBABILITY ...)
 form replaced by its tied (WEIGHT ...) cost, to WFF-OUT (default
 <wff-root>_weighted.wff)."
   (unless (and (integerp scale) (plusp scale))
     (error "scale must be a positive integer; got ~S" scale))
-  (multiple-value-bind (clauses probabilities options) (rw--read-scnf scnf-file)
+  (multiple-value-bind (clauses probabilities options weights) (rw--read-scnf scnf-file)
+    (rw--check-weight-probability-disjoint probabilities weights)
     (let ((soft-groups '()) (deg-groups '()))    ; each: (gid p . atoms)
       (dolist (g (rw--collect-groups probabilities))
         (let ((p (cadr g)))
@@ -296,68 +326,97 @@ form replaced by its tied (WEIGHT ...) cost, to WFF-OUT (default
              (all-clauses (append clauses deg-clauses))
              (ngroups (length soft-groups))
              (gindex->gid (make-array ngroups))
-             (soft-atoms '()) (taus '()) (group-of-list '()))
+             ;; soft (fitted) atoms first, then fixed (explicit-weight) atoms when
+             ;; CONSIDER-WEIGHTS -- the fixed ones are tracked in the energy with
+             ;; group -1 so the soft groups fit in their presence.
+             (soft-atoms '()) (taus '()) (group-of-list '())
+             ;; An explicit (WEIGHT atom w) is an integer cost in OUTPUT units
+             ;; (= scale * natural theta), so divide by scale to recover the
+             ;; natural-units theta the fit works in.
+             (fixed (when consider-weights
+                      (mapcar (lambda (wf)
+                                (multiple-value-bind (atom th) (rw--weight-fixed-theta wf)
+                                  (cons atom (/ th scale))))
+                              weights))))
         (loop for g in soft-groups for gi from 0 do
           (setf (aref gindex->gid gi) (car g))
           (dolist (atom (cddr g))
             (push atom soft-atoms) (push (cadr g) taus) (push gi group-of-list)))
         (setf soft-atoms (nreverse soft-atoms) taus (nreverse taus)
               group-of-list (nreverse group-of-list))
-        (multiple-value-bind (a2i nvars) (mx--index-atoms all-clauses soft-atoms)
-          (let* ((int-clauses (mapcar (lambda (cl) (mx--clause->ints cl a2i)) all-clauses))
-                 (soft-vars (mapcar (lambda (atom) (gethash atom a2i)) soft-atoms))
-                 (group-of (make-array (length soft-atoms) :element-type 'fixnum
-                                       :initial-contents group-of-list))
-                 (entries (mx--enumerate int-clauses nvars soft-vars)))
-            (when (null entries)
-              (error "the hard clauses are unsatisfiable; no feasible set to match marginals over"))
-            (multiple-value-bind (gthetas marginals iters converged)
-                (mx--fit-tied entries taus group-of ngroups
-                              :eta eta :tol tol :max-iters max-iters)
-              ;; per-group achieved mean marginal, for reporting
-              (let ((gmean (make-array ngroups :element-type 'double-float :initial-element 0d0))
-                    (gsize (make-array ngroups :element-type 'fixnum :initial-element 0))
-                    (gid->spec (make-hash-table :test 'equal))
-                    (new-weights '()))
-                (loop for a from 0 for atom in soft-atoms do
-                  (incf (aref gmean (aref group-of a)) (aref marginals a))
-                  (incf (aref gsize (aref group-of a))))
-                (dotimes (gi ngroups)
-                  (setf (aref gmean gi) (/ (aref gmean gi) (max (aref gsize gi) 1)))
-                  (setf (gethash (aref gindex->gid gi) gid->spec) (list :theta (aref gthetas gi))))
-                (dolist (g deg-groups)
-                  (setf (gethash (car g) gid->spec) (list :hard (if (= (cadr g) 1d0) 1 0))))
-                (loop for atom in soft-atoms for a from 0
-                      for wf = (rw--emit-for-theta atom (aref gthetas (aref group-of a)) scale)
-                      when wf do (push wf new-weights))
-                (setf new-weights (nreverse new-weights))
-                (unless out-file
-                  (setq out-file (cl-ppcre:regex-replace "\\.[^.]*$" scnf-file "_reweighted.scnf")))
-                (with-open-file (out out-file :direction :output
-                                              :if-exists :supersede :if-does-not-exist :create)
-                  (format out "; reweighted from ~A~%" (file-namestring scnf-file))
-                  (format out "; method: exact iterative MaxEnt over the feasible set (tied groups); scale: ~D~%" scale)
-                  (format out "; fit: ~A in ~D iteration~:P (tol ~,1E); real weight = integer / ~D~%"
-                          (if converged "converged" "STOPPED (not converged)") iters tol scale)
+        (let* ((tracked-atoms (append soft-atoms (mapcar #'car fixed)))
+               (tracked-taus  (append taus (mapcar (constantly 0.5d0) fixed)))
+               (tracked-gofs  (append group-of-list (mapcar (constantly -1) fixed)))
+               (fixed-theta (make-array (length tracked-atoms) :element-type 'double-float
+                                        :initial-element 0d0)))
+          (loop for a from (length soft-atoms)
+                for fx in fixed do (setf (aref fixed-theta a) (cdr fx)))
+          (multiple-value-bind (a2i nvars) (mx--index-atoms all-clauses tracked-atoms)
+            (let* ((int-clauses (mapcar (lambda (cl) (mx--clause->ints cl a2i)) all-clauses))
+                   (tracked-vars (mapcar (lambda (atom) (gethash atom a2i)) tracked-atoms))
+                   (group-of (make-array (length tracked-atoms) :element-type 'fixnum
+                                         :initial-contents tracked-gofs))
+                   (entries (mx--enumerate int-clauses nvars tracked-vars)))
+              (when (null entries)
+                (error "the hard clauses are unsatisfiable; no feasible set to match marginals over"))
+              (multiple-value-bind (gthetas marginals iters converged)
+                  (mx--fit-tied entries tracked-taus group-of ngroups
+                                :eta eta :tol tol :max-iters max-iters :fixed-theta fixed-theta)
+                (let ((gmean (make-array ngroups :element-type 'double-float :initial-element 0d0))
+                      (gsize (make-array ngroups :element-type 'fixnum :initial-element 0))
+                      (gid->spec (make-hash-table :test 'equal))
+                      (new-weights '()))
+                  (loop for a from 0 below (length soft-atoms) do
+                    (incf (aref gmean (aref group-of a)) (aref marginals a))
+                    (incf (aref gsize (aref group-of a))))
                   (dotimes (gi ngroups)
-                    (format out "; group ~S target ~,4F achieved-mean ~,4F~%"
-                            (aref gindex->gid gi) (cadr (nth gi soft-groups)) (aref gmean gi)))
-                  (format out "; original probability assertions echoed below as ;; comments~%")
-                  (dolist (pf probabilities) (format out ";; ~S~%" pf))
-                  (dolist (c clauses)      (format out "~S~%" c))
-                  (dolist (c deg-clauses)  (format out "~S~%" c))
-                  (dolist (w new-weights)  (format out "~S~%" w))
-                  (dolist (o options)      (format out "~S~%" o)))
-                (when verbose
-                  (format t "~&MaxEnt reweight (tied): ~A (~D iters)~%"
-                          (if converged "converged" "did NOT converge") iters)
-                  (format t "~&  group~30Ttarget~42Tachieved-mean~%")
-                  (dotimes (gi ngroups)
-                    (format t "~&  ~S~30T~,4F~42T~,4F~%"
-                            (aref gindex->gid gi) (cadr (nth gi soft-groups)) (aref gmean gi)))
-                  (when deg-groups
-                    (format t "~&  (hard) ~{~S ~}~%" (mapcar #'car deg-groups)))
-                  (format t "~&  -> ~A~%" out-file))
-                (when wff
-                  (rw--write-back wff (or wff-out (rw--default-wff-out wff)) gid->spec scale))
-                out-file))))))))
+                    (setf (aref gmean gi) (/ (aref gmean gi) (max (aref gsize gi) 1)))
+                    (setf (gethash (aref gindex->gid gi) gid->spec) (list :theta (aref gthetas gi))))
+                  (dolist (g deg-groups)
+                    (setf (gethash (car g) gid->spec) (list :hard (if (= (cadr g) 1d0) 1 0))))
+                  (loop for atom in soft-atoms for a from 0
+                        for wf = (rw--emit-for-theta atom (aref gthetas (aref group-of a)) scale)
+                        when wf do (push wf new-weights))
+                  (setf new-weights (nreverse new-weights))
+                  (unless out-file
+                    (setq out-file (cl-ppcre:regex-replace "\\.[^.]*$" scnf-file "_reweighted.scnf")))
+                  (with-open-file (out out-file :direction :output
+                                                :if-exists :supersede :if-does-not-exist :create)
+                    (format out "; reweighted from ~A~%" (file-namestring scnf-file))
+                    (format out "; method: exact iterative MaxEnt over the feasible set (tied groups)~%")
+                    (format out "; explicit weights: ~A; scale: ~D~%"
+                            (if weights (if consider-weights "held fixed in the fit" "passed through, NOT in the fit")
+                                "none")
+                            scale)
+                    (format out "; fit: ~A in ~D iteration~:P (tol ~,1E); real weight = integer / ~D~%"
+                            (if converged "converged" "DID NOT CONVERGE -- targets may be inconsistent with the hard clauses")
+                            iters tol scale)
+                    (dotimes (gi ngroups)
+                      (format out "; group ~S target ~,4F achieved-mean ~,4F~%"
+                              (aref gindex->gid gi) (cadr (nth gi soft-groups)) (aref gmean gi)))
+                    (format out "; original probability assertions echoed below as ;; comments~%")
+                    (dolist (pf probabilities) (format out ";; ~S~%" pf))
+                    (dolist (c clauses)      (format out "~S~%" c))
+                    (dolist (c deg-clauses)  (format out "~S~%" c))
+                    (dolist (w weights)      (format out "~S~%" w))   ; explicit weights, unchanged
+                    (dolist (w new-weights)  (format out "~S~%" w))
+                    (dolist (o options)      (format out "~S~%" o)))
+                  (when verbose
+                    (unless converged
+                      (format t "~&!! MaxEnt did NOT converge in ~D iterations: the targets may be ~
+inconsistent with the hard clauses~@[ and the fixed weights~].~%"
+                              iters (and weights consider-weights)))
+                    (format t "~&MaxEnt reweight (tied): ~A (~D iters)~%"
+                            (if converged "converged" "did NOT converge") iters)
+                    (format t "~&  group~30Ttarget~42Tachieved-mean~%")
+                    (dotimes (gi ngroups)
+                      (format t "~&  ~S~30T~,4F~42T~,4F~%"
+                              (aref gindex->gid gi) (cadr (nth gi soft-groups)) (aref gmean gi)))
+                    (when deg-groups
+                      (format t "~&  (hard) ~{~S ~}~%" (mapcar #'car deg-groups)))
+                    (when (and weights consider-weights)
+                      (format t "~&  (fixed weights considered: ~{~S ~})~%" (mapcar #'car fixed)))
+                    (format t "~&  -> ~A~%" out-file))
+                  (when wff
+                    (rw--write-back wff (or wff-out (rw--default-wff-out wff)) gid->spec scale))
+                  out-file)))))))))

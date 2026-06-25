@@ -90,10 +90,35 @@ the output. Options:
 - `:out-file`, `:scale`, `:wff`, `:wff-out` — as above. With tie groups the fit
   uses one shared `θ` per group (sufficient statistic = the group's true-count),
   matching each group's **mean** marginal to its target; the report is per group.
+- `:consider-weights` — whether explicit `(WEIGHT ...)` lines take part in the
+  fit (default `t`); see "Mixing explicit weights and probabilities" below.
 - `:eta` — step size for the damped diagonal-Newton update (default `1.0`).
 - `:tol` — convergence tolerance on `max |achieved − target|` (default `1e-5`).
 - `:max-iters` — iteration cap (default `5000`).
 - `:verbose` — print the report to stdout (default `t`).
+
+### Mixing explicit weights and probabilities
+
+A file may carry both explicit `(WEIGHT literal w)` costs and `(PROBABILITY ...)`
+targets. **Only the probability-derived weights are adjusted** — the explicit
+weights are always copied to the output unchanged (and left untouched in the
+`.wff` write-back). An atom may not have both a weight and a probability target
+(that is a contradictory double specification, and is an error).
+
+For `maxent-reweight`, `:consider-weights` controls whether the explicit weights
+take part in the fit:
+
+- `t` (default): they are held **fixed** in the model energy, so the probability
+  weights are learned *in their presence* — the realized marginals account for
+  them. (Example: with a hard `(or A B)`, a large fixed cost on `A`, and a target
+  `P(B)=0.6`, `B`'s learned cost comes out much higher than it would in
+  isolation, because the model rarely picks `A`.)
+- `nil`: the fit ignores them (faster), so the probability weights are fit as if
+  the explicit weights were absent; they are still passed through to the output.
+
+The independent log-odds estimator (`reweight`) ignores all coupling, so it has
+no `:consider-weights` knob — it always passes explicit weights through without
+letting them influence the conversion.
 
 ### Tie groups and `.wff` write-back
 
@@ -163,9 +188,15 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
   feasible set (node cap ~5M, then it errors). This is the "do the counting on
   small instances" regime; a sampler / weighted model counter would replace the
   enumeration for scale.
-- **Infeasible targets don't converge.** If a hard clause forbids a requested
-  marginal, the fit stops at `:max-iters` with `θ` pinned at its clamp and reports
-  the residual gap rather than silently misreporting.
+- **Inconsistent targets.** If the hard clauses are themselves unsatisfiable,
+  `maxent-reweight` errors (no feasible set). If they are satisfiable but the
+  targets are jointly unachievable over the feasible set (e.g. a unit clause
+  forces an atom against its target, or two targets exceed what a mutex allows),
+  the fit cannot converge: it runs to `:max-iters`, the affected `θ`s clamp, and
+  it prints a prominent **"did NOT converge — targets may be inconsistent with the
+  hard clauses"** warning plus the per-group target-vs-achieved gap, rather than
+  silently misreporting. (The independent `reweight` never inspects the clauses,
+  so it cannot detect inconsistency at all.)
 
 ## See also
 

@@ -97,21 +97,43 @@ p=0.5 / rounds-to-zero, which returns both NIL (the atom is left unconstrained).
     (t (values (rw--emit-for-theta atom (log (/ (- 1.0d0 p) p)) scale) nil))))
 
 (defun rw--read-scnf (scnf-file)
-  "Read SCNF-FILE and return (values clauses probabilities options), each a list
-of the corresponding forms.  The marginal targets are (PROBABILITY literal p)
-forms -- a distinct keyword from the (WEIGHT ...) cost form so that an input
-\(probabilities) and an output (integer costs) can never be confused.  Signals an
-error on any form that is not (OR ...), (PROBABILITY ...), or (OPTION ...)."
+  "Read SCNF-FILE and return (values clauses probabilities options weights).  The
+marginal targets are (PROBABILITY literal p [gid]) forms; (WEIGHT literal w) lines
+are EXPLICIT costs that the pipeline passes through unchanged -- only PROBABILITY
+forms are converted, so a file may mix the two.  Signals an error on any form that
+is not (OR ...), (PROBABILITY ...), (WEIGHT ...), or (OPTION ...)."
   (let ((forms (let ((*read-eval* nil))
                  (with-open-file (in scnf-file :direction :input)
                    (loop for f = (read in nil :eof)
                          until (eq f :eof)
-                         do (unless (and (consp f) (member (car f) '(or probability option)))
-                              (error "malformed scnf form (expected (OR ...), (PROBABILITY ...), or (OPTION ...)): ~S" f))
+                         do (unless (and (consp f) (member (car f) '(or probability weight option)))
+                              (error "malformed scnf form (expected (OR ...), (PROBABILITY ...), (WEIGHT ...), or (OPTION ...)): ~S" f))
                          collect f)))))
     (values (remove-if-not (lambda (f) (eq (car f) 'or)) forms)
             (remove-if-not (lambda (f) (eq (car f) 'probability)) forms)
-            (remove-if-not (lambda (f) (eq (car f) 'option)) forms))))
+            (remove-if-not (lambda (f) (eq (car f) 'option)) forms)
+            (remove-if-not (lambda (f) (eq (car f) 'weight)) forms))))
+
+(defun rw--weight-fixed-theta (weight-form)
+  "For an explicit (WEIGHT literal w) form, return (values atom theta-fixed): the
+positive atom and the cost-when-TRUE on it.  A weight on (NOT atom) is a cost when
+the atom is false, i.e. -w on the positive atom (the constant shift is irrelevant
+to the distribution)."
+  (multiple-value-bind (atom positivep) (rw--literal-atom-and-sign (second weight-form))
+    (let ((w (third weight-form)))
+      (values atom (if positivep (float w 1d0) (- (float w 1d0)))))))
+
+(defun rw--check-weight-probability-disjoint (probabilities weights)
+  "Error if any atom is given both an explicit WEIGHT and a PROBABILITY target --
+that would be two conflicting cost specifications for one atom."
+  (let ((pw (make-hash-table :test 'equal)))
+    (dolist (wf weights)
+      (setf (gethash (rw--literal-atom-and-sign (second wf)) pw) t))
+    (dolist (pf probabilities)
+      (let ((atom (rw--literal-atom-and-sign (second pf))))
+        (when (gethash atom pw)
+          (error "atom ~S has both an explicit WEIGHT and a PROBABILITY target; ~
+give it one or the other, not both" atom))))))
 
 (defun rw--probability-gid (pf)
   "The tie-group id of a (PROBABILITY literal p [gid]) form -- the 4th element if
@@ -226,12 +248,18 @@ the independent log-odds estimator.  Tie groups (shared gid) share one weight --
 automatic here, since the weight depends only on p.  SCALE (default 100) sets the
 integer resolution / temperature.
 
+Explicit (WEIGHT ...) lines already in SCNF-FILE are passed through unchanged;
+only PROBABILITY targets are converted.  (The independent log-odds estimator
+ignores all coupling, so explicit weights never influence the conversion -- the
+:consider-weights option of maxent-reweight has no analogue here.)
+
 If WFF is given (the source .wff that produced SCNF-FILE), also write a copy of it
 with each (PROBABILITY ...) form replaced by its tied (WEIGHT ...) cost, to
 WFF-OUT (default <wff-root>_weighted.wff).  Returns the .scnf output pathname."
   (unless (and (integerp scale) (plusp scale))
     (error "scale must be a positive integer; got ~S" scale))
-  (multiple-value-bind (clauses probabilities options) (rw--read-scnf scnf-file)
+  (multiple-value-bind (clauses probabilities options weights) (rw--read-scnf scnf-file)
+   (rw--check-weight-probability-disjoint probabilities weights)
    (let ((groups (rw--collect-groups probabilities))
          (new-weights '())
          (new-hard '())
@@ -257,6 +285,7 @@ WFF-OUT (default <wff-root>_weighted.wff).  Returns the .scnf output pathname."
       (format out "; original probability assertions echoed below as ;; comments~%")
       (dolist (pf probabilities) (format out ";; ~S~%" pf))  ; provenance: the targets
       (dolist (c clauses) (format out "~S~%" c))         ; original hard clauses
+      (dolist (w weights) (format out "~S~%" w))         ; explicit weights, unchanged
       (dolist (c new-hard) (format out "~S~%" c))        ; certainties (p=0 / p=1)
       (dolist (w new-weights) (format out "~S~%" w))     ; integer-weighted literals
       (dolist (o options) (format out "~S~%" o)))        ; pass options through
