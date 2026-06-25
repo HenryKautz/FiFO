@@ -65,12 +65,16 @@ if [[ -n "$DOMAIN" ]]; then
   DOMAIN="$(cd "$(dirname "$DOMAIN")" && pwd)/$(basename "$DOMAIN")"
 fi
 
-# Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIFO="$SCRIPT_DIR/../FiFO.lisp"
-PDDL2FIFO="$SCRIPT_DIR/pddl2fifo.lisp"
-PLANNER="$SCRIPT_DIR/planner.lisp"
-SATPLAN="$SCRIPT_DIR/satplan.wff"
+# Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.  They live in the
+# installed lisp directory ($HOME/lib/fifo/lisp by default; override with the
+# FIFO_LISP environment variable, e.g. to point at a source checkout's lisp/).
+FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+[[ -d "$FIFO_LISP" ]] || { echo "FiFO lisp directory not found: $FIFO_LISP" >&2
+  echo "  run 'make install', or set FIFO_LISP to your lisp/ directory." >&2; exit 2; }
+FIFO="$FIFO_LISP/FiFO.lisp"
+PDDL2FIFO="$FIFO_LISP/pddl2fifo.lisp"
+PLANNER="$FIFO_LISP/planner.lisp"
+SATPLAN="$FIFO_LISP/satplan.wff"
 
 # The (include ...) path written into a generated wff is computed relative to the
 # problem directory so it stays portable; unused for .wff input.

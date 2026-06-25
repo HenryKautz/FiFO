@@ -27,10 +27,24 @@ The FiFO interpreter is written in Common Lisp, but it is not necessary to know 
 						(loves c3 g))))
 ```
 
+## Installation
+
+The repository is organized into `lisp/` (the interpreter, the SatPlan tools, the weight-learning pipeline, and the `satplan.wff` axioms) and `bin/` (the shell scripts). To install:
+
+```sh
+make install
+```
+
+This copies `bin/` into `~/bin` and `lisp/` into `~/lib/fifo/lisp`, creating the directories as needed. Override the destinations with `make install BINDIR=... LISPDIR=...`. Make sure `~/bin` is on your `PATH`.
+
+The shell scripts locate the lisp via the `FIFO_LISP` environment variable, which `planner.sh` defaults to `~/lib/fifo/lisp` (the install location). To run from a source checkout without installing — or to point the tools at a non-default install — set `FIFO_LISP` to the directory containing `FiFO.lisp`, e.g. `FIFO_LISP=$PWD/lisp`.
+
+You also need SBCL with Quicklisp, and a SAT solver on your `PATH` (`kissat` by default; see [SAT solvers](#sat-solvers)).
+
 Common Lisp API
 ------------
 
-Invoke any implementation of Common Lisp, and load the file "FiFO.lisp". The following Lisp functions are available. All arguments after the first are Common Lisp keyword arguments, so they are supplied by name, e.g. `(instantiate "test.wff" :scnfile "test.scnf")` or `(interpret "test.out" :sort-by-time nil)`.
+Invoke any implementation of Common Lisp, and load the file `lisp/FiFO.lisp` (or `~/lib/fifo/lisp/FiFO.lisp` once installed). The following Lisp functions are available. All arguments after the first are Common Lisp keyword arguments, so they are supplied by name, e.g. `(instantiate "test.wff" :scnfile "test.scnf")` or `(interpret "test.out" :sort-by-time nil)`.
 
 **(parse '(SCHEMA+) &key (observation-list '(OBSERVATION+))) returns ((OR LITERAL+)\*)**  
 Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each OBSERVATION is a positive ground literal or a observed quantified formula as described below. When the schemas are expanded, they are simplified by replacing observed atoms by true and all non-observed atoms that employ the same predicates by false.
@@ -838,7 +852,7 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `SatPlan/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
+The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
 
 ```lisp
 (:action turn-off
@@ -947,19 +961,19 @@ Each compiles to a per-slice weight — the same pattern satplan.wff uses for ac
 To run from the shell:
 
 ```sh
-sbcl --script SatPlan/pddl2fifo.lisp <problem.pddl> [<domain.pddl>]
+sbcl --script lisp/pddl2fifo.lisp <problem.pddl> [<domain.pddl>]
 ```
 
 Or from a Lisp listener:
 
 ```lisp
-(load "SatPlan/pddl2fifo.lisp")
+(load "lisp/pddl2fifo.lisp")
 (pddl2fifo "problem.pddl")                            ; domain file found automatically
 (pddl2fifo "problem.pddl" :domain-file "domain.pddl") ; domain file given explicitly
-(pddl2fifo "problem.pddl" :satplan-path "../../satplan.wff") ; custom include path
+(pddl2fifo "problem.pddl" :satplan-path "/path/to/lisp/satplan.wff") ; custom include path
 ```
 
-The `:satplan-path` keyword (default `"satplan.wff"`) sets the path written into the generated `(include ...)` form for the SatPlan axioms. It is resolved relative to the directory of the generated wff, so pass the appropriate relative path when the problem file lives in a subdirectory below `satplan.wff` — e.g. `"../../satplan.wff"` for the bundled examples, which sit two levels down in `SatPlan/Examples/<Category>/`.
+The `:satplan-path` keyword (default `"satplan.wff"`) sets the path written into the generated `(include ...)` form for the SatPlan axioms. It is resolved relative to the directory of the generated wff, so pass the path to `satplan.wff` (in the installed `~/lib/fifo/lisp/` or a source checkout's `lisp/`) relative to the problem file's directory. The `planner.sh` driver computes this automatically, so you only need `:satplan-path` for manual `pddl2fifo` use.
 
 If the domain file is not given, the root of its file name is taken from the `(:domain <name>)` form in the problem file, and `<name>.pddl` is looked up in the directory of the problem file.
 
@@ -978,22 +992,24 @@ Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/s
 
 ### Running the planner
 
-`SatPlan/planner.sh` is an end-to-end driver. It translates a PDDL problem with `pddl2fifo` (or takes a `.wff` directly), then **searches for the smallest workable time horizon** and solves at it. At each horizon it instantiates the problem and tests feasibility with a pure SAT solver; if the domain has action costs, it then re-solves the smallest feasible horizon with a weighted (MaxSAT) solver to minimize total cost. The two solvers are configured at the top of the script (`kissat` and `tt-open-wbo-inc-Glucose4_1` by default).
+`bin/planner.sh` is an end-to-end driver. It translates a PDDL problem with `pddl2fifo` (or takes a `.wff` directly), then **searches for the smallest workable time horizon** and solves at it. At each horizon it instantiates the problem and tests feasibility with a pure SAT solver; if the domain has action costs, it then re-solves the smallest feasible horizon with a weighted (MaxSAT) solver to minimize total cost. The two solvers are configured at the top of the script (`kissat` and `tt-open-wbo-inc-Glucose4_1` by default).
 
 ```sh
 # search horizons 2..6 (the defaults) for the smallest plan
-bash SatPlan/planner.sh SatPlan/Examples/Logistics/pb6.pddl
+bin/planner.sh SatPlan/Examples/Logistics/pb6.pddl
 
 # the switch problem -- has costs, so the weighted solver minimizes total cost
-bash SatPlan/planner.sh SatPlan/Examples/Switch/switchprob.pddl
+bin/planner.sh SatPlan/Examples/Switch/switchprob.pddl
 
 # the typed trucklog problem
-bash SatPlan/planner.sh SatPlan/Examples/TruckLog/trucklogprob.pddl
+bin/planner.sh SatPlan/Examples/TruckLog/trucklogprob.pddl
 ```
+
+After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem>`). Running it from a source checkout without installing requires pointing it at the lisp: `FIFO_LISP=$PWD/lisp bin/planner.sh <problem>`.
 
 `--minslices`/`--maxslices` bound the horizon search, `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly. When the bounds are omitted, `pddl2fifo` runs a relaxed planning-graph **reachability analysis** (ignoring delete effects and negative preconditions) to compute a lower bound on the horizon: `--minslices` defaults to that bound (2 for a `.wff`, which has no PDDL to analyze) and `--maxslices` defaults to twice `--minslices`. If the reachability analysis shows the goals are unreachable even in the relaxation, the problem is reported unsolvable without any search. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
 
-The logic lives in `SatPlan/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path)` runs the search and returns the status, horizon, and answer-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `FiFO.lisp`, `SatPlan/pddl2fifo.lisp`, and `SatPlan/planner.lisp` to call them from a Lisp listener.
+The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path)` runs the search and returns the status, horizon, and answer-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `lisp/FiFO.lisp`, `lisp/pddl2fifo.lisp`, and `lisp/planner.lisp` to call them from a Lisp listener.
 
 Schema BNF
 ----------

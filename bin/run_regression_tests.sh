@@ -13,9 +13,13 @@
 # Gensym symbols (#:XXnnnn) are renumbered by order of first appearance before
 # comparison, since their absolute numbers differ from one SBCL session to the next.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIFO="$ROOT/FiFO.lisp"
-TESTS="$ROOT/tests"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Default to the source checkout's lisp/ so the suite tests the working copy;
+# set FIFO_LISP to test an installed copy instead.
+FIFO_LISP="${FIFO_LISP:-$REPO/lisp}"
+FIFO="$FIFO_LISP/FiFO.lisp"
+TESTS="$REPO/tests"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

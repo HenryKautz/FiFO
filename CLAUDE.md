@@ -4,7 +4,16 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 
 ## Project Structure
 
-- `FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
+- `lisp/` — All Lisp sources and the SatPlan axioms (the installable library):
+  - `lisp/FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
+  - `lisp/pddl2fifo.lisp` — PDDL → FiFO wff translator (SatPlan)
+  - `lisp/planner.lisp` — smallest-horizon planning driver
+  - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline
+  - `lisp/satplan.wff` — domain-independent SatPlan axioms (a runtime dependency)
+- `bin/` — Shell scripts: `planner.sh` (end-to-end planner CLI), `run_regression_tests.sh`
+- `Makefile` — `make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override `BINDIR`/`LISPDIR`)
+- `SatPlan/Examples/` — example PDDL domains/problems
+- `Learning/` — weight-learning docs (`learning.md`) and example `.scnf` files
 - `*.wff` — FiFO formula input files
 - `*.scnf` — Symbolic CNF output files (intermediate)
 - `*.cnf` — DIMACS CNF files (input to SAT solver)
@@ -12,7 +21,12 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 - `README.md` — Full language reference and user guide
 - `tests/` — All test infrastructure (see below)
 
-## Key APIs (in FiFO.lisp)
+**Locating the lisp:** the shell scripts find the lisp via the `FIFO_LISP`
+environment variable. `bin/planner.sh` defaults it to the installed
+`~/lib/fifo/lisp`; the test scripts default it to the source checkout's `lisp/`
+so they exercise the working copy. Set `FIFO_LISP` to override either.
+
+## Key APIs (in lisp/FiFO.lisp)
 
 - `(parse schemas &key observation-list)` — Parse FiFO forms to ground clauses (all post-first args are keyword args)
 - `(instantiate "file.wff")` — File-based: wff -> scnf
@@ -40,6 +54,8 @@ bash run-test-solve.sh <testname>         # e.g. bash run-test-solve.sh test_sim
 `run-test-instantiate.sh` runs `instantiate` on `tests_instantiate/<testname>.wff`, writes `tests_instantiate/<testname>.scnf`, and cats the output.
 
 `run-test-solve.sh` runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.answer`, and cats the output.
+
+The full suite runs from the repo root with `bash bin/run_regression_tests.sh` (it tests `lisp/` by default; set `FIFO_LISP` to test an installed copy).
 
 Compare output against gold:
 ```sh

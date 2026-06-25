@@ -54,13 +54,15 @@ atoms happen to be independent, the two agree exactly.
 
 ## Running it
 
-Requires SBCL (the same toolchain as FiFO). Run from inside `Learning/`.
+Requires SBCL (the same toolchain as FiFO). The estimators live in `lisp/`
+(installed to `~/lib/fifo/lisp`); load them by path. The example `.scnf` files
+referenced below are in this `Learning/` directory.
 
 ### Independent log-odds
 
 ```sh
 sbcl --non-interactive \
-     --eval '(load "reweight.lisp")' \
+     --eval '(load "lisp/reweight.lisp")' \
      --eval '(reweight "myfile.scnf")'
 ```
 
@@ -79,7 +81,7 @@ Writes `myfile_reweighted.scnf`. Options:
 
 ```sh
 sbcl --non-interactive \
-     --eval '(load "maxent.lisp")' \
+     --eval '(load "lisp/maxent.lisp")' \
      --eval '(maxent-reweight "myfile.scnf")'
 ```
 
@@ -145,7 +147,7 @@ be **constant** within a group.
 Either output is an ordinary `.scnf`. To compile and solve:
 
 ```sh
-# from the FiFO project root, with FiFO.lisp loaded
+# from the FiFO project root, with lisp/FiFO.lisp loaded
 (propositionalize "Learning/myfile_reweighted.scnf")   ; -> .cnf/.wcnf + .map
 (satisfy ...)                                           ; or run a MaxSAT solver
 ```
