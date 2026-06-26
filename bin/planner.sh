@@ -30,6 +30,8 @@ usage() {
   echo "  --stop-after wff   stops after writing the .wff (translation only, no solving)." >&2
   echo "  --stop-after scnf  stops after instantiating the .scnf at the smallest horizon" >&2
   echo "                     (or --numslices), without solving." >&2
+  echo "  --longer K   for a costed domain, also minimize cost at up to K horizons beyond" >&2
+  echo "               the smallest feasible one, returning the cheapest plan (default 0)." >&2
   exit 2
 }
 
@@ -38,6 +40,7 @@ DOMAIN=""
 MINSLICES=""   # empty = let the planner default it from reachability analysis
 MAXSLICES=""   # empty = let the planner default it to 2 * minslices
 STOP_AFTER=""  # empty = run the full pipeline; "wff" or "scnf" stops early
+LONGER=""      # empty = 0; search K horizons beyond the smallest feasible for a cheaper plan
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --numslices) [[ $# -ge 2 ]] || usage; MINSLICES="$2"; MAXSLICES="$2"; shift 2 ;;  # fixed horizon
     --solver)    [[ $# -ge 2 ]] || usage; SAT_SOLVER="$2";  shift 2 ;;
     --stop-after) [[ $# -ge 2 ]] || usage; STOP_AFTER="$2"; shift 2 ;;
+    --longer)    [[ $# -ge 2 ]] || usage; LONGER="$2";    shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -57,6 +61,9 @@ done
 [[ -f "$PROBLEM" ]] || { echo "problem file not found: $PROBLEM" >&2; exit 2; }
 if [[ -n "$STOP_AFTER" && "$STOP_AFTER" != "wff" && "$STOP_AFTER" != "scnf" ]]; then
   echo "--stop-after must be wff or scnf, got: $STOP_AFTER" >&2; exit 2
+fi
+if [[ -n "$LONGER" && ! "$LONGER" =~ ^[0-9]+$ ]]; then
+  echo "--longer must be a non-negative integer, got: $LONGER" >&2; exit 2
 fi
 for v in MINSLICES MAXSLICES; do
   if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then echo "--${v,,} must be a non-negative integer, got: ${!v}" >&2; exit 2; fi
@@ -98,6 +105,8 @@ MAX_KW=""
 [[ -n "$MAXSLICES" ]] && MAX_KW=":maxslices $MAXSLICES"
 STOP_KW=""
 [[ -n "$STOP_AFTER" ]] && STOP_KW=":stop-after :$STOP_AFTER"
+LONGER_KW=""
+[[ -n "$LONGER" ]] && LONGER_KW=":longer $LONGER"
 
 exec sbcl --noinform --non-interactive \
   --eval "(load \"$FIFO\")" \
@@ -105,6 +114,6 @@ exec sbcl --noinform --non-interactive \
   --eval "(load \"$PLANNER\")" \
   --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
-              $MIN_KW $MAX_KW $STOP_KW
+              $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))"

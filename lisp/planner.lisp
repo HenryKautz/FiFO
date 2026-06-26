@@ -18,12 +18,50 @@
   "The companion file of PROBLEM-PATH with the given TYPE, e.g. \"scnf\"."
   (namestring (merge-pathnames (make-pathname :type type) problem-path)))
 
+(defun answer-objective (answer-file)
+  "The (*objective* N) value interpret wrote into ANSWER-FILE -- the MaxSAT
+solver's reported cost -- or NIL if the file has none."
+  (with-open-file (s answer-file :direction :input :if-does-not-exist nil)
+    (when s
+      (let ((*read-eval* nil))
+        (loop for form = (read s nil :eof) until (eq form :eof)
+              when (and (consp form) (symbolp (car form))
+                        (string= (symbol-name (car form)) "*OBJECTIVE*"))
+                return (second form))))))
+
+(defun wcnf-scale-offset (wcnf-file)
+  "Read the 'c weights scaled by S' / 'c weight shift offset M' comment lines a
+weighted .cnf/.wcnf carries (written only when non-trivial) and return (values S
+M), defaulting to 1 and 0.  The true plan cost of a solution is its raw objective
+/ S + M -- so for the usual non-negative integer action costs (S=1, M=0) the raw
+objective already is the true cost; this corrects it when weights were shifted
+(e.g. negative costs from learned weights)."
+  (let ((scale 1) (offset 0))
+    (with-open-file (s wcnf-file :direction :input :if-does-not-exist nil)
+      (when s
+        (let ((*read-eval* nil))
+          (loop for line = (read-line s nil) while line do
+            (let (m)
+              (cond ((setq m (nth-value 1 (cl-ppcre:scan-to-strings "scaled by\\s+(\\S+):" line)))
+                     (setq scale (read-from-string (aref m 0))))
+                    ((setq m (nth-value 1 (cl-ppcre:scan-to-strings "shift offset\\s+(\\S+):" line)))
+                     (setq offset (read-from-string (aref m 0))))))))))
+    (values scale offset)))
+
+(defun plan-true-cost (answer-file wcnf-file)
+  "True plan cost = raw objective / scale + offset, or NIL when there is no
+objective."
+  (let ((raw (answer-objective answer-file)))
+    (when raw
+      (multiple-value-bind (scale offset) (wcnf-scale-offset wcnf-file)
+        (+ (/ raw scale) offset)))))
+
 (defun plan (problem-file
              &key minslices maxslices
                   (sat-solver "kissat")
                   (weighted-solver "tt-open-wbo-inc-Glucose4_1")
                   domain-file (satplan-path "satplan.wff")
-                  stop-after
+                  stop-after (longer 0)
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -39,6 +77,12 @@ Phase 1 finds the smallest horizon with a satisfying model, instantiating in
 plain CNF and testing with the pure SAT solver SAT-SOLVER.  If the domain has no
 action costs that model is the answer.  If it does, phase 2 re-solves at that
 horizon in WCNF with the weighted solver WEIGHTED-SOLVER to minimize total cost.
+
+LONGER (default 0) extends phase 2: instead of minimizing cost only at the
+smallest feasible horizon s, it solves each horizon s..s+LONGER and returns the
+cheapest plan found (a longer horizon can admit a lower-cost plan).  Costs at
+different horizons are compared as true plan costs (raw objective / scale +
+offset).  LONGER has no effect when the domain has no action costs.
 
 STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
 PDDL translation, or the input itself for a .wff), and :SCNF returns after
@@ -108,21 +152,45 @@ Progress is printed to STREAM."
                ;; The domain has costs iff the instantiated scnf carries weights.
                (setq has-costs (file-contains-string-p "(WEIGHT" scnf))
                (cond
-                 (has-costs
-                  (format stream "Domain has action costs; minimizing cost with ~A (wcnf)...~%"
-                          weighted-solver)
-                  (setq *satplan-numslices* found *cnf-format* 'wcnf *solver* weighted-solver)
-                  (unless (instantiate wff :scnfile scnf)
-                    (error "instantiation failed at ~A slices" found))
-                  (unless (propositionalize scnf :cnffile wcnf :mapfile map)
-                    (error "propositionalization failed at ~A slices" found))
-                  (unless (eql (satisfy wcnf :satoutfile satout) 'sat)
-                    (error "weighted solver ~A did not return SAT on the wcnf" weighted-solver))
+                 ((not has-costs)
+                  ;; No costs: the shortest feasible model is the answer; a longer
+                  ;; search could only find equally costless (cost-0) plans.
+                  (when (plusp longer)
+                    (format stream "(no action costs; --longer has no effect)~%"))
                   (interpret satout :mapfile map :solnfile answer)
                   (values :sat found answer))
                  (t
-                  (interpret satout :mapfile map :solnfile answer)
-                  (values :sat found answer))))))))
+                  ;; Costs: minimize at each horizon found..found+LONGER and keep
+                  ;; the cheapest plan (comparing true costs across horizons).
+                  (let ((best-cost nil) (best-n nil)
+                        (best-answer (planner-file problem-path "best.answer")))
+                    (loop for n from found to (+ found longer) do
+                      (format stream "Minimizing cost at ~A time slices with ~A (wcnf)...~%"
+                              n weighted-solver)
+                      (setq *satplan-numslices* n *cnf-format* 'wcnf *solver* weighted-solver)
+                      (unless (instantiate wff :scnfile scnf)
+                        (error "instantiation failed at ~A slices" n))
+                      (unless (propositionalize scnf :cnffile wcnf :mapfile map)
+                        (error "propositionalization failed at ~A slices" n))
+                      (case (satisfy wcnf :satoutfile satout)
+                        (sat
+                         (interpret satout :mapfile map :solnfile answer)
+                         (let ((cost (plan-true-cost answer wcnf)))
+                           (format stream "  ~A time slices: cost ~A~%" n (or cost "(none)"))
+                           (when (and cost (or (null best-cost) (< cost best-cost)))
+                             (setq best-cost cost best-n n)
+                             (uiop:copy-file answer best-answer))))
+                        (unsat (format stream "  unsatisfiable with ~A time slices~%" n))
+                        (t (error "weighted solver ~A failed at ~A slices" weighted-solver n))))
+                    (cond
+                      (best-n
+                       (uiop:copy-file best-answer answer)   ; restore the cheapest
+                       (when (probe-file best-answer) (delete-file best-answer))
+                       (when (plusp longer)
+                         (format stream "Cheapest plan over ~A..~A slices: cost ~A at ~A slices.~%"
+                                 found (+ found longer) best-cost best-n))
+                       (values :sat best-n answer))
+                      (t (values :unsat nil nil)))))))))))
       (error (e)
         (format *error-output* "planner: ~A~%" e)
         (values :error nil nil)))))
