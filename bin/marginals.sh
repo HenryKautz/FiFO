@@ -37,12 +37,12 @@ action atoms).  Exact enumeration -- intended for small instances.
   --node-limit <int>  (maxent only) cap on enumeration nodes (default: 5000000)
   --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
                       implies --solver addmc
-  --scale <n>         (addmc only) divide integer weights by n before
-                      exponentiating; default reads the 'scale: N' the weight-
-                      learning pipeline records in the header (1 if absent).  The
-                      pipeline scales costs by an integer factor (100 by default)
-                      for MaxSAT, which would otherwise distort the marginals;
-                      --scale 1 uses raw weights.
+  --scale <n>         divide integer weights by n before exponentiating; default
+                      reads the 'scale: N' the weight-learning pipeline records in
+                      the header (1 if absent).  The pipeline scales costs by an
+                      integer factor (100 by default) for MaxSAT, which would
+                      otherwise distort the marginals; --scale 1 uses raw weights.
+                      Applies to both solvers.
   --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
@@ -103,7 +103,6 @@ done
 if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit must be a non-negative integer, got: $NODE_LIMIT"; fi
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
-[[ -z "$SCALE" || "$SOLVER" == "addmc" ]] || die "--scale applies to the addmc solver only"
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
   [[ "$SOLVER" == "addmc" ]] || die "--evidence/--evidence-file apply to the addmc solver only"
@@ -136,6 +135,7 @@ KW=""
 [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
 [[ -n "$NODE_LIMIT" ]] && KW="$KW :node-limit $NODE_LIMIT"
 [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+[[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
 
 # Load in separate --evals so the call is compiled after marginals is defined.
 exec sbcl --noinform --non-interactive \

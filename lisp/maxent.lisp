@@ -431,14 +431,22 @@ inconsistent with the hard clauses~@[ and the fixed weights~].~%"
 ;;; well as Occurs action atoms).
 ;;; ----------------------------------------------------------------------------
 
-(defun marginals (scnf-file &key out-file weighted-only (node-limit 5000000) (verbose t))
+(defun marginals (scnf-file &key out-file weighted-only scale (node-limit 5000000) (verbose t))
   "Exact marginal probability P(atom = true) of the atoms in a weighted SCNF-FILE,
-under the Gibbs distribution P(x) proportional to exp(-(sum of the weights of the
-true literals)) over the feasible set (assignments satisfying the hard (OR ...)
+under the Gibbs distribution P(x) proportional to exp(-(sum of the REAL weights of
+the true literals)) over the feasible set (assignments satisfying the hard (OR ...)
 clauses).  (WEIGHT literal w) lines supply the costs; (PROBABILITY ...) targets,
 if any, are ignored.  With no weights the distribution is uniform over the
-feasible set.  Exact enumeration, so this is for small instances (NODE-LIMIT caps
-the search).
+feasible set.
+
+The integer weights are divided by SCALE first -- a positive number to force one,
+or NIL (the default) to read the 'scale: N' the weight-learning pipeline records
+in the header (1.0 if absent), exactly as in WMC.  This matters because the
+pipeline scales costs by an integer factor (100 by default) for MaxSAT, and
+exp(-100*theta) is a near-zero-temperature distribution; pass :scale 1 to use the
+raw integer weights.
+
+Exact enumeration, so this is for small instances (NODE-LIMIT caps the search).
 
 By default the marginal of EVERY atom is reported (weighted or not -- SatPlan
 Holds state atoms as well as Occurs action atoms).  With WEIGHTED-ONLY, only the
@@ -453,7 +461,8 @@ an alist (atom . probability)."
     (declare (ignore probs opts))
     (let ((weight-atoms (remove-duplicates
                           (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf))) weights)
-                          :test #'equal)))
+                          :test #'equal))
+          (scale (rw--resolve-scale scnf-file scale verbose)))
       (when (and weighted-only (null weight-atoms))
         (when verbose (format t "; no weighted atoms in ~A~%" (file-namestring scnf-file)))
         (return-from marginals nil))
@@ -476,7 +485,8 @@ an alist (atom . probability)."
                                 (loop for v from 1 to nvars collect v)))
                  (nsoft (length soft-vars))
                  (thetas (make-array nsoft :element-type 'double-float)))
-            (loop for v in soft-vars for b from 0 do (setf (aref thetas b) (aref net v)))
+            ;; thetas are the REAL costs: raw net cost divided by the weight scale.
+            (loop for v in soft-vars for b from 0 do (setf (aref thetas b) (/ (aref net v) scale)))
             (let ((entries (mx--enumerate int-clauses nvars soft-vars :node-limit node-limit)))
               (when (null entries)
                 (error "the hard clauses are unsatisfiable; no feasible set to take marginals over"))

@@ -45,36 +45,6 @@ scratch-file naming), so a generated/deleted scratch file can never collide with
 or clobber a user's file."
   (format nil "~A.wcnf" (make-scratch-file-root)))
 
-(defun wmc--detect-scale (scnf-file)
-  "Scan SCNF-FILE's comment header for a 'scale: <n>' annotation -- written by the
-weight-learning pipeline (reweight.lisp / maxent.lisp), whose integer weights are
-the real costs MULTIPLIED by this scale.  Return the scale as a double-float, or
-1.0 when there is no such annotation (e.g. hand-written or SatPlan-cost scnfs,
-whose weights are already real costs)."
-  (with-open-file (in scnf-file :direction :input)
-    (loop for line = (read-line in nil :eof)
-          until (eq line :eof)
-          for trimmed = (string-left-trim '(#\Space #\Tab) line)
-          when (and (> (length trimmed) 0) (char= (char trimmed 0) #\;))
-            do (let ((groups (nth-value 1 (cl-ppcre:scan-to-strings
-                                           "scale:\\s*([0-9]+(?:\\.[0-9]+)?)" trimmed))))
-                 (when groups
-                   (return-from wmc--detect-scale
-                     (float (read-from-string (aref groups 0)) 1.0d0))))))
-  1.0d0)
-
-(defun wmc--resolve-scale (scnf-file scale verbose)
-  "Resolve the weight scale for SCNF-FILE: SCALE if a positive number was given,
-otherwise auto-detected from the header (default 1.0).  The integer weights are
-divided by this before being exponentiated, recovering the real costs."
-  (let ((s (cond ((null scale) (wmc--detect-scale scnf-file))
-                 ((and (realp scale) (> scale 0)) (float scale 1.0d0))
-                 (t (error "scale must be a positive number, or NIL to auto-detect; got ~S"
-                           scale)))))
-    (when (and verbose (/= s 1.0d0))
-      (format t "; weight scale ~F: real cost = integer weight / ~:*~F (pass :scale 1 to use raw weights)~%" s))
-    s))
-
 (defun wmc--literal-costs (weights a2i)
   "From the (WEIGHT literal w) forms, return a hash table mapping a signed DIMACS
 literal (+i for the positive atom, -i for a negated one) to its TOTAL
@@ -219,7 +189,7 @@ WCNF-FILE was given explicitly."
     (declare (ignore probs opts))
     (let* ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
                                  weight-forms))
-           (scale (wmc--resolve-scale scnf-file scale verbose))
+           (scale (rw--resolve-scale scnf-file scale verbose))
            (evidence-clauses (wmc--evidence-clauses evidence evidence-file))
            (clauses (append clauses evidence-clauses)))
       (when (and verbose evidence-clauses)
@@ -264,7 +234,7 @@ per atom (sorted) and, with OUT-FILE, also writes them there.  Returns an alist 
       (when (and weighted-only (null weight-atoms))
         (when verbose (format t "; no weighted atoms in ~A~%" scnf-file))
         (return-from marginals-addmc nil))
-      (setf scale (wmc--resolve-scale scnf-file scale verbose))
+      (setf scale (rw--resolve-scale scnf-file scale verbose))
       (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file))
              ;; report only theory atoms (and weighted atoms), never evidence-only auxiliaries
              (theory-atoms (remove-duplicates (append (wmc--clause-atoms clauses) weight-atoms)

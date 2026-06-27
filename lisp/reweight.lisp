@@ -114,6 +114,37 @@ is not (OR ...), (PROBABILITY ...), (WEIGHT ...), or (OPTION ...)."
             (remove-if-not (lambda (f) (eq (car f) 'option)) forms)
             (remove-if-not (lambda (f) (eq (car f) 'weight)) forms))))
 
+(defun rw--detect-scale (scnf-file)
+  "Scan SCNF-FILE's comment header for a 'scale: <n>' annotation -- written by the
+weight-learning pipeline, whose integer weights are the real costs MULTIPLIED by
+this scale.  Return the scale as a double-float, or 1.0 when there is no such
+annotation (e.g. hand-written or SatPlan-cost scnfs, whose weights are already
+real costs)."
+  (with-open-file (in scnf-file :direction :input)
+    (loop for line = (read-line in nil :eof)
+          until (eq line :eof)
+          for trimmed = (string-left-trim '(#\Space #\Tab) line)
+          when (and (> (length trimmed) 0) (char= (char trimmed 0) #\;))
+            do (let ((groups (nth-value 1 (cl-ppcre:scan-to-strings
+                                           "scale:\\s*([0-9]+(?:\\.[0-9]+)?)" trimmed))))
+                 (when groups
+                   (return-from rw--detect-scale
+                     (float (read-from-string (aref groups 0)) 1.0d0))))))
+  1.0d0)
+
+(defun rw--resolve-scale (scnf-file scale verbose)
+  "Resolve the weight scale for SCNF-FILE: SCALE if a positive number was given,
+otherwise auto-detected from the header (default 1.0).  Marginal/WMC code divides
+the integer weights by this before exponentiating, recovering the real costs --
+the absolute scale, irrelevant to MaxSAT, otherwise distorts the distribution."
+  (let ((s (cond ((null scale) (rw--detect-scale scnf-file))
+                 ((and (realp scale) (> scale 0)) (float scale 1.0d0))
+                 (t (error "scale must be a positive number, or NIL to auto-detect; got ~S"
+                           scale)))))
+    (when (and verbose (/= s 1.0d0))
+      (format t "; weight scale ~F: real cost = integer weight / ~:*~F (pass :scale 1 to use raw weights)~%" s))
+    s))
+
 (defun rw--weight-fixed-theta (weight-form)
   "For an explicit (WEIGHT literal w) form, return (values atom theta-fixed): the
 positive atom and the cost-when-TRUE on it.  A weight on (NOT atom) is a cost when
