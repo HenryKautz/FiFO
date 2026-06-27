@@ -23,15 +23,25 @@ WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"   # weighted/MaxSAT solver (costs)
 
 usage() {
   echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>] [--stop-after <wff|scnf>]" >&2
+  echo "                  [--evidence <formula>]... [--evidence-file <file>] [--marginals [--counter <name>]]" >&2
   echo "  A .pddl problem is translated with pddl2fifo; a .wff is used as-is." >&2
   echo "  Searches horizons for the smallest plan.  --minslices defaults to a reachability" >&2
   echo "  lower bound (2 for a .wff); --maxslices defaults to 2 * minslices." >&2
   echo "  --solver overrides the pure SAT (feasibility) solver; default: $SAT_SOLVER." >&2
   echo "  --stop-after wff   stops after writing the .wff (translation only, no solving)." >&2
   echo "  --stop-after scnf  stops after instantiating the .scnf at the smallest horizon" >&2
-  echo "                     (or --numslices), without solving." >&2
+  echo "                     (or --numslices), without solving; with evidence, also leaves" >&2
+  echo "                     the separate <root>-evidence.scnf." >&2
   echo "  --longer K   for a costed domain, also minimize cost at up to K horizons beyond" >&2
   echo "               the smallest feasible one, returning the cheapest plan (default 0)." >&2
+  echo "  --evidence <formula>  condition on a FiFO formula (ground or quantified over the" >&2
+  echo "               problem's domains); instantiated in the same env as the problem into a" >&2
+  echo "               separate <root>-evidence.scnf and conjoined.  Repeatable." >&2
+  echo "  --evidence-file <f>   a file of such formulas, conjoined with any --evidence." >&2
+  echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
+  echo "               at the working horizon (no plan search)." >&2
+  echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
+  echo "               enumeration) or an ADDMC binary name/path." >&2
   exit 2
 }
 
@@ -41,6 +51,10 @@ MINSLICES=""   # empty = let the planner default it from reachability analysis
 MAXSLICES=""   # empty = let the planner default it to 2 * minslices
 STOP_AFTER=""  # empty = run the full pipeline; "wff" or "scnf" stops early
 LONGER=""      # empty = 0; search K horizons beyond the smallest feasible for a cheaper plan
+EVFILE=""      # --evidence-file
+EVIDENCE_FORMS=()  # --evidence (repeatable)
+MARGINALS=0    # --marginals: weighted model counting instead of planning
+COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +65,10 @@ while [[ $# -gt 0 ]]; do
     --solver)    [[ $# -ge 2 ]] || usage; SAT_SOLVER="$2";  shift 2 ;;
     --stop-after) [[ $# -ge 2 ]] || usage; STOP_AFTER="$2"; shift 2 ;;
     --longer)    [[ $# -ge 2 ]] || usage; LONGER="$2";    shift 2 ;;
+    --evidence)       [[ $# -ge 2 ]] || usage; EVIDENCE_FORMS+=("$2"); shift 2 ;;
+    --evidence-file)  [[ $# -ge 2 ]] || usage; EVFILE="$2"; shift 2 ;;
+    --marginals) MARGINALS=1; shift ;;
+    --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -65,6 +83,8 @@ fi
 if [[ -n "$LONGER" && ! "$LONGER" =~ ^[0-9]+$ ]]; then
   echo "--longer must be a non-negative integer, got: $LONGER" >&2; exit 2
 fi
+if [[ -n "$EVFILE" && ! -f "$EVFILE" ]]; then echo "evidence file not found: $EVFILE" >&2; exit 2; fi
+if [[ -n "$COUNTER" && "$MARGINALS" -ne 1 ]]; then echo "--counter applies only with --marginals" >&2; exit 2; fi
 for v in MINSLICES MAXSLICES; do
   if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then echo "--${v,,} must be a non-negative integer, got: ${!v}" >&2; exit 2; fi
 done
@@ -79,6 +99,9 @@ if [[ -n "$DOMAIN" ]]; then
   [[ -f "$DOMAIN" ]] || { echo "domain file not found: $DOMAIN" >&2; exit 2; }
   DOMAIN="$(cd "$(dirname "$DOMAIN")" && pwd)/$(basename "$DOMAIN")"
 fi
+if [[ -n "$EVFILE" ]]; then
+  EVFILE="$(cd "$(dirname "$EVFILE")" && pwd)/$(basename "$EVFILE")"
+fi
 
 # Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.  They live in the
 # installed lisp directory ($HOME/lib/fifo/lisp by default; override with the
@@ -89,6 +112,8 @@ FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
 FIFO="$FIFO_LISP/FiFO.lisp"
 PDDL2FIFO="$FIFO_LISP/pddl2fifo.lisp"
 PLANNER="$FIFO_LISP/planner.lisp"
+MAXENT="$FIFO_LISP/maxent.lisp"      # loaded only for --marginals (weighted model counting)
+WMC="$FIFO_LISP/wmc.lisp"            #   "
 SATPLAN="$FIFO_LISP/satplan.wff"
 
 # The (include ...) path written into a generated wff is computed relative to the
@@ -107,13 +132,24 @@ STOP_KW=""
 [[ -n "$STOP_AFTER" ]] && STOP_KW=":stop-after :$STOP_AFTER"
 LONGER_KW=""
 [[ -n "$LONGER" ]] && LONGER_KW=":longer $LONGER"
+EVIDENCE_KW=""
+[[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && EVIDENCE_KW=":evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+EVFILE_KW=""
+[[ -n "$EVFILE" ]] && EVFILE_KW=":evidence-file \"$EVFILE\""
+MARGINALS_KW=""
+[[ "$MARGINALS" -eq 1 ]] && MARGINALS_KW=":marginals t"
+COUNTER_KW=""
+[[ -n "$COUNTER" ]] && COUNTER_KW=":counter \"$COUNTER\""
 
-exec sbcl --noinform --non-interactive \
-  --eval "(load \"$FIFO\")" \
-  --eval "(load \"$PDDL2FIFO\")" \
-  --eval "(load \"$PLANNER\")" \
-  --eval "(sb-ext:exit :code
+# Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
+EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
+[[ "$MARGINALS" -eq 1 ]] && EVALS+=( --eval "(load \"$MAXENT\")" --eval "(load \"$WMC\")" )
+EVALS+=( --eval "(load \"$PLANNER\")" )
+EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
               $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
+              $EVIDENCE_KW $EVFILE_KW $MARGINALS_KW $COUNTER_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
-              :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))"
+              :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))" )
+
+exec sbcl --noinform --non-interactive "${EVALS[@]}"

@@ -7,7 +7,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 - `lisp/` — All Lisp sources and the SatPlan axioms (the installable library):
   - `lisp/FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
   - `lisp/pddl2fifo.lisp` — PDDL → FiFO wff translator (SatPlan)
-  - `lisp/planner.lisp` — smallest-horizon planning driver
+  - `lisp/planner.lisp` — smallest-horizon planning driver; also tier-3 conditioning (`--evidence`/`--evidence-file`, instantiated via `parse-same-env` into a separate `<root>-evidence.scnf`) and `--marginals` (weighted model counting via `--counter maxent|<addmc>`)
   - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline; `maxent.lisp` also has `(marginals ...)` (exact marginal inference by enumeration)
   - `lisp/plearn.lisp` — PDDL weight-learning orchestrator (`learn-pddl`)
   - `lisp/wmc.lisp` — FiFO→ADDMC bridge: `(wmc ...)` weighted model count and `(marginals-addmc ...)` marginals via the external ADDMC counter (emits MCC weighted CNF, shells out, parses the count)
