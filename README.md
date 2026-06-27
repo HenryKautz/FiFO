@@ -443,6 +443,15 @@ bin/learn.sh myproblem.scnf --wff myproblem.wff
 bin/learn.sh myproblem.scnf --maxent --out learned.scnf
 ```
 
+### Marginal Inference and Weighted Model Counting
+
+Weight learning runs in the *inverse* direction of inference: it turns target marginal probabilities into weights. Going forward — weights to marginals — is **marginal inference**, the probability that each atom is true under the weighted theory `P(x) ∝ exp(−(sum of the weights of the true literals))` over the feasible set. Two back ends compute this exactly:
+
+- **`bin/marginals.sh problem.scnf`** — Lisp enumeration of the feasible set. Exact, simple, but exponential; intended for small instances. `--weighted-only` restricts it to the weighted atoms.
+- **`bin/marginals.sh problem.scnf --addmc`** — the same marginals via the **ADDMC** weighted model counter (algebraic decision diagrams), which scales far past brute enumeration. **`bin/wmc.sh problem.scnf`** prints just the partition function `Z` (a weighted model count).
+
+ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. A handy way to produce the `.scnf` input is `bin/planner.sh <problem.pddl> --stop-after scnf`. For the encoding details (MCC weighted CNF), the cross-check against enumeration, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
+
 Deduction 
 ---------------------------------------
 

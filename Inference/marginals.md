@@ -100,7 +100,7 @@ This suggests a **projected inference** approach: sample over action variable as
 
 **Medium-term (proper SampleSAT):** Replace the inner sampler with WalkSAT-based SampleSAT or UniGen. The Python `pysat` library (already in the weight-learning stack) provides WalkSAT access; UniGen has Python bindings via `pyunigen`.
 
-**Alternative path (WMC tools):** Add a `(option *cnf-format* WMC)` output mode that emits a weighted CNF file accepted by GPMC or ADDMC, then shell out to the tool and parse its marginal output back. Cleanest conceptually, avoids implementing sampling at all, limited to instances where the WMC solver terminates.
+**Alternative path (WMC tools):** Emit a weighted CNF file accepted by GPMC or ADDMC, then shell out to the tool and parse its count back. Cleanest conceptually, avoids implementing sampling at all, limited to instances where the WMC solver terminates. **(Implemented via ADDMC — see "Implemented: weighted model counting via ADDMC" below.)**
 
 ------
 
@@ -150,6 +150,39 @@ bin/marginals.sh problem.scnf --weighted-only
 ```
 
 A handy way to produce the input is `bin/planner.sh <problem.pddl> --stop-after scnf`, which writes the instantiated `.scnf` without solving. The lisp is located via `FIFO_LISP` (see the README's Installation section).
+
+------
+
+### Implemented: weighted model counting via ADDMC (Method 3)
+
+The WMC-tools path is implemented against **ADDMC** (the algebraic-decision-diagram weighted model counter). Where the enumeration above is exact but exponential, ADDMC compiles the same weighted `.scnf` to an algebraic decision diagram, so it scales to instances far beyond brute enumeration. `lisp/wmc.lisp` provides
+
+```lisp
+(wmc "file.scnf" &key wcnf-file keep-wcnf addmc verbose)             ; partition function Z
+(marginals-addmc "file.scnf" &key out-file weighted-only addmc verbose)  ; per-atom marginals
+```
+
+`wmc` returns the partition function `Z = Σ_{x∈F} exp(-cost(x))` — itself a weighted model count. `marginals-addmc` computes `P(a) = Z[clauses ∧ a] / Z` by running ADDMC once for `Z` and once more per reported atom with a unit clause clamping that atom true; it accepts the same `:weighted-only` restriction as `marginals`.
+
+**The encoding.** The bridge emits the **MCC-2020 weighted CNF** format (ADDMC's `--wf 4`). FiFO's model — `W(L true) = exp(-θ)`, `W(L false) = 1` for a literal `L` with cost-when-true `θ` — maps directly: each charged literal becomes a weight line `w <lit> exp(-θ)`, and the opposite literal keeps ADDMC's default weight `1.0`. (Tied/duplicate `(WEIGHT ...)` forms on the same literal sum their costs first.) MCC's independent per-literal weights are what make this work — the Cachet format, which forces `W(¬v) = 1 − W(v)`, cannot represent FiFO's `W(v=0) = 1`.
+
+This was cross-checked against the Method-1 enumeration: on the test instances the two agree to the last double-precision bit (max `|P_enum − P_addmc| = 0`).
+
+**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin` / `--addmc`. The fork also disables CUDD's terminal-merging epsilon (default `1e-12`): FiFO scales costs by 100 for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the stock epsilon would round down to `0`. With that fix the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits.
+
+The shell wrappers:
+
+```sh
+# partition function Z of a weighted scnf
+bin/wmc.sh problem.scnf
+
+# marginals via ADDMC instead of enumeration (scales further)
+bin/marginals.sh problem.scnf --addmc
+bin/marginals.sh problem.scnf --addmc --weighted-only --out problem.marginals
+bin/marginals.sh problem.scnf --addmc-bin /path/to/addmc      # implies --addmc
+```
+
+Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported atom, so `--weighted-only` (or a small atom set) keeps the run count down on instances with many state atoms.
 
 ------
 

@@ -8,10 +8,11 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
   - `lisp/FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
   - `lisp/pddl2fifo.lisp` — PDDL → FiFO wff translator (SatPlan)
   - `lisp/planner.lisp` — smallest-horizon planning driver
-  - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline
+  - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline; `maxent.lisp` also has `(marginals ...)` (exact marginal inference by enumeration)
   - `lisp/plearn.lisp` — PDDL weight-learning orchestrator (`learn-pddl`)
+  - `lisp/wmc.lisp` — FiFO→ADDMC bridge: `(wmc ...)` weighted model count and `(marginals-addmc ...)` marginals via the external ADDMC counter (emits MCC weighted CNF, shells out, parses the count)
   - `lisp/satplan.wff` — domain-independent SatPlan axioms (a runtime dependency)
-- `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `marginals.sh` (exact marginal inference on an scnf), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
+- `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `marginals.sh` (marginal inference on an scnf; `--addmc` uses ADDMC instead of enumeration), `wmc.sh` (weighted model count / partition function via ADDMC), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
 - `Makefile` — `make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override `BINDIR`/`LISPDIR`)
 - `SatPlan/Examples/` — example PDDL domains/problems
 - `Learning/` — weight-learning docs (`learning.md`) and example `.scnf` files
@@ -39,6 +40,8 @@ so they exercise the working copy. Set `FIFO_LISP` to override either.
 ## Running
 
 Requires SBCL with Quicklisp. The SAT solver defaults to `kissat` (configurable via `sat-solver` variable).
+
+The weighted-model-counting bridge (`lisp/wmc.lisp`, `bin/wmc.sh`, `marginals.sh --addmc`) shells out to a separate **ADDMC** executable — a macOS fork at `github.com/HenryKautz/ADDMC` (built locally at `../ADDMC/addmc`). It is located via the `*addmc*` lisp variable, which defaults to the `ADDMC` environment variable, else `addmc` on `PATH`; the shell scripts also accept `--addmc-bin <path>`. ADDMC is optional — only the WMC features need it.
 
 **Important:** SBCL on this system requires `--eval` (long form); `-e` is not recognized and silently drops all eval forms.
 
