@@ -163,8 +163,9 @@ Z = sum over the feasible set of exp(-(sum of the REAL weights of the true
 literals)).  The integer weights are divided by SCALE first -- a positive number
 to force one, or NIL (the default) to read the 'scale: N' the weight-learning
 pipeline records in the header (1.0 if absent).  This matters because the
-pipeline scales costs by 100 for MaxSAT, and exp(-100*theta) is a near-zero
-distribution; pass :scale 1 to count with the raw integer weights.  Writes a
+pipeline scales costs by an integer factor (100 by default) for MaxSAT, and e.g.
+exp(-100*theta) is a near-zero distribution; pass :scale 1 to count with the raw
+integer weights.  Writes a
 scratch MCC weighted CNF (WCNF-FILE, default a unique scratch name), runs ADDMC,
 and returns Z as a double-float.  The scratch file is deleted unless KEEP-WCNF is
 set or WCNF-FILE was given explicitly."

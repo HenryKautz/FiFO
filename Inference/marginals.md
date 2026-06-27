@@ -168,7 +168,7 @@ The WMC-tools path is implemented against **ADDMC** (the algebraic-decision-diag
 
 This was cross-checked against the Method-1 enumeration: on the test instances the two agree to the last double-precision bit (max `|P_enum − P_addmc| = 0`).
 
-**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin` / `--addmc`. The fork also disables CUDD's terminal-merging epsilon (default `1e-12`): FiFO scales costs by 100 for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the stock epsilon would round down to `0`. With that fix the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits.
+**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin` / `--addmc`. The fork also disables CUDD's terminal-merging epsilon (default `1e-12`): FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the stock epsilon would round down to `0`. With that fix the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits.
 
 The shell wrappers:
 

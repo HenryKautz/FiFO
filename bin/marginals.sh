@@ -37,8 +37,9 @@ action atoms).  Exact enumeration -- intended for small instances.
   --scale <n>         (--addmc only) divide integer weights by n before
                       exponentiating; default reads the 'scale: N' the weight-
                       learning pipeline records in the header (1 if absent).  The
-                      pipeline scales costs by 100 for MaxSAT, which would
-                      otherwise distort the marginals; --scale 1 uses raw weights.
+                      pipeline scales costs by an integer factor (100 by default)
+                      for MaxSAT, which would otherwise distort the marginals;
+                      --scale 1 uses raw weights.
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
