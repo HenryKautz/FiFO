@@ -25,21 +25,27 @@ feasible set (the assignments satisfying its hard (OR ...) clauses).  All atoms
 are reported, weighted or not (e.g. SatPlan Holds state atoms, not just Occurs
 action atoms).  Exact enumeration -- intended for small instances.
 
+  --solver <name>     marginal-inference back end (default: maxent):
+                        maxent  exact Lisp enumeration of the feasible set --
+                                simple but exponential; for small instances
+                        addmc   the ADDMC weighted model counter (algebraic
+                                decision diagrams) -- exact and scales far past
+                                enumeration (one ADDMC run for Z plus one per atom)
   --weighted-only     report (and enumerate) only the weighted atoms, not every
                       atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
-  --node-limit <int>  cap on enumeration nodes (default: 5000000); enumeration only
-  --addmc             compute via the ADDMC weighted model counter instead of Lisp
-                      enumeration -- exact and scales far past brute enumeration
-                      (one ADDMC run for Z plus one per reported atom)
+  --node-limit <int>  (maxent only) cap on enumeration nodes (default: 5000000)
   --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
-                      implies --addmc
-  --scale <n>         (--addmc only) divide integer weights by n before
+                      implies --solver addmc
+  --scale <n>         (addmc only) divide integer weights by n before
                       exponentiating; default reads the 'scale: N' the weight-
                       learning pipeline records in the header (1 if absent).  The
                       pipeline scales costs by an integer factor (100 by default)
                       for MaxSAT, which would otherwise distort the marginals;
                       --scale 1 uses raw weights.
+  --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
+                      default 0 = exact (full double precision).  A positive value
+                      trades exactness for speed/memory.
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
@@ -59,17 +65,19 @@ SCNF=""
 OUT=""
 NODE_LIMIT=""
 WEIGHTED_ONLY=0
-USE_ADDMC=0
+SOLVER="maxent"
 SCALE=""
+EPSILON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent or addmc)"; SOLVER="$2"; shift 2 ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
-    --addmc)          USE_ADDMC=1; shift ;;
-    --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; USE_ADDMC=1; shift 2 ;;
+    --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; SOLVER="addmc"; shift 2 ;;
     --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
+    --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     -*)               die "unknown option: $1" ;;
     *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
@@ -77,13 +85,16 @@ done
 
 [[ -n "$SCNF" ]] || die "no .scnf file given"
 [[ -f "$SCNF" ]] || die "input file not found: $SCNF"
+[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" ]] || die "--solver must be maxent or addmc, got: $SOLVER"
 if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit must be a non-negative integer, got: $NODE_LIMIT"; fi
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
-[[ -z "$SCALE" || "$USE_ADDMC" -eq 1 ]] || die "--scale applies to the --addmc method only"
+if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
+[[ -z "$SCALE" || "$SOLVER" == "addmc" ]] || die "--scale applies to the addmc solver only"
+[[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
-if [[ "$USE_ADDMC" -eq 1 ]]; then
-  [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the enumeration method, not --addmc"
+if [[ "$SOLVER" == "addmc" ]]; then
+  [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent solver, not addmc"
   ADDMC_BIN="${ADDMC:-addmc}"
   if ! command -v "$ADDMC_BIN" >/dev/null 2>&1 && [[ ! -x "$ADDMC_BIN" ]]; then
     die "ADDMC binary not found: '$ADDMC_BIN' (set --addmc-bin, the ADDMC env var, or put 'addmc' on PATH)"
@@ -92,6 +103,7 @@ if [[ "$USE_ADDMC" -eq 1 ]]; then
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
   exec sbcl --noinform --non-interactive \
     --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \

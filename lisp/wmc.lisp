@@ -137,12 +137,17 @@ error messages.  ADDMC prints one solution line 's wmc <value>' (or 's mc
           (error "ADDMC result is not a number: ~S" line))
         (float val 1.0d0)))))
 
-(defun wmc--run-addmc (wcnf-file &key (addmc *addmc*))
+(defun wmc--run-addmc (wcnf-file &key (addmc *addmc*) epsilon)
   "Run ADDMC on WCNF-FILE (MCC weight format, --wf 4) and return the weighted
-model count as a double-float."
+model count as a double-float.  EPSILON, when non-NIL, is passed as ADDMC's --ep
+(CUDD terminal-merging tolerance); NIL uses ADDMC's default of 0 (exact, full
+double precision)."
   (multiple-value-bind (out err code)
       (handler-case
-          (uiop:run-program (list addmc "--cf" wcnf-file "--wf" "4")
+          (uiop:run-program (append (list addmc "--cf" wcnf-file "--wf" "4")
+                                    (when epsilon
+                                      (list "--ep" (format nil "~,16,,,,,'eE"
+                                                           (float epsilon 1.0d0)))))
                             :output :string :error-output :string
                             :ignore-error-status t)
         (error (c)
@@ -157,7 +162,7 @@ model count as a double-float."
 ;;; Entry points
 ;;; ----------------------------------------------------------------------------
 
-(defun wmc (scnf-file &key wcnf-file keep-wcnf scale (addmc *addmc*) (verbose t))
+(defun wmc (scnf-file &key wcnf-file keep-wcnf scale epsilon (addmc *addmc*) (verbose t))
   "Exact weighted model count (partition function Z) of a weighted .scnf via ADDMC.
 Z = sum over the feasible set of exp(-(sum of the REAL weights of the true
 literals)).  The integer weights are divided by SCALE first -- a positive number
@@ -165,10 +170,12 @@ to force one, or NIL (the default) to read the 'scale: N' the weight-learning
 pipeline records in the header (1.0 if absent).  This matters because the
 pipeline scales costs by an integer factor (100 by default) for MaxSAT, and e.g.
 exp(-100*theta) is a near-zero distribution; pass :scale 1 to count with the raw
-integer weights.  Writes a
-scratch MCC weighted CNF (WCNF-FILE, default a unique scratch name), runs ADDMC,
-and returns Z as a double-float.  The scratch file is deleted unless KEEP-WCNF is
-set or WCNF-FILE was given explicitly."
+integer weights.  EPSILON is ADDMC's CUDD terminal-merging tolerance (its --ep);
+NIL (default) uses ADDMC's default of 0 -- exact, full double precision -- while a
+positive value trades exactness for speed/memory.  Writes a scratch MCC weighted
+CNF (WCNF-FILE, default a unique scratch name), runs ADDMC, and returns Z as a
+double-float.  The scratch file is deleted unless KEEP-WCNF is set or WCNF-FILE
+was given explicitly."
   (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
     (let ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
@@ -179,14 +186,14 @@ set or WCNF-FILE was given explicitly."
           (with-open-file (s wcnf :direction :output
                                   :if-exists :supersede :if-does-not-exist :create)
             (wmc--write-mcc clauses weights a2i nvars s :scale scale))
-          (let ((z (wmc--run-addmc wcnf :addmc addmc)))
+          (let ((z (wmc--run-addmc wcnf :addmc addmc :epsilon epsilon)))
             (if (or keep-wcnf wcnf-file)
                 (when (and verbose keep-wcnf) (format t "; wcnf kept: ~A~%" wcnf))
                 (ignore-errors (delete-file wcnf)))
             (when verbose (format t "(WMC ~,16,,,,,'eE)~%" z))
             z))))))
 
-(defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale
+(defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale epsilon
                                        (addmc *addmc*) (verbose t))
   "Exact marginal P(atom = true) of every atom in a weighted .scnf, via ADDMC.
 For partition function Z and each target atom's clamped count Z_a (Z with a unit
@@ -195,8 +202,10 @@ one ADDMC run for Z plus one per target atom.  With WEIGHTED-ONLY, only the atom
 that carry a weight are reported (and clamped); otherwise every atom is.  SCALE is
 as in WMC: NIL (default) reads the pipeline's 'scale: N' header so the marginals
 reflect the REAL costs rather than the MaxSAT-scaled integers; pass :scale 1 for
-the raw weights.  Prints one (MARGINAL <atom> <p>) line per atom (sorted) and,
-with OUT-FILE, also writes them there.  Returns an alist of (atom . probability)."
+the raw weights.  EPSILON is ADDMC's CUDD terminal-merging tolerance (its --ep);
+NIL (default) uses ADDMC's default of 0 -- exact, full double precision.  Prints
+one (MARGINAL <atom> <p>) line per atom (sorted) and, with OUT-FILE, also writes
+them there.  Returns an alist of (atom . probability)."
   (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
     (let ((weight-atoms (remove-duplicates
@@ -215,14 +224,14 @@ with OUT-FILE, also writes them there.  Returns an alist of (atom . probability)
                    (with-open-file (s wcnf :direction :output
                                            :if-exists :supersede :if-does-not-exist :create)
                      (wmc--write-mcc clauses weights a2i nvars s :extra-units extra-units :scale scale))
-                   (wmc--run-addmc wcnf :addmc addmc)))
+                   (wmc--run-addmc wcnf :addmc addmc :epsilon epsilon)))
             (let* ((target-vars (if weighted-only
                                     (mapcar (lambda (a) (gethash a a2i)) weight-atoms)
                                     (loop for v from 1 to nvars collect v)))
                    (z (count-with nil)))
               (when (<= z 0.0d0)
                 (unless keep-wcnf (ignore-errors (delete-file wcnf)))
-                (error "partition function is 0 -- the hard clauses are unsatisfiable, so no marginals exist"))
+                (error "partition function is 0 -- the hard clauses are unsatisfiable, or a too-large :epsilon floored the count to 0; either way no marginals exist"))
               (let ((results
                       (sort (loop for v in target-vars
                                   for zt = (count-with (list v))

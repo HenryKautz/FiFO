@@ -158,8 +158,8 @@ A handy way to produce the input is `bin/planner.sh <problem.pddl> --stop-after 
 The WMC-tools path is implemented against **ADDMC** (the algebraic-decision-diagram weighted model counter). Where the enumeration above is exact but exponential, ADDMC compiles the same weighted `.scnf` to an algebraic decision diagram, so it scales to instances far beyond brute enumeration. `lisp/wmc.lisp` provides
 
 ```lisp
-(wmc "file.scnf" &key wcnf-file keep-wcnf addmc verbose)             ; partition function Z
-(marginals-addmc "file.scnf" &key out-file weighted-only addmc verbose)  ; per-atom marginals
+(wmc "file.scnf" &key wcnf-file keep-wcnf scale epsilon addmc verbose)             ; partition function Z
+(marginals-addmc "file.scnf" &key out-file weighted-only scale epsilon addmc verbose)  ; per-atom marginals
 ```
 
 `wmc` returns the partition function `Z = Σ_{x∈F} exp(-cost(x))` — itself a weighted model count. `marginals-addmc` computes `P(a) = Z[clauses ∧ a] / Z` by running ADDMC once for `Z` and once more per reported atom with a unit clause clamping that atom true; it accepts the same `:weighted-only` restriction as `marginals`.
@@ -168,7 +168,7 @@ The WMC-tools path is implemented against **ADDMC** (the algebraic-decision-diag
 
 This was cross-checked against the Method-1 enumeration: on the test instances the two agree to the last double-precision bit (max `|P_enum − P_addmc| = 0`).
 
-**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin` / `--addmc`. The fork also disables CUDD's terminal-merging epsilon (default `1e-12`): FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the stock epsilon would round down to `0`. With that fix the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits.
+**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. The fork also defaults CUDD's terminal-merging epsilon to `0` — exposed as ADDMC's `--ep` option, surfaced here as `--epsilon` / `:epsilon` — instead of CUDD's flooring default of `1e-12`. CUDD merges ADD terminal values within epsilon of each other, including merging tiny values into the `0` terminal. FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the `1e-12` default would round down to `0`. With epsilon `0` the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits — and a user who wants to trade exactness for speed/memory can set a positive `--epsilon`.
 
 The shell wrappers:
 
@@ -176,15 +176,18 @@ The shell wrappers:
 # partition function Z of a weighted scnf
 bin/wmc.sh problem.scnf
 
-# marginals via ADDMC instead of enumeration (scales further)
-bin/marginals.sh problem.scnf --addmc
-bin/marginals.sh problem.scnf --addmc --weighted-only --out problem.marginals
-bin/marginals.sh problem.scnf --addmc-bin /path/to/addmc      # implies --addmc
+# marginals: the back end is --solver maxent (Lisp enumeration, the default) or
+# --solver addmc (the ADDMC counter, which scales further)
+bin/marginals.sh problem.scnf                                 # default: maxent
+bin/marginals.sh problem.scnf --solver addmc
+bin/marginals.sh problem.scnf --solver addmc --weighted-only --out problem.marginals
+bin/marginals.sh problem.scnf --solver addmc --epsilon 1e-9   # faster, approximate
+bin/marginals.sh problem.scnf --addmc-bin /path/to/addmc      # implies --solver addmc
 ```
 
 **Weight scale.** This matters more than it looks. The weight-learning pipeline writes *integer* weights, the real costs multiplied by a scale (default 100) so MaxSAT has integers to optimize, and records `scale: N` in the `.scnf` header. The absolute scale is irrelevant to MaxSAT — it only minimizes a sum — but it is *everything* to a probability: `P(x) ∝ exp(−cost(x))`, so weights of 69 versus 0.69 describe utterly different distributions. At the ×100 scale the distribution is essentially zero-temperature: it collapses onto the minimum-cost models, the partition function underflows toward `0`, and the marginals are pulled to the corners. On the 2-atom `(OR (P A) (P B))` example with learned weight 69, the marginals come out `0.50`; at the true weight `0.69` they are `0.60` — which is exactly the target the learner was fitting.
 
-So `wmc` and `marginals-addmc` divide the integer weights by the scale before exponentiating. By default they read `scale: N` from the header (1.0 if absent, e.g. hand-written or raw-SatPlan-cost scnfs); pass `:scale 1` / `--scale 1` to count with the raw integer weights, or `:scale n` to force a value. The shell flag is `--scale n` on both `wmc.sh` and `marginals.sh --addmc`.
+So `wmc` and `marginals-addmc` divide the integer weights by the scale before exponentiating. By default they read `scale: N` from the header (1.0 if absent, e.g. hand-written or raw-SatPlan-cost scnfs); pass `:scale 1` / `--scale 1` to count with the raw integer weights, or `:scale n` to force a value. The shell flag is `--scale n` on both `wmc.sh` and `marginals.sh --solver addmc`.
 
 Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported atom, so `--weighted-only` (or a small atom set) keeps the run count down on instances with many state atoms.
 
