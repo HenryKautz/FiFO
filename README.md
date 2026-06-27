@@ -858,3 +858,4 @@ So FiFO formulas and schemas should be built as nested **tuples**, with bare str
 
 - [Learning/learning.md](Learning/learning.md) — the weight-learning pipeline: turning target marginal probabilities into integer literal weights.
 - [Inference/marginals.md](Inference/marginals.md) — marginal inference: computing the probability of every atom under a weighted theory.
+- [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
