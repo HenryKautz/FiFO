@@ -368,6 +368,64 @@ State formulas inside the operators may use `and`/`or`/`not`/`imply` over fluent
 
 `--marginals` switches from planning to **inference**: instead of searching for a plan, the planner instantiates the problem (conjoined with any evidence) once at the working horizon and runs **weighted model counting**, printing `(MARGINAL <atom> <p>)` — the probability `P(atom | evidence)` of each atom under the Gibbs distribution defined by the action costs. The horizon is the fixed `--numslices`, or the reachability/`--minslices` lower bound. `--counter <name>` selects the model counter: `maxent` (the default, the built-in exact enumeration of `lisp/maxent.lisp`) or the name/path of an **ADDMC** binary (e.g. `--counter addmc`, or `--counter /path/to/addmc`), which scales much further. See [../Inference/marginals.md](../Inference/marginals.md) for the counting back ends and the weight-scale handling. If the evidence contradicts the problem, the count is 0 (no feasible set) and that is reported.
 
+#### Worked example: the Switch domain, end to end
+
+`SatPlan/Examples/Switch/` has a tiny domain — three switches `s1 s2 s3`, actions `(turn-on ?s)` (cost 1) and `(turn-off ?s)` (cost 2), starting with `s1` on and the goal `s1` off, `s2` and `s3` on. The plain run finds the obvious two-step plan:
+
+```
+$ planner.sh switchprob.pddl --domain switches.pddl
+SOLVED with 2 time slices.
+(*OBJECTIVE* 4)
+(OCCURS (TURN-OFF S1) 1)
+(OCCURS (TURN-ON S2) 1)
+(OCCURS (TURN-ON S3) 1)
+```
+
+Now **condition the plan** so `s1` is turned off at slice 2 rather than slice 1, using PDDL-syntax evidence — `pddl2fifo` translates `(occur-sometime 2 2 (turn-off s1))` to `(exists s actslices (and (>= s 2) (<= s 2)) (occurs (turn-off s1) s))`. The two-slice horizon has no slice 2 to act in, so it goes unsatisfiable and the planner **adapts to three slices**, deferring the turn-off as required:
+
+```
+$ planner.sh switchprob.pddl --domain switches.pddl --pddl-evidence '(occur-sometime 2 2 (turn-off s1))'
+  unsatisfiable with 2 time slices
+SOLVED with 3 time slices.
+(*OBJECTIVE* 4)
+(OCCURS (TURN-ON S2) 1)
+(HOLDS (ON S1) 2)
+(OCCURS (TURN-OFF S1) 2)
+(OCCURS (TURN-ON S3) 2)
+```
+
+To see the pieces, stop after instantiation — the evidence lands in its own file:
+
+```
+$ planner.sh switchprob.pddl --domain switches.pddl --numslices 3 --stop-after scnf \
+             --pddl-evidence '(occur-sometime 2 2 (turn-off s1))'
+Stopped after generating the scnf files at 3 time slices:
+  problem:  .../switchprob.scnf
+  evidence: .../switchprob-evidence.scnf
+
+$ cat switchprob-evidence.scnf
+(OR (OCCURS (TURN-OFF S1) 2))
+```
+
+Finally, **inference instead of planning.** At three slices the turn-off of `s1` can fall at slice 1 or slice 2 for the same cost, so its marginal splits evenly over the two plans:
+
+```
+$ planner.sh switchprob.pddl --domain switches.pddl --numslices 3 --marginals --counter addmc
+(MARGINAL (OCCURS (TURN-OFF S1) 1) 0.5000...)
+(MARGINAL (OCCURS (TURN-OFF S1) 2) 0.5000...)
+```
+
+Add the same evidence and the marginals become the conditional `P(atom | evidence)` — the turn-off is pinned to slice 2:
+
+```
+$ planner.sh switchprob.pddl --domain switches.pddl --numslices 3 --marginals --counter addmc \
+             --pddl-evidence '(occur-sometime 2 2 (turn-off s1))'
+(MARGINAL (OCCURS (TURN-OFF S1) 1) 0.0000...)
+(MARGINAL (OCCURS (TURN-OFF S1) 2) 1.0000...)
+```
+
+The same flags accept FiFO evidence directly (`--evidence '(not (occurs (turn-off s1) 1))'`) when you'd rather not go through the PDDL modal language, and incompatible evidence (e.g. `(never (turn-off s1))`, which makes the goal unreachable) is reported as a zero count / no feasible set.
+
 The intermediate files the pipeline leaves behind (`.scnf`, `.cnf`, `.wcnf`, `.map`, `.satout`, `.soln`, `.answer`) can be cleared with `bin/cleanupfifo.sh [<dir>|<file>]` — it deletes those byproducts from a directory (the current one, the given directory, or the directory containing the given file), never touching source files like `.wff` or `.pddl`. Add `-r`/`--recursive` to clean subdirectories too (with care — it removes matching files anywhere below the target, including committed fixtures such as `*_gold.scnf`), and `--dry-run` to preview.
 
 The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path stop-after longer evidence evidence-file pddl-evidence pddl-evidence-file marginals counter)` runs the search (or, with `marginals`, the inference) and returns the status, horizon, and answer/scnf-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `lisp/FiFO.lisp`, `lisp/pddl2fifo.lisp`, and `lisp/planner.lisp` to call them from a Lisp listener.

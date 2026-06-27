@@ -213,6 +213,8 @@ The evidence must be **ground** — propositional, over atoms already named in t
 
 If `E` contradicts the theory, `WMC(theory ∧ E) = 0` (the evidence is impossible) and `marginals-addmc` reports that no marginals exist.
 
+For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.sh … --marginals --counter addmc --pddl-evidence '<modal form>'` conditions on evidence that may be quantified over the time slices, instantiates the problem conjoined with it, and reports `P(atom | evidence)` at the working horizon. A complete end-to-end walkthrough on the Switch domain — plain plan, evidence reshaping the plan, the separate evidence scnf, and conditional marginals — is in [../SatPlan/SatPlan.md](../SatPlan/SatPlan.md#worked-example-the-switch-domain-end-to-end).
+
 ------
 
 ### Related Documents
