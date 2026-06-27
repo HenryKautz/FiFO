@@ -450,7 +450,9 @@ Weight learning runs in the *inverse* direction of inference: it turns target ma
 - **`bin/marginals.sh problem.scnf`** — Lisp enumeration of the feasible set. Exact, simple, but exponential; intended for small instances. `--weighted-only` restricts it to the weighted atoms.
 - **`bin/marginals.sh problem.scnf --addmc`** — the same marginals via the **ADDMC** weighted model counter (algebraic decision diagrams), which scales far past brute enumeration. **`bin/wmc.sh problem.scnf`** prints just the partition function `Z` (a weighted model count).
 
-ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. A handy way to produce the `.scnf` input is `bin/planner.sh <problem.pddl> --stop-after scnf`. For the encoding details (MCC weighted CNF), the cross-check against enumeration, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
+ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. A handy way to produce the `.scnf` input is `bin/planner.sh <problem.pddl> --stop-after scnf`.
+
+Because the learning pipeline scales costs by 100 to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
 
 Deduction 
 ---------------------------------------

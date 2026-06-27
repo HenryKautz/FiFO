@@ -30,6 +30,10 @@ via ADDMC, and print  (WMC <Z>).  Z is the sum over the feasible set of
 exp(-(sum of the weights of the true literals)).
 
   --addmc <path>   path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH)
+  --scale <n>      divide integer weights by n (real cost = weight / n) before
+                   exponentiating; default reads the 'scale: N' the weight-learning
+                   pipeline records in the .scnf header (1 if absent).  Use
+                   --scale 1 to count with the raw integer weights.
   --wcnf <file>    write the intermediate MCC weighted CNF here (and keep it)
   --keep-wcnf      keep the intermediate .wcnf scratch file instead of deleting it
   -h, --help       show this help
@@ -47,11 +51,13 @@ die() { echo "wmc.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 
 SCNF=""
 WCNF=""
+SCALE=""
 KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)    print_usage; exit 0 ;;
     --addmc)      [[ $# -ge 2 ]] || die "--addmc needs an argument"; export ADDMC="$2"; shift 2 ;;
+    --scale)      [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --wcnf)       [[ $# -ge 2 ]] || die "--wcnf needs an argument"; WCNF="$2"; shift 2 ;;
     --keep-wcnf)  KEEP=1; shift ;;
     -*)           die "unknown option: $1" ;;
@@ -61,6 +67,7 @@ done
 
 [[ -n "$SCNF" ]] || die "no .scnf file given"
 [[ -f "$SCNF" ]] || die "input file not found: $SCNF"
+if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
 # Resolve the ADDMC binary up front for a clear error.
@@ -71,6 +78,7 @@ fi
 
 KW=""
 [[ -n "$WCNF" ]] && KW="$KW :wcnf-file \"$WCNF\""
+[[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
 [[ "$KEEP" -eq 1 ]] && KW="$KW :keep-wcnf t"
 
 exec sbcl --noinform --non-interactive \

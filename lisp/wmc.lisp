@@ -45,6 +45,36 @@ scratch-file naming), so a generated/deleted scratch file can never collide with
 or clobber a user's file."
   (format nil "~A.wcnf" (make-scratch-file-root)))
 
+(defun wmc--detect-scale (scnf-file)
+  "Scan SCNF-FILE's comment header for a 'scale: <n>' annotation -- written by the
+weight-learning pipeline (reweight.lisp / maxent.lisp), whose integer weights are
+the real costs MULTIPLIED by this scale.  Return the scale as a double-float, or
+1.0 when there is no such annotation (e.g. hand-written or SatPlan-cost scnfs,
+whose weights are already real costs)."
+  (with-open-file (in scnf-file :direction :input)
+    (loop for line = (read-line in nil :eof)
+          until (eq line :eof)
+          for trimmed = (string-left-trim '(#\Space #\Tab) line)
+          when (and (> (length trimmed) 0) (char= (char trimmed 0) #\;))
+            do (let ((groups (nth-value 1 (cl-ppcre:scan-to-strings
+                                           "scale:\\s*([0-9]+(?:\\.[0-9]+)?)" trimmed))))
+                 (when groups
+                   (return-from wmc--detect-scale
+                     (float (read-from-string (aref groups 0)) 1.0d0))))))
+  1.0d0)
+
+(defun wmc--resolve-scale (scnf-file scale verbose)
+  "Resolve the weight scale for SCNF-FILE: SCALE if a positive number was given,
+otherwise auto-detected from the header (default 1.0).  The integer weights are
+divided by this before being exponentiated, recovering the real costs."
+  (let ((s (cond ((null scale) (wmc--detect-scale scnf-file))
+                 ((and (realp scale) (> scale 0)) (float scale 1.0d0))
+                 (t (error "scale must be a positive number, or NIL to auto-detect; got ~S"
+                           scale)))))
+    (when (and verbose (/= s 1.0d0))
+      (format t "; weight scale ~F: real cost = integer weight / ~:*~F (pass :scale 1 to use raw weights)~%" s))
+    s))
+
 (defun wmc--literal-costs (weights a2i)
   "From the (WEIGHT literal w) forms, return a hash table mapping a signed DIMACS
 literal (+i for the positive atom, -i for a negated one) to its TOTAL
@@ -61,10 +91,12 @@ exp(- total cost)."
             (incf (gethash lit cost 0.0d0) (float w 1.0d0))))))
     cost))
 
-(defun wmc--write-mcc (clauses weights a2i nvars out-stream &key extra-units)
+(defun wmc--write-mcc (clauses weights a2i nvars out-stream &key extra-units (scale 1.0d0))
   "Write the MCC-2020 weighted CNF for CLAUSES + WEIGHTS to OUT-STREAM.
 EXTRA-UNITS is a list of signed DIMACS literals emitted as extra unit clauses
-(used to clamp atoms when computing marginals)."
+(used to clamp atoms when computing marginals).  Each literal's total cost is
+divided by SCALE before exponentiating, recovering the real cost from the
+pipeline's integer (cost * scale) weights."
   (let* ((cost (wmc--literal-costs weights a2i))
          (nclauses (+ (length clauses) (length extra-units))))
     (format out-stream "p wcnf ~D ~D~%" nvars nclauses)
@@ -74,10 +106,10 @@ EXTRA-UNITS is a list of signed DIMACS literals emitted as extra unit clauses
       (format out-stream "0~%"))
     (dolist (u extra-units)
       (format out-stream "~D 0~%" u))
-    ;; Weight lines: exp(-cost) for each charged literal; ADDMC defaults the rest
-    ;; to 1.0.  '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').
+    ;; Weight lines: exp(-cost/scale) for each charged literal; ADDMC defaults the
+    ;; rest to 1.0.  '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').
     (maphash (lambda (lit c)
-               (format out-stream "w ~D ~,16,,,,,'eE~%" lit (exp (- c))))
+               (format out-stream "w ~D ~,16,,,,,'eE~%" lit (exp (- (/ c scale)))))
              cost)))
 
 ;;; ----------------------------------------------------------------------------
@@ -125,21 +157,27 @@ model count as a double-float."
 ;;; Entry points
 ;;; ----------------------------------------------------------------------------
 
-(defun wmc (scnf-file &key wcnf-file keep-wcnf (addmc *addmc*) (verbose t))
+(defun wmc (scnf-file &key wcnf-file keep-wcnf scale (addmc *addmc*) (verbose t))
   "Exact weighted model count (partition function Z) of a weighted .scnf via ADDMC.
-Z = sum over the feasible set of exp(-(sum of the weights of the true literals)).
-Writes a scratch MCC weighted CNF (WCNF-FILE, default the .scnf with a .wcnf
-suffix), runs ADDMC, and returns Z as a double-float.  The scratch file is
-deleted unless KEEP-WCNF is set or WCNF-FILE was given explicitly."
+Z = sum over the feasible set of exp(-(sum of the REAL weights of the true
+literals)).  The integer weights are divided by SCALE first -- a positive number
+to force one, or NIL (the default) to read the 'scale: N' the weight-learning
+pipeline records in the header (1.0 if absent).  This matters because the
+pipeline scales costs by 100 for MaxSAT, and exp(-100*theta) is a near-zero
+distribution; pass :scale 1 to count with the raw integer weights.  Writes a
+scratch MCC weighted CNF (WCNF-FILE, default a unique scratch name), runs ADDMC,
+and returns Z as a double-float.  The scratch file is deleted unless KEEP-WCNF is
+set or WCNF-FILE was given explicitly."
   (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
     (let ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
-                                weights)))
+                                weights))
+          (scale (wmc--resolve-scale scnf-file scale verbose)))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (let ((wcnf (or wcnf-file (wmc--scratch-wcnf))))
           (with-open-file (s wcnf :direction :output
                                   :if-exists :supersede :if-does-not-exist :create)
-            (wmc--write-mcc clauses weights a2i nvars s))
+            (wmc--write-mcc clauses weights a2i nvars s :scale scale))
           (let ((z (wmc--run-addmc wcnf :addmc addmc)))
             (if (or keep-wcnf wcnf-file)
                 (when (and verbose keep-wcnf) (format t "; wcnf kept: ~A~%" wcnf))
@@ -147,15 +185,17 @@ deleted unless KEEP-WCNF is set or WCNF-FILE was given explicitly."
             (when verbose (format t "(WMC ~,16,,,,,'eE)~%" z))
             z))))))
 
-(defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf
+(defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale
                                        (addmc *addmc*) (verbose t))
   "Exact marginal P(atom = true) of every atom in a weighted .scnf, via ADDMC.
 For partition function Z and each target atom's clamped count Z_a (Z with a unit
 clause forcing the atom true), reports P(a) = Z_a / Z.  This is exact but costs
 one ADDMC run for Z plus one per target atom.  With WEIGHTED-ONLY, only the atoms
-that carry a weight are reported (and clamped); otherwise every atom is.  Prints
-one (MARGINAL <atom> <p>) line per atom (sorted) and, with OUT-FILE, also writes
-them there.  Returns an alist of (atom . probability)."
+that carry a weight are reported (and clamped); otherwise every atom is.  SCALE is
+as in WMC: NIL (default) reads the pipeline's 'scale: N' header so the marginals
+reflect the REAL costs rather than the MaxSAT-scaled integers; pass :scale 1 for
+the raw weights.  Prints one (MARGINAL <atom> <p>) line per atom (sorted) and,
+with OUT-FILE, also writes them there.  Returns an alist of (atom . probability)."
   (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
     (let ((weight-atoms (remove-duplicates
@@ -165,6 +205,7 @@ them there.  Returns an alist of (atom . probability)."
       (when (and weighted-only (null weight-atoms))
         (when verbose (format t "; no weighted atoms in ~A~%" scnf-file))
         (return-from marginals-addmc nil))
+      (setf scale (wmc--resolve-scale scnf-file scale verbose))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (let ((i2a (make-array (1+ nvars) :initial-element nil))
               (wcnf (wmc--scratch-wcnf)))
@@ -172,7 +213,7 @@ them there.  Returns an alist of (atom . probability)."
           (flet ((count-with (extra-units)
                    (with-open-file (s wcnf :direction :output
                                            :if-exists :supersede :if-does-not-exist :create)
-                     (wmc--write-mcc clauses weights a2i nvars s :extra-units extra-units))
+                     (wmc--write-mcc clauses weights a2i nvars s :extra-units extra-units :scale scale))
                    (wmc--run-addmc wcnf :addmc addmc)))
             (let* ((target-vars (if weighted-only
                                     (mapcar (lambda (a) (gethash a a2i)) weight-atoms)

@@ -34,6 +34,11 @@ action atoms).  Exact enumeration -- intended for small instances.
                       (one ADDMC run for Z plus one per reported atom)
   --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
                       implies --addmc
+  --scale <n>         (--addmc only) divide integer weights by n before
+                      exponentiating; default reads the 'scale: N' the weight-
+                      learning pipeline records in the header (1 if absent).  The
+                      pipeline scales costs by 100 for MaxSAT, which would
+                      otherwise distort the marginals; --scale 1 uses raw weights.
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
@@ -54,6 +59,7 @@ OUT=""
 NODE_LIMIT=""
 WEIGHTED_ONLY=0
 USE_ADDMC=0
+SCALE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
@@ -62,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
     --addmc)          USE_ADDMC=1; shift ;;
     --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; USE_ADDMC=1; shift 2 ;;
+    --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     -*)               die "unknown option: $1" ;;
     *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
@@ -70,6 +77,8 @@ done
 [[ -n "$SCNF" ]] || die "no .scnf file given"
 [[ -f "$SCNF" ]] || die "input file not found: $SCNF"
 if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit must be a non-negative integer, got: $NODE_LIMIT"; fi
+if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
+[[ -z "$SCALE" || "$USE_ADDMC" -eq 1 ]] || die "--scale applies to the --addmc method only"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
 if [[ "$USE_ADDMC" -eq 1 ]]; then
@@ -81,6 +90,7 @@ if [[ "$USE_ADDMC" -eq 1 ]]; then
   KW=""
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
   exec sbcl --noinform --non-interactive \
     --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
