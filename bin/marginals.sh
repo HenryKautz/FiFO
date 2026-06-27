@@ -46,6 +46,16 @@ action atoms).  Exact enumeration -- intended for small instances.
   --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
+  --evidence <form>   (addmc only) condition on a GROUND FiFO formula: it is
+                      clausified and conjoined with the theory as a hard
+                      constraint, so the reported marginals become P(atom | form).
+                      Repeatable; multiple --evidence are conjoined.  E.g.
+                      --evidence '(not (occurs (turn-on s1) 1))'
+                      --evidence '(implies (holds (on s1) 1) (p a))'
+  --evidence-file <f> (addmc only) a file of ground FiFO formulas to condition on,
+                      conjoined with any --evidence forms.  Evidence must be ground
+                      (over atoms already in the scnf); quantified evidence needs
+                      the .wff (re-instantiate with the assertion added).
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
@@ -68,6 +78,8 @@ WEIGHTED_ONLY=0
 SOLVER="maxent"
 SCALE=""
 EPSILON=""
+EVFILE=""
+EVIDENCE_FORMS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
@@ -78,6 +90,8 @@ while [[ $# -gt 0 ]]; do
     --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; SOLVER="addmc"; shift 2 ;;
     --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
+    --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
+    --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
     -*)               die "unknown option: $1" ;;
     *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
@@ -91,6 +105,10 @@ if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale mus
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$SCALE" || "$SOLVER" == "addmc" ]] || die "--scale applies to the addmc solver only"
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
+if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
+  [[ "$SOLVER" == "addmc" ]] || die "--evidence/--evidence-file apply to the addmc solver only"
+fi
+[[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
 if [[ "$SOLVER" == "addmc" ]]; then
@@ -104,6 +122,8 @@ if [[ "$SOLVER" == "addmc" ]]; then
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
   [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \
     --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \

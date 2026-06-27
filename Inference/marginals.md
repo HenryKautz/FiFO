@@ -158,8 +158,8 @@ A handy way to produce the input is `bin/planner.sh <problem.pddl> --stop-after 
 The WMC-tools path is implemented against **ADDMC** (the algebraic-decision-diagram weighted model counter). Where the enumeration above is exact but exponential, ADDMC compiles the same weighted `.scnf` to an algebraic decision diagram, so it scales to instances far beyond brute enumeration. `lisp/wmc.lisp` provides
 
 ```lisp
-(wmc "file.scnf" &key wcnf-file keep-wcnf scale epsilon addmc verbose)             ; partition function Z
-(marginals-addmc "file.scnf" &key out-file weighted-only scale epsilon addmc verbose)  ; per-atom marginals
+(wmc "file.scnf" &key wcnf-file keep-wcnf scale epsilon evidence evidence-file addmc verbose)             ; partition function Z
+(marginals-addmc "file.scnf" &key out-file weighted-only scale epsilon evidence evidence-file addmc verbose)  ; per-atom marginals
 ```
 
 `wmc` returns the partition function `Z = Σ_{x∈F} exp(-cost(x))` — itself a weighted model count. `marginals-addmc` computes `P(a) = Z[clauses ∧ a] / Z` by running ADDMC once for `Z` and once more per reported atom with a unit clause clamping that atom true; it accepts the same `:weighted-only` restriction as `marginals`.
@@ -190,6 +190,28 @@ bin/marginals.sh problem.scnf --addmc-bin /path/to/addmc      # implies --solver
 So `wmc` and `marginals-addmc` divide the integer weights by the scale before exponentiating. By default they read `scale: N` from the header (1.0 if absent, e.g. hand-written or raw-SatPlan-cost scnfs); pass `:scale 1` / `--scale 1` to count with the raw integer weights, or `:scale n` to force a value. The shell flag is `--scale n` on both `wmc.sh` and `marginals.sh --solver addmc`.
 
 Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported atom, so `--weighted-only` (or a small atom set) keeps the run count down on instances with many state atoms.
+
+------
+
+### Conditioning on evidence
+
+`wmc` and `marginals-addmc` take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`.
+
+- `:evidence` (Lisp) / `--evidence '<form>'` (shell, repeatable) — a **ground** FiFO formula. It is clausified by FiFO's own parser (`(implies (P A) (P B))` → `(OR (NOT (P A)) (P B))`, etc.) and conjoined with the theory. Multiple forms are conjoined.
+- `:evidence-file` / `--evidence-file <f>` — a file of ground FiFO formulas, conjoined with any `--evidence` forms.
+
+```sh
+# all marginals conditioned on an action not occurring
+bin/marginals.sh problem.scnf --solver addmc --evidence '(not (occurs (turn-on s1) 1))'
+
+# a non-literal ground condition, and the conditioned partition function
+bin/marginals.sh problem.scnf --solver addmc --evidence '(implies (holds (on s1) 1) (p a))'
+bin/wmc.sh       problem.scnf --evidence '(not (p a))'      # WMC(theory ^ ~A)
+```
+
+The evidence must be **ground** — propositional, over atoms already named in the `.scnf` — because the `.scnf` has discarded the domains and schemas needed to ground quantifiers or new terms. Two consequences: (1) atoms introduced only by the evidence (e.g. Tseitin auxiliaries from a complex formula) are not themselves reported as marginals; (2) **quantified or parametric** evidence belongs at the `.wff` level — add the assertion to the source and re-`instantiate`, which conditions the whole theory with the correct grounding. For the WMC to stay exact, FiFO's clausification of the evidence must be model-count-preserving (full Tseitin equivalences); the small ground formulas above clausify with no auxiliaries at all. The conditional was cross-checked against the enumeration solver run on a `.scnf` with the same evidence baked in as a hard clause: exact agreement.
+
+If `E` contradicts the theory, `WMC(theory ∧ E) = 0` (the evidence is impossible) and `marginals-addmc` reports that no marginals exist.
 
 ------
 

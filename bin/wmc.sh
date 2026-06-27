@@ -37,6 +37,11 @@ exp(-(sum of the weights of the true literals)).
   --epsilon <e>    ADDMC's CUDD terminal-merging tolerance (--ep); default 0 =
                    exact (full double precision).  A positive value trades
                    exactness for speed/memory.
+  --evidence <form>   condition on a GROUND FiFO formula (clausified and conjoined
+                      with the theory as a hard constraint), so Z becomes the count
+                      conditioned on it.  Repeatable; conjoined.
+  --evidence-file <f> a file of ground FiFO formulas to condition on.  Evidence
+                      must be ground (over atoms already in the scnf).
   --wcnf <file>    write the intermediate MCC weighted CNF here (and keep it)
   --keep-wcnf      keep the intermediate .wcnf scratch file instead of deleting it
   -h, --help       show this help
@@ -56,6 +61,8 @@ SCNF=""
 WCNF=""
 SCALE=""
 EPSILON=""
+EVFILE=""
+EVIDENCE_FORMS=()
 KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -63,6 +70,8 @@ while [[ $# -gt 0 ]]; do
     --addmc)      [[ $# -ge 2 ]] || die "--addmc needs an argument"; export ADDMC="$2"; shift 2 ;;
     --scale)      [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)    [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
+    --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
+    --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
     --wcnf)       [[ $# -ge 2 ]] || die "--wcnf needs an argument"; WCNF="$2"; shift 2 ;;
     --keep-wcnf)  KEEP=1; shift ;;
     -*)           die "unknown option: $1" ;;
@@ -74,6 +83,7 @@ done
 [[ -f "$SCNF" ]] || die "input file not found: $SCNF"
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
+[[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
 # Resolve the ADDMC binary up front for a clear error.
@@ -86,6 +96,8 @@ KW=""
 [[ -n "$WCNF" ]] && KW="$KW :wcnf-file \"$WCNF\""
 [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
 [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
+[[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+[[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
 [[ "$KEEP" -eq 1 ]] && KW="$KW :keep-wcnf t"
 
 exec sbcl --noinform --non-interactive \

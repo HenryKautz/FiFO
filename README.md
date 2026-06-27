@@ -452,6 +452,8 @@ Weight learning runs in the *inverse* direction of inference: it turns target ma
 
 ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. A handy way to produce the `.scnf` input is `bin/planner.sh <problem.pddl> --stop-after scnf`. ADDMC counts at full double precision by default; `--epsilon <e>` exposes its CUDD terminal-merging tolerance to trade exactness for speed.
 
+For **conditional** probabilities, `--solver addmc` accepts `--evidence '<ground formula>'` (repeatable) and `--evidence-file <f>`: the ground FiFO formula is clausified and conjoined with the theory as a hard constraint, so each reported marginal becomes `P(atom | evidence)` (and `wmc.sh` returns the conditioned partition function). Quantified evidence isn't ground, so it belongs at the `.wff` level (add the assertion and re-instantiate).
+
 Because the learning pipeline scales costs by an integer factor (100 by default, set with `learn.sh --scale`) to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
 
 Deduction 

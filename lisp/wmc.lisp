@@ -159,10 +159,44 @@ double precision)."
     (wmc--parse-count out err)))
 
 ;;; ----------------------------------------------------------------------------
+;;; Conditioning: ground evidence -> hard clauses
+;;; ----------------------------------------------------------------------------
+
+(defun wmc--read-forms (path)
+  "Read all FiFO forms (top-level s-expressions) from PATH."
+  (let ((*read-eval* nil))
+    (with-open-file (in path :direction :input)
+      (loop for f = (read in nil :eof) until (eq f :eof) collect f))))
+
+(defun wmc--evidence-clauses (evidence evidence-file)
+  "Clausify ground FiFO EVIDENCE formulas (a list of forms) plus the forms in
+EVIDENCE-FILE into hard (OR ...) clauses, using FiFO's parser, to be conjoined
+with the theory -- i.e. to condition on them.  The formulas must be GROUND
+(propositional, over atoms already named in the scnf): grounding a quantified or
+parametric formula needs the domains in the .wff, which the scnf has discarded.
+Returns the list of clauses (possibly empty)."
+  (let ((forms (append evidence
+                       (when evidence-file (wmc--read-forms evidence-file)))))
+    (when forms
+      (handler-case
+          (parse forms) ; resets FiFO's globals; we read the scnf separately, so harmless
+        (error (c)
+          (error "could not clausify evidence ~S:~%  ~A~%Evidence must be a GROUND formula over atoms already in the scnf; quantified or parametric evidence needs the .wff (re-instantiate with the assertion added)."
+                 forms c))))))
+
+(defun wmc--clause-atoms (clauses)
+  "The set (document order) of atoms occurring in CLAUSES, a list of (OR ...) forms."
+  (remove-duplicates
+   (loop for cl in clauses
+         append (mapcar (lambda (lit) (rw--literal-atom-and-sign lit)) (cdr cl)))
+   :test #'equal :from-end t))
+
+;;; ----------------------------------------------------------------------------
 ;;; Entry points
 ;;; ----------------------------------------------------------------------------
 
-(defun wmc (scnf-file &key wcnf-file keep-wcnf scale epsilon (addmc *addmc*) (verbose t))
+(defun wmc (scnf-file &key wcnf-file keep-wcnf scale epsilon evidence evidence-file
+                           (addmc *addmc*) (verbose t))
   "Exact weighted model count (partition function Z) of a weighted .scnf via ADDMC.
 Z = sum over the feasible set of exp(-(sum of the REAL weights of the true
 literals)).  The integer weights are divided by SCALE first -- a positive number
@@ -172,20 +206,29 @@ pipeline scales costs by an integer factor (100 by default) for MaxSAT, and e.g.
 exp(-100*theta) is a near-zero distribution; pass :scale 1 to count with the raw
 integer weights.  EPSILON is ADDMC's CUDD terminal-merging tolerance (its --ep);
 NIL (default) uses ADDMC's default of 0 -- exact, full double precision -- while a
-positive value trades exactness for speed/memory.  Writes a scratch MCC weighted
-CNF (WCNF-FILE, default a unique scratch name), runs ADDMC, and returns Z as a
-double-float.  The scratch file is deleted unless KEEP-WCNF is set or WCNF-FILE
-was given explicitly."
-  (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
+positive value trades exactness for speed/memory.  EVIDENCE (a list of ground
+FiFO formulas) and EVIDENCE-FILE (a file of them) are conjoined with the theory as
+HARD clauses, so Z becomes the count of the theory conditioned on that evidence;
+the formulas must be ground (see WMC--EVIDENCE-CLAUSES).  Writes a scratch MCC
+weighted CNF (WCNF-FILE, default a unique scratch name), runs ADDMC, and returns Z
+as a double-float.  The scratch file is deleted unless KEEP-WCNF is set or
+WCNF-FILE was given explicitly."
+  ;; NB: bind the weight forms to a NON-special name -- the obvious WEIGHTS is
+  ;; FiFO's global special, which (parse ...) inside wmc--evidence-clauses resets.
+  (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
-    (let ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
-                                weights))
-          (scale (wmc--resolve-scale scnf-file scale verbose)))
+    (let* ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
+                                 weight-forms))
+           (scale (wmc--resolve-scale scnf-file scale verbose))
+           (evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+           (clauses (append clauses evidence-clauses)))
+      (when (and verbose evidence-clauses)
+        (format t "; conditioning on ~D evidence clause~:P~%" (length evidence-clauses)))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (let ((wcnf (or wcnf-file (wmc--scratch-wcnf))))
           (with-open-file (s wcnf :direction :output
                                   :if-exists :supersede :if-does-not-exist :create)
-            (wmc--write-mcc clauses weights a2i nvars s :scale scale))
+            (wmc--write-mcc clauses weight-forms a2i nvars s :scale scale))
           (let ((z (wmc--run-addmc wcnf :addmc addmc :epsilon epsilon)))
             (if (or keep-wcnf wcnf-file)
                 (when (and verbose keep-wcnf) (format t "; wcnf kept: ~A~%" wcnf))
@@ -194,7 +237,7 @@ was given explicitly."
             z))))))
 
 (defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale epsilon
-                                       (addmc *addmc*) (verbose t))
+                                       evidence evidence-file (addmc *addmc*) (verbose t))
   "Exact marginal P(atom = true) of every atom in a weighted .scnf, via ADDMC.
 For partition function Z and each target atom's clamped count Z_a (Z with a unit
 clause forcing the atom true), reports P(a) = Z_a / Z.  This is exact but costs
@@ -203,19 +246,32 @@ that carry a weight are reported (and clamped); otherwise every atom is.  SCALE 
 as in WMC: NIL (default) reads the pipeline's 'scale: N' header so the marginals
 reflect the REAL costs rather than the MaxSAT-scaled integers; pass :scale 1 for
 the raw weights.  EPSILON is ADDMC's CUDD terminal-merging tolerance (its --ep);
-NIL (default) uses ADDMC's default of 0 -- exact, full double precision.  Prints
-one (MARGINAL <atom> <p>) line per atom (sorted) and, with OUT-FILE, also writes
-them there.  Returns an alist of (atom . probability)."
-  (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
+NIL (default) uses ADDMC's default of 0 -- exact, full double precision.  EVIDENCE
+(a list of ground FiFO formulas) and EVIDENCE-FILE (a file of them) are conjoined
+with the theory as HARD clauses, so the reported marginals are CONDITIONAL on that
+evidence -- each P(a) becomes P(a | evidence); the formulas must be ground (see
+WMC--EVIDENCE-CLAUSES).  Atoms introduced only by the evidence (e.g. Tseitin
+auxiliaries) are not themselves reported.  Prints one (MARGINAL <atom> <p>) line
+per atom (sorted) and, with OUT-FILE, also writes them there.  Returns an alist of
+(atom . probability)."
+  ;; NB: WEIGHT-FORMS, not the special WEIGHTS (which parse resets) -- see wmc.
+  (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
     (let ((weight-atoms (remove-duplicates
                          (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
-                                 weights)
+                                 weight-forms)
                          :test #'equal)))
       (when (and weighted-only (null weight-atoms))
         (when verbose (format t "; no weighted atoms in ~A~%" scnf-file))
         (return-from marginals-addmc nil))
       (setf scale (wmc--resolve-scale scnf-file scale verbose))
+      (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+             ;; report only theory atoms (and weighted atoms), never evidence-only auxiliaries
+             (theory-atoms (remove-duplicates (append (wmc--clause-atoms clauses) weight-atoms)
+                                              :test #'equal :from-end t))
+             (clauses (append clauses evidence-clauses)))
+        (when (and verbose evidence-clauses)
+          (format t "; conditioning on ~D evidence clause~:P~%" (length evidence-clauses)))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (let ((i2a (make-array (1+ nvars) :initial-element nil))
               (wcnf (wmc--scratch-wcnf)))
@@ -223,11 +279,11 @@ them there.  Returns an alist of (atom . probability)."
           (flet ((count-with (extra-units)
                    (with-open-file (s wcnf :direction :output
                                            :if-exists :supersede :if-does-not-exist :create)
-                     (wmc--write-mcc clauses weights a2i nvars s :extra-units extra-units :scale scale))
+                     (wmc--write-mcc clauses weight-forms a2i nvars s :extra-units extra-units :scale scale))
                    (wmc--run-addmc wcnf :addmc addmc :epsilon epsilon)))
             (let* ((target-vars (if weighted-only
                                     (mapcar (lambda (a) (gethash a a2i)) weight-atoms)
-                                    (loop for v from 1 to nvars collect v)))
+                                    (mapcar (lambda (a) (gethash a a2i)) theory-atoms)))
                    (z (count-with nil)))
               (when (<= z 0.0d0)
                 (unless keep-wcnf (ignore-errors (delete-file wcnf)))
@@ -246,4 +302,4 @@ them there.  Returns an alist of (atom . probability)."
                                               :if-exists :supersede :if-does-not-exist :create)
                     (dolist (r results)
                       (format o "(MARGINAL ~S ~,16,,,,,'eE)~%" (car r) (cdr r)))))
-                results))))))))
+                results)))))))))
