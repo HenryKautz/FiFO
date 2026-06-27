@@ -145,3 +145,10 @@ bin/marginals.sh problem.scnf --out problem.marginals --node-limit 1000000
 ```
 
 A handy way to produce the input is `bin/planner.sh <problem.pddl> --stop-after scnf`, which writes the instantiated `.scnf` without solving. The lisp is located via `FIFO_LISP` (see the README's Installation section).
+
+------
+
+### Related Documents
+
+- [../README.md](../README.md) — the FiFO language reference and user guide.
+- [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline: target marginal probabilities → integer literal weights (the inverse direction of inference).

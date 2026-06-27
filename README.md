@@ -840,3 +840,8 @@ cl4py converts data between the languages automatically, but note which Python t
 | int, float | number |
 
 So FiFO formulas and schemas should be built as nested **tuples**, with bare strings for symbols. Results return as `cl4py.List` and `cl4py.Symbol` objects; a `List` behaves as a Python sequence and can be converted with `list(...)`.
+
+## Related Documents
+
+- [Learning/learning.md](Learning/learning.md) — the weight-learning pipeline: turning target marginal probabilities into integer literal weights.
+- [Inference/marginals.md](Inference/marginals.md) — marginal inference: computing the probability of every atom under a weighted theory.

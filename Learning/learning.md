@@ -223,3 +223,9 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
   convexity, the oracle's role, domain-size dependence, and related work.
 - `../README.md` — FiFO language reference, the `WEIGHT` form, and the weighted
   CNF output formats (`cnf` / `wcnf-old` / `wcnf`).
+
+## Related Documents
+
+- [../README.md](../README.md) — the FiFO language reference and user guide.
+- [../Inference/marginals.md](../Inference/marginals.md) — marginal inference over a
+  weighted theory (the inverse direction of learning: weights → marginals).
