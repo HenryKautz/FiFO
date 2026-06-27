@@ -11,7 +11,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
   - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline
   - `lisp/plearn.lisp` — PDDL weight-learning orchestrator (`learn-pddl`)
   - `lisp/satplan.wff` — domain-independent SatPlan axioms (a runtime dependency)
-- `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
+- `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `marginals.sh` (exact marginal inference on an scnf), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
 - `Makefile` — `make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override `BINDIR`/`LISPDIR`)
 - `SatPlan/Examples/` — example PDDL domains/problems
 - `Learning/` — weight-learning docs (`learning.md`) and example `.scnf` files
