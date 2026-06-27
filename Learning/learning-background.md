@@ -317,3 +317,12 @@ exhaustive literature search of the exact combination.)
 clamped, or believed). Counting supplies the free half; the constrained
 argmin/partition function — the MaxSAT oracle or its counting analogue — supplies the
 half that defines the problem.
+
+------
+
+## Related Documents
+
+- [../README.md](../README.md) — the FiFO language reference and user guide.
+- [learning.md](learning.md) — the implemented weight-learning pipeline (`learn.sh` / `learn-pddl.sh`) that puts this theory into practice.
+- [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting (the counting half referenced throughout this document).
+- [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner and PDDL translation, which consume the learned action/preference weights.

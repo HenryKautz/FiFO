@@ -436,4 +436,5 @@ The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices 
 
 - [../README.md](../README.md) — the FiFO language reference and user guide.
 - [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline that turns target probabilities into the action/preference weights this planner consumes.
+- [../Learning/learning-background.md](../Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
 - [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting, the back ends behind `planner.sh --marginals`.

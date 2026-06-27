@@ -221,4 +221,5 @@ For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.
 
 - [../README.md](../README.md) — the FiFO language reference and user guide.
 - [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline: target marginal probabilities → integer literal weights (the inverse direction of inference).
+- [../Learning/learning-background.md](../Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
 - [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner, which lifts conditioning and marginal inference to PDDL (`--evidence`/`--pddl-evidence`, `--marginals`), with an end-to-end worked example.

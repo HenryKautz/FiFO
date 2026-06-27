@@ -1,7 +1,7 @@
 ;;; reweight.lisp
 ;;;
 ;;; FiFO weight-learning, Case 4 (beliefs about marginals), independent /
-;;; clause-ignoring estimator -- the "warm start" of fifo-weight-learning.md S8.
+;;; clause-ignoring estimator -- the "warm start" of learning-background.md S8.
 ;;;
 ;;; Input:  an instantiated .scnf file whose (WEIGHT <literal> p) lines carry a
 ;;;         TARGET MARGINAL PROBABILITY p in [0.0, 1.0] -- the probability that

@@ -5,7 +5,7 @@ This directory implements weight learning for FiFO weighted-MaxSAT theories: giv
 literal weights that realize them.
 
 For the theory — the full range of data regimes, the regret / moment-matching
-views, and the provenance — see [fifo-weight-learning.md](fifo-weight-learning.md).
+views, and the provenance — see [learning-background.md](learning-background.md).
 This file covers only **how to run** the pipeline that is implemented so far,
 which is Case 4 of that document (*beliefs about marginals*).
 
@@ -22,7 +22,7 @@ the learned costs back into copies of the PDDL files. See the README's
 `p ∈ [0.0, 1.0]` — the probability that `<literal>` should be true. The optional
 `gid` is a **tie-group id**: every ground instance of one source-`.wff`
 `(probability ...)` form shares a `gid`, and the pipeline fits **one** weight per
-group (parameter tying — see [fifo-weight-learning.md](fifo-weight-learning.md)
+group (parameter tying — see [learning-background.md](learning-background.md)
 §1–2). `instantiate` writes these forms automatically from a `.wff`; a hand-written
 `.scnf` may omit `gid`, in which case each line is its own untied group.
 
@@ -152,7 +152,7 @@ The intended end-to-end flow starts and ends at the **`.wff`** level:
    re-instantiating gives every grounding the same (tied) cost.
 3. Edit `source_weighted.wff` to enlarge the domains and re-instantiate at full
    size — schema tying carries the small-domain weights over (cf.
-   [fifo-weight-learning.md](fifo-weight-learning.md) §2, §10).
+   [learning-background.md](learning-background.md) §2, §10).
 
 Two well-formedness checks are enforced when grouping: a literal targeted by two
 different tie groups (**overlapping** forms) is an error, and the target `p` must
@@ -216,17 +216,12 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
   silently misreporting. (The independent `reweight` never inspects the clauses,
   so it cannot detect inconsistency at all.)
 
-## See also
-
-- [fifo-weight-learning.md](fifo-weight-learning.md) — the theory: all data
-  regimes (complete/optimal, merely-good, partial, beliefs, beliefs+data),
-  convexity, the oracle's role, domain-size dependence, and related work.
-- `../README.md` — FiFO language reference, the `WEIGHT` form, and the weighted
-  CNF output formats (`cnf` / `wcnf-old` / `wcnf`).
-
 ## Related Documents
 
 - [../README.md](../README.md) — the FiFO language reference and user guide.
+- [learning-background.md](learning-background.md) — the theory behind this pipeline:
+  all data regimes (complete/optimal, merely-good, partial, beliefs, beliefs+data),
+  convexity, the oracle's role, domain-size dependence, and related work.
 - [../Inference/marginals.md](../Inference/marginals.md) — marginal inference over a
   weighted theory (the inverse direction of learning: weights → marginals).
 - [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner and PDDL
