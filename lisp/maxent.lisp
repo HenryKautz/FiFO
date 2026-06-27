@@ -431,53 +431,70 @@ inconsistent with the hard clauses~@[ and the fixed weights~].~%"
 ;;; well as Occurs action atoms).
 ;;; ----------------------------------------------------------------------------
 
-(defun marginals (scnf-file &key out-file (node-limit 5000000) (verbose t))
-  "Exact marginal probability P(atom = true) of EVERY atom in a weighted
-SCNF-FILE, under the Gibbs distribution P(x) proportional to exp(-(sum of the
-weights of the true literals)) over the feasible set (assignments satisfying the
-hard (OR ...) clauses).  (WEIGHT literal w) lines supply the costs; (PROBABILITY
-...) targets, if any, are ignored.  With no weights the distribution is uniform
-over the feasible set.  Marginals are reported for ALL atoms -- weighted or not --
-by exact enumeration, so this is for small instances (NODE-LIMIT caps the search).
+(defun marginals (scnf-file &key out-file weighted-only (node-limit 5000000) (verbose t))
+  "Exact marginal probability P(atom = true) of the atoms in a weighted SCNF-FILE,
+under the Gibbs distribution P(x) proportional to exp(-(sum of the weights of the
+true literals)) over the feasible set (assignments satisfying the hard (OR ...)
+clauses).  (WEIGHT literal w) lines supply the costs; (PROBABILITY ...) targets,
+if any, are ignored.  With no weights the distribution is uniform over the
+feasible set.  Exact enumeration, so this is for small instances (NODE-LIMIT caps
+the search).
 
-Prints one (MARGINAL <atom> <p>) line per atom (sorted by atom) to standard
-output when VERBOSE, and writes the same to OUT-FILE when given.  Returns an alist
-(atom . probability)."
+By default the marginal of EVERY atom is reported (weighted or not -- SatPlan
+Holds state atoms as well as Occurs action atoms).  With WEIGHTED-ONLY, only the
+atoms that carry a weight are reported, and only those are tracked during
+enumeration (unweighted variables collapse into a multiplicity), which is much
+cheaper -- the same enumeration the MaxEnt weight fit uses.
+
+Prints one (MARGINAL <atom> <p>) line per reported atom (sorted by atom) to
+standard output when VERBOSE, and writes the same to OUT-FILE when given.  Returns
+an alist (atom . probability)."
   (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
-    (let ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf))) weights)))
+    (let ((weight-atoms (remove-duplicates
+                          (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf))) weights)
+                          :test #'equal)))
+      (when (and weighted-only (null weight-atoms))
+        (when verbose (format t "; no weighted atoms in ~A~%" (file-namestring scnf-file)))
+        (return-from marginals nil))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (when (zerop nvars) (error "no atoms found in ~A" scnf-file))
         (let ((int-clauses (mapcar (lambda (cl) (mx--clause->ints cl a2i)) clauses))
-              (all-vars (loop for v from 1 to nvars collect v))
               (i2a (make-array (1+ nvars)))
-              ;; net[b] = cost-when-true - cost-when-false for the variable at bit b
-              ;; (bit b corresponds to variable b+1); only true literals contribute
-              ;; to the energy, so this signed net cost is all the fit needs.
-              (net (make-array nvars :element-type 'double-float :initial-element 0d0)))
+              ;; net[i] = cost-when-true - cost-when-false for variable i (1-based);
+              ;; only true literals contribute to the energy, so this signed net
+              ;; cost is all the marginal computation needs.
+              (net (make-array (1+ nvars) :element-type 'double-float :initial-element 0d0)))
           (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
           (dolist (wf weights)
             (multiple-value-bind (atom positivep) (rw--literal-atom-and-sign (second wf))
-              (let ((b (1- (gethash atom a2i))) (w (float (third wf) 1.0d0)))
-                (if positivep (incf (aref net b) w) (decf (aref net b) w)))))
-          (let ((entries (mx--enumerate int-clauses nvars all-vars :node-limit node-limit)))
-            (when (null entries)
-              (error "the hard clauses are unsatisfiable; no feasible set to take marginals over"))
-            (let ((work (mapcar (lambda (e) (list* (car e) (coerce (cdr e) 'double-float) 0d0)) entries))
-                  (m (make-array nvars :element-type 'double-float :initial-element 0d0)))
-              (mx--marginals work net nvars m)        ; NET is the per-bit theta vector
-              (let ((result (sort (loop for b from 0 below nvars
-                                        collect (cons (aref i2a (1+ b)) (aref m b)))
-                                  #'string-lessp
-                                  :key (lambda (pair) (princ-to-string (car pair))))))
-                (flet ((emit (stream)
-                         (dolist (pair result)
-                           (format stream "(MARGINAL ~S ~,6F)~%" (car pair) (cdr pair)))))
-                  (when verbose (emit *standard-output*))
-                  (when out-file
-                    (with-open-file (out out-file :direction :output
-                                                  :if-exists :supersede :if-does-not-exist :create)
-                      (format out "; marginals of ~A (~D atoms, ~D feasible assignments)~%"
-                              (file-namestring scnf-file) nvars (length entries))
-                      (emit out))))
-                result))))))))
+              (let ((i (gethash atom a2i)) (w (float (third wf) 1.0d0)))
+                (if positivep (incf (aref net i) w) (decf (aref net i) w)))))
+          ;; Track all variables, or -- for weighted-only -- just the weighted ones.
+          (let* ((soft-vars (if weighted-only
+                                (mapcar (lambda (a) (gethash a a2i)) weight-atoms)
+                                (loop for v from 1 to nvars collect v)))
+                 (nsoft (length soft-vars))
+                 (thetas (make-array nsoft :element-type 'double-float)))
+            (loop for v in soft-vars for b from 0 do (setf (aref thetas b) (aref net v)))
+            (let ((entries (mx--enumerate int-clauses nvars soft-vars :node-limit node-limit)))
+              (when (null entries)
+                (error "the hard clauses are unsatisfiable; no feasible set to take marginals over"))
+              (let ((work (mapcar (lambda (e) (list* (car e) (coerce (cdr e) 'double-float) 0d0)) entries))
+                    (m (make-array nsoft :element-type 'double-float :initial-element 0d0)))
+                (mx--marginals work thetas nsoft m)
+                (let ((result (sort (loop for v in soft-vars for b from 0
+                                          collect (cons (aref i2a v) (aref m b)))
+                                    #'string-lessp
+                                    :key (lambda (pair) (princ-to-string (car pair))))))
+                  (flet ((emit (stream)
+                           (dolist (pair result)
+                             (format stream "(MARGINAL ~S ~,6F)~%" (car pair) (cdr pair)))))
+                    (when verbose (emit *standard-output*))
+                    (when out-file
+                      (with-open-file (out out-file :direction :output
+                                                    :if-exists :supersede :if-does-not-exist :create)
+                        (format out "; marginals of ~A (~D ~:[atoms~;weighted atoms~], ~D feasible assignments)~%"
+                                (file-namestring scnf-file) nsoft weighted-only (length entries))
+                        (emit out))))
+                  result)))))))))

@@ -25,6 +25,8 @@ feasible set (the assignments satisfying its hard (OR ...) clauses).  All atoms
 are reported, weighted or not (e.g. SatPlan Holds state atoms, not just Occurs
 action atoms).  Exact enumeration -- intended for small instances.
 
+  --weighted-only     report (and enumerate) only the weighted atoms, not every
+                      atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
   --node-limit <int>  cap on enumeration nodes (default: 5000000)
   -h, --help          show this help
@@ -41,13 +43,15 @@ die() { echo "marginals.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 SCNF=""
 OUT=""
 NODE_LIMIT=""
+WEIGHTED_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help)     print_usage; exit 0 ;;
-    --out)         [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
-    --node-limit)  [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
-    -*)            die "unknown option: $1" ;;
-    *)             if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
+    -h|--help)        print_usage; exit 0 ;;
+    --weighted-only)  WEIGHTED_ONLY=1; shift ;;
+    --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
+    --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
+    -*)               die "unknown option: $1" ;;
+    *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
 done
 
@@ -59,6 +63,7 @@ if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit
 KW=""
 [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
 [[ -n "$NODE_LIMIT" ]] && KW="$KW :node-limit $NODE_LIMIT"
+[[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
 
 # Load in separate --evals so the call is compiled after marginals is defined.
 exec sbcl --noinform --non-interactive \

@@ -134,6 +134,8 @@ The "Immediate" step above is implemented. `lisp/maxent.lisp` provides
 
 which reads a weighted `.scnf` (hard `(OR ...)` clauses plus `(WEIGHT literal w)` costs), enumerates the feasible set, and computes the exact marginal `P(atom = true)` of **every** atom under the Gibbs distribution `P(x) ∝ exp(-Σ weights of true literals)` — weighted and unweighted atoms alike, so SatPlan `Holds` state atoms are reported alongside `Occurs` action atoms. It reuses the same feasible-set enumeration the MaxEnt fit uses, but tracks every variable rather than only the weighted ones. With no weights the distribution is uniform over the feasible set. It prints one `(MARGINAL <atom> <probability>)` line per atom (sorted), and `:out-file` also writes them to a file. Being exact enumeration, it is for small instances (the `node-limit` caps the search) — Methods 2 and 3 above remain the path to scale.
 
+Pass `:weighted-only t` to report only the atoms that carry a weight; this also restricts the enumeration to those variables (unweighted ones collapse into a multiplicity), the same cheaper enumeration the MaxEnt fit uses — useful when the state-atom marginals aren't needed.
+
 The shell wrapper is `bin/marginals.sh`:
 
 ```sh
@@ -142,6 +144,9 @@ bin/marginals.sh problem.scnf
 
 # also save them; cap the enumeration
 bin/marginals.sh problem.scnf --out problem.marginals --node-limit 1000000
+
+# only the weighted (e.g. Occurs action) atoms
+bin/marginals.sh problem.scnf --weighted-only
 ```
 
 A handy way to produce the input is `bin/planner.sh <problem.pddl> --stop-after scnf`, which writes the instantiated `.scnf` without solving. The lisp is located via `FIFO_LISP` (see the README's Installation section).
