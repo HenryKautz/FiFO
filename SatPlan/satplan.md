@@ -429,3 +429,11 @@ The same flags accept FiFO evidence directly (`--evidence '(not (occurs (turn-of
 The intermediate files the pipeline leaves behind (`.scnf`, `.cnf`, `.wcnf`, `.map`, `.satout`, `.soln`, `.answer`) can be cleared with `bin/cleanupfifo.sh [<dir>|<file>]` — it deletes those byproducts from a directory (the current one, the given directory, or the directory containing the given file), never touching source files like `.wff` or `.pddl`. Add `-r`/`--recursive` to clean subdirectories too (with care — it removes matching files anywhere below the target, including committed fixtures such as `*_gold.scnf`), and `--dry-run` to preview.
 
 The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path stop-after longer evidence evidence-file pddl-evidence pddl-evidence-file marginals counter)` runs the search (or, with `marginals`, the inference) and returns the status, horizon, and answer/scnf-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `lisp/FiFO.lisp`, `lisp/pddl2fifo.lisp`, and `lisp/planner.lisp` to call them from a Lisp listener.
+
+------
+
+### Related Documents
+
+- [../README.md](../README.md) — the FiFO language reference and user guide.
+- [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline that turns target probabilities into the action/preference weights this planner consumes.
+- [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting, the back ends behind `planner.sh --marginals`.

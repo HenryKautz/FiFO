@@ -229,5 +229,5 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
 - [../README.md](../README.md) — the FiFO language reference and user guide.
 - [../Inference/marginals.md](../Inference/marginals.md) — marginal inference over a
   weighted theory (the inverse direction of learning: weights → marginals).
-- [../SatPlan/SatPlan.md](../SatPlan/SatPlan.md) — the SatPlan planner and PDDL
+- [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner and PDDL
   translation, which consume the learned action/preference weights and probabilities.

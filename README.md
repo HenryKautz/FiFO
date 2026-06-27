@@ -713,7 +713,7 @@ With `(option *compact-encoding* 0)`, the OR-distribution step performs a full c
 
 FiFO includes a SatPlan-style planner built on observed predicates and quantified formulas: a PDDL&rarr;FiFO translator (`pddl2fifo`), domain-independent SatPlan axioms, trajectory constraints, soft goals/preferences, per-step fluent costs, learning action/preference weights from probabilities, and an end-to-end planner driver (`planner.sh`). This material has its own document:
 
-**&rarr; [Implementing SatPlan in FiFO](SatPlan/SatPlan.md)**
+**&rarr; [Implementing SatPlan in FiFO](SatPlan/satplan.md)**
 
 Schema BNF
 ----------
