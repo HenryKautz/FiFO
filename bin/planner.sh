@@ -38,6 +38,10 @@ usage() {
   echo "               problem's domains); instantiated in the same env as the problem into a" >&2
   echo "               separate <root>-evidence.scnf and conjoined.  Repeatable." >&2
   echo "  --evidence-file <f>   a file of such formulas, conjoined with any --evidence." >&2
+  echo "  --pddl-evidence <form>  evidence in the PDDL modal language (always | at-end |" >&2
+  echo "               hold-during | occur-sometime | never | at, over PDDL predicate/action" >&2
+  echo "               names), translated to FiFO by pddl2fifo.  Repeatable.  PDDL only." >&2
+  echo "  --pddl-evidence-file <f>  a file of such PDDL modal forms." >&2
   echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
@@ -53,6 +57,8 @@ STOP_AFTER=""  # empty = run the full pipeline; "wff" or "scnf" stops early
 LONGER=""      # empty = 0; search K horizons beyond the smallest feasible for a cheaper plan
 EVFILE=""      # --evidence-file
 EVIDENCE_FORMS=()  # --evidence (repeatable)
+PDDL_EVFILE=""        # --pddl-evidence-file
+PDDL_EVIDENCE_FORMS=()  # --pddl-evidence (repeatable)
 MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary)
 
@@ -67,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --longer)    [[ $# -ge 2 ]] || usage; LONGER="$2";    shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || usage; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || usage; EVFILE="$2"; shift 2 ;;
+    --pddl-evidence)      [[ $# -ge 2 ]] || usage; PDDL_EVIDENCE_FORMS+=("$2"); shift 2 ;;
+    --pddl-evidence-file) [[ $# -ge 2 ]] || usage; PDDL_EVFILE="$2"; shift 2 ;;
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     -h|--help)   usage ;;
@@ -84,7 +92,11 @@ if [[ -n "$LONGER" && ! "$LONGER" =~ ^[0-9]+$ ]]; then
   echo "--longer must be a non-negative integer, got: $LONGER" >&2; exit 2
 fi
 if [[ -n "$EVFILE" && ! -f "$EVFILE" ]]; then echo "evidence file not found: $EVFILE" >&2; exit 2; fi
+if [[ -n "$PDDL_EVFILE" && ! -f "$PDDL_EVFILE" ]]; then echo "pddl-evidence file not found: $PDDL_EVFILE" >&2; exit 2; fi
 if [[ -n "$COUNTER" && "$MARGINALS" -ne 1 ]]; then echo "--counter applies only with --marginals" >&2; exit 2; fi
+if { [[ ${#PDDL_EVIDENCE_FORMS[@]} -gt 0 ]] || [[ -n "$PDDL_EVFILE" ]]; } && [[ "$PROBLEM" == *.wff ]]; then
+  echo "--pddl-evidence requires a PDDL problem, not a .wff (use --evidence with FiFO forms)" >&2; exit 2
+fi
 for v in MINSLICES MAXSLICES; do
   if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then echo "--${v,,} must be a non-negative integer, got: ${!v}" >&2; exit 2; fi
 done
@@ -101,6 +113,9 @@ if [[ -n "$DOMAIN" ]]; then
 fi
 if [[ -n "$EVFILE" ]]; then
   EVFILE="$(cd "$(dirname "$EVFILE")" && pwd)/$(basename "$EVFILE")"
+fi
+if [[ -n "$PDDL_EVFILE" ]]; then
+  PDDL_EVFILE="$(cd "$(dirname "$PDDL_EVFILE")" && pwd)/$(basename "$PDDL_EVFILE")"
 fi
 
 # Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.  They live in the
@@ -136,6 +151,10 @@ EVIDENCE_KW=""
 [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && EVIDENCE_KW=":evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
 EVFILE_KW=""
 [[ -n "$EVFILE" ]] && EVFILE_KW=":evidence-file \"$EVFILE\""
+PDDL_EVIDENCE_KW=""
+[[ ${#PDDL_EVIDENCE_FORMS[@]} -gt 0 ]] && PDDL_EVIDENCE_KW=":pddl-evidence (quote ( ${PDDL_EVIDENCE_FORMS[*]} ))"
+PDDL_EVFILE_KW=""
+[[ -n "$PDDL_EVFILE" ]] && PDDL_EVFILE_KW=":pddl-evidence-file \"$PDDL_EVFILE\""
 MARGINALS_KW=""
 [[ "$MARGINALS" -eq 1 ]] && MARGINALS_KW=":marginals t"
 COUNTER_KW=""
@@ -148,7 +167,8 @@ EVALS+=( --eval "(load \"$PLANNER\")" )
 EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
               $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
-              $EVIDENCE_KW $EVFILE_KW $MARGINALS_KW $COUNTER_KW
+              $EVIDENCE_KW $EVFILE_KW $PDDL_EVIDENCE_KW $PDDL_EVFILE_KW
+              $MARGINALS_KW $COUNTER_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))" )
 

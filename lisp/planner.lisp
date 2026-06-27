@@ -116,7 +116,8 @@ objective."
                   (weighted-solver "tt-open-wbo-inc-Glucose4_1")
                   domain-file (satplan-path "satplan.wff")
                   stop-after (longer 0)
-                  evidence evidence-file marginals (counter "maxent")
+                  evidence evidence-file pddl-evidence pddl-evidence-file
+                  marginals (counter "maxent")
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -146,6 +147,12 @@ SAME environment as the problem -- so quantifiers ground over the same domains
 with the problem .scnf.  Without MARGINALS the concatenation is what gets solved,
 so the plan must satisfy the evidence as a hard constraint.
 
+PDDL-EVIDENCE / PDDL-EVIDENCE-FILE are evidence written in the PDDL-style modal
+language (always / at-end / hold-during / occur-sometime / never / at over PDDL
+predicate and action names) instead of FiFO; pddl2fifo translates them to FiFO
+(and registers their fluents) and they join EVIDENCE.  PDDL evidence requires a
+PDDL problem (there is no translation step for a .wff input).
+
 MARGINALS switches from planning to inference: instead of searching for a plan,
 the problem (conjoined with any evidence) is instantiated once at the working
 horizon and handed to weighted model counting, printing P(atom | evidence) for
@@ -174,18 +181,27 @@ wff/scnf.  Progress is printed to STREAM."
          (satout (planner-file problem-path "satout"))
          (answer (planner-file problem-path "answer"))
          (evidence-forms (plan--evidence-forms evidence evidence-file))
+         (pddl-evidence-forms (plan--evidence-forms pddl-evidence pddl-evidence-file))
          (evidence-scnf  (planner-sibling problem-path "-evidence" "scnf"))
          (combined-scnf  (planner-sibling problem-path "-combined" "scnf")))
     (handler-case
         (let ((reach-min nil))
-          ;; Build the wff from PDDL when needed, capturing the reachability bound.
-          (unless (string-equal (or (pathname-type problem-path) "") "wff")
-            (multiple-value-bind (out rmin)
-                (apply #'pddl2fifo (namestring problem-path)
-                       :satplan-path satplan-path
-                       (when domain-file (list :domain-file domain-file)))
-              (unless out (error "wff generation failed"))
-              (setq reach-min rmin)))
+          ;; Build the wff from PDDL when needed, capturing the reachability bound
+          ;; and the FiFO translation of any PDDL-style evidence.
+          (cond
+            ((string-equal (or (pathname-type problem-path) "") "wff")
+             (when pddl-evidence-forms
+               (error "--pddl-evidence requires a PDDL problem; a .wff input has no PDDL to translate against (use --evidence with FiFO forms)")))
+            (t
+             (multiple-value-bind (out rmin ev-fifo)
+                 (apply #'pddl2fifo (namestring problem-path)
+                        :satplan-path satplan-path
+                        :pddl-evidence pddl-evidence-forms
+                        (when domain-file (list :domain-file domain-file)))
+               (unless out (error "wff generation failed"))
+               (setq reach-min rmin)
+               ;; PDDL evidence, now FiFO, joins any FiFO --evidence.
+               (setq evidence-forms (append evidence-forms ev-fifo)))))
           (when (eq stop-after :wff)
             (format stream "Stopped after generating the wff: ~A~%" wff)
             (return-from plan (values :stopped-wff nil wff)))

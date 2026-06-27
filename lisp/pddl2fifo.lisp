@@ -416,6 +416,33 @@ slice timeline.  Supported: always, at-end, hold-during, occur-sometime."
     (t (error "Unsupported trajectory constraint ~s~@
                (supported: always, at-end, hold-during, occur-sometime)" c))))
 
+;;; PDDL-syntax evidence (planner --pddl-evidence / --pddl-evidence-file).  The
+;;; same modal language as :constraints, but the translated formulas are NOT
+;;; baked into the problem wff -- they are returned to the planner, which writes
+;;; them to a SEPARATE evidence scnf and conjoins them (or counts under them).
+;;; The referenced fluents still need Holds variables + frame axioms in the
+;;; problem, so they are registered via collect-constraint-fluents like any
+;;; constraint's.  Two extra operators over actions: (never <action>) and
+;;; (at <slice> <action>).
+
+(defun translate-evidence-form (c)
+  "Translate one PDDL-style evidence form C into a horizon-independent FiFO
+formula over the slice timeline.  Supports the trajectory operators always,
+at-end, hold-during, occur-sometime, plus (never <action>) and (at <slice>
+<action>).  Quantifiers ground over slices/actslices when the planner
+re-instantiates at each horizon."
+  (cond
+    ((and (consp c) (sym-name= (first c) "NEVER"))
+     `(all s actslices true (not (occurs ,(second c) s))))
+    ((and (consp c) (sym-name= (first c) "AT"))
+     `(occurs ,(third c) ,(constraint-time-bound (second c) "slice" c)))
+    ((and (consp c)
+          (member (symbol-name (first c)) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
+                  :test #'string-equal))
+     (translate-constraint c))
+    (t (error "Unsupported PDDL evidence form ~s~@
+               (supported: always, at-end, hold-during, occur-sometime, never, at)" c))))
+
 ;;; Preferences (soft goals / soft constraints).
 ;;;
 ;;; A (preference <name> <body>) declared in the :goal or :constraints section is
@@ -782,12 +809,23 @@ the (preference ...) forms found in either section."
     (write form :stream out))
   (terpri out))
 
-(defun pddl2fifo (problem-file &key domain-file (satplan-path "satplan.wff"))
+(defun pddl2fifo (problem-file &key domain-file (satplan-path "satplan.wff")
+                                    pddl-evidence)
   "Translate the PDDL PROBLEM-FILE (and its domain) into a FiFO wff file.
 SATPLAN-PATH is the path written into the generated (include ...) form for the
 domain-independent SatPlan axioms; it is resolved relative to the directory of
 the generated wff, so use e.g. \"../satplan.wff\" when the problem lives in a
-subdirectory below satplan.wff.  Returns the pathname of the wff file written."
+subdirectory below satplan.wff.
+
+PDDL-EVIDENCE is a list of PDDL-style evidence forms (see TRANSLATE-EVIDENCE-FORM)
+to condition the problem on.  They are NOT written into the wff; instead the
+fluents they reference are registered (so they get Holds variables and frame
+axioms), and the translated FiFO formulas are returned for the planner to write
+to a separate evidence scnf.
+
+Returns (values WFF-PATHNAME MIN-SLICES EVIDENCE-FIFO-FORMS): the reachability
+lower bound on numslices, and the FiFO translation of PDDL-EVIDENCE (NIL when
+none)."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
     (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints preferences)
@@ -832,6 +870,12 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                (constraint-fluents (remove-duplicates
                                      (mapcan #'collect-constraint-fluents constraints)
                                      :test #'equal))
+               ;; PDDL evidence: translated FiFO forms (returned, not written) and
+               ;; the fluents they reference (registered for Holds vars + frame axioms).
+               (evidence-fifo (mapcar #'translate-evidence-form pddl-evidence))
+               (evidence-fluents (remove-duplicates
+                                   (mapcan #'collect-constraint-fluents pddl-evidence)
+                                   :test #'equal))
                ;; Preferences (soft goals/constraints).  The :metric gives the
                ;; coefficient of (total-cost) -- by which action costs are scaled
                ;; -- and the violation weight of each preference.  The metric is
@@ -985,6 +1029,11 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
               ;; Fluents named only by per-step fluent costs.
               (when fluentcost-fluents
                 (write-form out `(domain fluentcost-fluents (set ,@fluentcost-fluents))))
+              ;; Fluents named only by PDDL evidence (--pddl-evidence): they need
+              ;; Holds variables and frame axioms even though the evidence formulas
+              ;; themselves are written to a separate scnf, not here.
+              (when evidence-fluents
+                (write-form out `(domain evidence-fluents (set ,@evidence-fluents))))
               (terpri out)
               (format out ";; Domains derived from the observed action schemas~%")
               (write-form out
@@ -1007,7 +1056,8 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                               (when general-goal '(goal-fluents))
                               (when constraint-fluents '(constraint-fluents))
                               (when pref-fluents '(pref-fluents))
-                              (when fluentcost-fluents '(fluentcost-fluents))))))
+                              (when fluentcost-fluents '(fluentcost-fluents))
+                              (when evidence-fluents '(evidence-fluents))))))
               (write-form out '(domain costs (collect c (cost * c))))
               ;; FiFO sets cannot be literally empty, so an empty initial or
               ;; positive goal state becomes the difference of a domain with itself.
@@ -1077,9 +1127,10 @@ subdirectory below satplan.wff.  Returns the pathname of the wff file written."
                 (format out ";; tied per action schema, learned by the weight pipeline)~%")
                 (dolist (pf prob-forms) (write-form out pf)))))
           (format t "Wrote ~a~%" (namestring out-path))
-          ;; Return the wff pathname and the reachability lower bound on numslices
-          ;; (an integer, or :unreachable if the relaxed problem has no plan).
-          (values out-path min-slices))))))
+          ;; Return the wff pathname, the reachability lower bound on numslices
+          ;; (an integer, or :unreachable if the relaxed problem has no plan), and
+          ;; the FiFO translation of any PDDL evidence (for a separate evidence scnf).
+          (values out-path min-slices evidence-fifo))))))
 
 ;;; Command-line entry point.  Under "sbcl --script pddl2fifo.lisp args..."
 ;;; the remaining argv entries are the program arguments; under "sbcl --load"
