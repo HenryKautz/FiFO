@@ -31,10 +31,18 @@ action atoms).  Exact enumeration -- intended for small instances.
                         addmc   the ADDMC weighted model counter (algebraic
                                 decision diagrams) -- exact and scales far past
                                 enumeration (one ADDMC run for Z plus one per atom)
+                        ddnnf   FiFO's own d-DNNF compiler -- compiles the theory
+                                once, then gets ALL marginals from two circuit
+                                passes; conditioning on literal evidence reuses the
+                                compiled circuit (cheap for many evidence sets).
+                                Pure Lisp, no external binary
   --weighted-only     report (and enumerate) only the weighted atoms, not every
                       atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
-  --node-limit <int>  (maxent only) cap on enumeration nodes (default: 5000000)
+  --node-limit <int>  cap on search effort before giving up: for maxent, the number
+                      of enumeration nodes (default 5000000); for ddnnf, the number
+                      of circuit nodes (default 2000000).  A blowup means the
+                      instance is too structured for that back end -- try addmc
   --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
                       implies --solver addmc
   --scale <n>         divide integer weights by n before exponentiating; default
@@ -46,16 +54,24 @@ action atoms).  Exact enumeration -- intended for small instances.
   --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
-  --evidence <form>   (addmc only) condition on a GROUND FiFO formula: it is
+  --evidence <form>   (addmc/ddnnf) condition on a GROUND FiFO formula: it is
                       clausified and conjoined with the theory as a hard
                       constraint, so the reported marginals become P(atom | form).
                       Repeatable; multiple --evidence are conjoined.  E.g.
                       --evidence '(not (occurs (turn-on s1) 1))'
                       --evidence '(implies (holds (on s1) 1) (p a))'
-  --evidence-file <f> (addmc only) a file of ground FiFO formulas to condition on,
+                      With ddnnf, unit-literal evidence reuses the compiled circuit;
+                      a non-unit form triggers a recompile.
+  --evidence-file <f> (addmc/ddnnf) a file of ground FiFO formulas to condition on,
                       conjoined with any --evidence forms.  Evidence must be ground
                       (over atoms already in the scnf); quantified evidence needs
                       the .wff (re-instantiate with the assertion added).
+  --save-circuit <f>  (ddnnf only) after compiling, write the compiled circuit to
+                      <f> for reuse; this run also reports marginals as usual.
+  --circuit <f>       (ddnnf only) load a circuit saved by --save-circuit and query
+                      it WITHOUT recompiling (give this instead of a .scnf file).
+                      Unit-literal --evidence reuses it; non-unit evidence recompiles
+                      from the stored clauses.  --scale re-weights it for free.
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
@@ -80,10 +96,12 @@ SCALE=""
 EPSILON=""
 EVFILE=""
 EVIDENCE_FORMS=()
+SAVE_CIRCUIT=""
+CIRCUIT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
-    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent or addmc)"; SOLVER="$2"; shift 2 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, or ddnnf)"; SOLVER="$2"; shift 2 ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
@@ -92,23 +110,56 @@ while [[ $# -gt 0 ]]; do
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
+    --save-circuit)   [[ $# -ge 2 ]] || die "--save-circuit needs an argument"; SAVE_CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
+    --circuit)        [[ $# -ge 2 ]] || die "--circuit needs an argument"; CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
     -*)               die "unknown option: $1" ;;
     *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
 done
 
-[[ -n "$SCNF" ]] || die "no .scnf file given"
-[[ -f "$SCNF" ]] || die "input file not found: $SCNF"
-[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" ]] || die "--solver must be maxent or addmc, got: $SOLVER"
+[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" ]] || die "--solver must be maxent, addmc, or ddnnf, got: $SOLVER"
+if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
+  [[ "$SOLVER" == "ddnnf" ]] || die "--circuit/--save-circuit apply to the ddnnf solver only"
+fi
+if [[ -n "$CIRCUIT" ]]; then
+  [[ -f "$CIRCUIT" ]] || die "circuit file not found: $CIRCUIT"
+  [[ -z "$SCNF" ]] || die "give either a .scnf file or --circuit, not both"
+else
+  [[ -n "$SCNF" ]] || die "no .scnf file given (or pass a saved circuit with --circuit)"
+  [[ -f "$SCNF" ]] || die "input file not found: $SCNF"
+fi
 if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit must be a non-negative integer, got: $NODE_LIMIT"; fi
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
-  [[ "$SOLVER" == "addmc" ]] || die "--evidence/--evidence-file apply to the addmc solver only"
+  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" ]] || die "--evidence/--evidence-file apply to the addmc and ddnnf solvers only"
 fi
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
+
+if [[ "$SOLVER" == "ddnnf" ]]; then
+  KW=""
+  [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
+  [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
+  [[ -n "$SAVE_CIRCUIT" ]] && KW="$KW :save-circuit \"$SAVE_CIRCUIT\""
+  if [[ -n "$CIRCUIT" ]]; then
+    SCNF_ARG="nil"; KW="$KW :circuit \"$CIRCUIT\""
+  else
+    SCNF_ARG="\"$SCNF\""
+  fi
+  NODE_EVAL="(progn)"
+  [[ -n "$NODE_LIMIT" ]] && NODE_EVAL="(setf *ddnnf-node-limit* $NODE_LIMIT)"
+  exec sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" \
+    --eval "$NODE_EVAL" \
+    --eval "(handler-case (progn (ddnnf-marginals $SCNF_ARG $KW) (sb-ext:exit :code 0))
+              (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+fi
 
 if [[ "$SOLVER" == "addmc" ]]; then
   [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent solver, not addmc"

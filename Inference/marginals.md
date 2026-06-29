@@ -193,9 +193,44 @@ Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported at
 
 ------
 
+### Implemented: d-DNNF compilation, FiFO's own (Method 3, no external binary)
+
+`lisp/ddnnf.lisp` is a **pure-Lisp d-DNNF compiler + circuit evaluator** — the third back end alongside `maxent` (enumeration) and `addmc` (the external counter). Its reason to exist is **compile-once / query-many**: where ADDMC's expensive contraction produces only a number and is re-run for every count, this compiles the hard theory once into a reusable circuit, then answers any number of queries — different weightings, different evidence — cheaply.
+
+**What it builds.** A trace-based knowledge compiler grown from the exhaustive DPLL already in `maxent.lisp`: instead of summing counts, the search records itself as a DAG — each decision branch (`x` / `¬x`) → a deterministic **OR** node, each split into variable-disjoint clause components → an **AND** node, and a component cache (signature → node) turns the tree into a shared DAG. The result is a smooth, deterministic, decomposable NNF (a d-DNNF). Smoothness is *by construction*: a variable that drops out of a subproblem is reintroduced as `free(v) = OR(+v, −v) = (W(+v)+W(−v))`. Weights live **outside** the Boolean structure (`W(L)=exp(−cost/scale)`, exactly as in the ADDMC bridge), so one circuit serves any weighting.
+
+**How it queries.** Two passes over the DAG (Darwiche's value/derivative scheme): an up pass gives node values — the root value is `Z` — and a down pass gives node derivatives, from which, for every variable `v`, `Z[v=true] = Σ over the +v leaves of value·derivative` and `P(v=true) = Z[v=true] / Z`. **All** marginals come out of one up/down pass — `O(circuit)` — versus ADDMC's one full count per atom.
+
+```lisp
+(ddnnf-compile "file.scnf" &key scale verbose)            ; the expensive step: scnf -> circuit
+(ddnnf-query   circuit &key clamp)                        ; (values Z ztrue-vector), reuses it
+(ddnnf-marginals "file.scnf" &key circuit save-circuit out-file weighted-only scale
+                                  evidence evidence-file verbose)
+(ddnnf-marginals-sets "file.scnf" "sets.txt" &key ...)    ; compile once, one line of evidence per query
+(ddnnf-save circuit "file.dnnf") (ddnnf-load "file.dnnf") ; persist / restore a compiled circuit
+```
+
+**Persistence.** The circuit is a flat, topologically-ordered array of nodes with integer-id children — plain readable data — so it serializes to a single s-expression (a `.dnnf` text file) that round-trips across SBCL sessions with no fasl or version coupling. Compile once, save, and reuse on later runs. Because weights are stored separately from the structure, a loaded circuit can be **re-weighted by `--scale` without recompiling**.
+
+```sh
+# compile once, save the artifact, and report the unconditioned marginals
+bin/marginals.sh problem.scnf --solver ddnnf --save-circuit problem.dnnf
+
+# later, separate runs: load the artifact and query WITHOUT recompiling
+bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1))'
+bin/marginals.sh --circuit problem.dnnf --evidence '(occurs (turn-off s1) 1)'
+bin/marginals.sh --circuit problem.dnnf --scale 1            # re-weight, no recompile
+```
+
+**Evidence reuse — the one rule that matters.** Unit-literal evidence (ground facts) becomes a *clamp* on leaf weights and **reuses** the compiled circuit; only non-unit evidence (a disjunction, or an implication that doesn't reduce to units) is recompiled, from the circuit's stored clauses. So the compile is amortized across all the literal-evidence queries — exactly the case ADDMC and enumeration cannot amortize.
+
+**Scope.** This is for **FiFO-scale** instances — the same envelope where `maxent` enumeration is viable, but conditionable and persistable. A node cap (`*ddnnf-node-limit*`, also `--node-limit`) makes it fail gracefully on a too-structured (high-treewidth) instance and point you at `--solver addmc`, which remains the tool for large single counts. The marginals were cross-checked against the Method-1 enumeration on the test instances: exact agreement (max `|P_enum − P_ddnnf| = 0`), including under unit-clamp vs. recompiled-with-evidence and save→load.
+
+------
+
 ### Conditioning on evidence
 
-`wmc` and `marginals-addmc` take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`.
+`wmc`, `marginals-addmc`, and the `ddnnf` solver all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to both `--solver addmc` and `--solver ddnnf`; with `ddnnf`, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles.)
 
 - `:evidence` (Lisp) / `--evidence '<form>'` (shell, repeatable) — a **ground** FiFO formula. It is clausified by FiFO's own parser (`(implies (P A) (P B))` → `(OR (NOT (P A)) (P B))`, etc.) and conjoined with the theory. Multiple forms are conjoined.
 - `:evidence-file` / `--evidence-file <f>` — a file of ground FiFO formulas, conjoined with any `--evidence` forms.
