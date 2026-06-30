@@ -36,6 +36,11 @@ action atoms).  Exact enumeration -- intended for small instances.
                                 passes; conditioning on literal evidence reuses the
                                 compiled circuit (cheap for many evidence sets).
                                 Pure Lisp, no external binary
+                        d4      same circuit machinery as ddnnf (all marginals in
+                                two passes, evidence reuse, --save-circuit/--circuit)
+                                but the Boolean structure is compiled by the external
+                                state-of-the-art d4 (d4v2) compiler -- for instances
+                                too structured for the home-grown compiler
   --weighted-only     report (and enumerate) only the weighted atoms, not every
                       atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
@@ -45,6 +50,8 @@ action atoms).  Exact enumeration -- intended for small instances.
                       instance is too structured for that back end -- try addmc
   --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
                       implies --solver addmc
+  --d4-bin <path>     path to the d4 (d4v2) compiler binary (else $D4, else a sibling
+                      d4v2 checkout); implies --solver d4
   --scale <n>         divide integer weights by n before exponentiating; default
                       reads the 'scale: N' the weight-learning pipeline records in
                       the header (1 if absent).  The pipeline scales costs by an
@@ -106,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
     --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; SOLVER="addmc"; shift 2 ;;
+    --d4-bin)         [[ $# -ge 2 ]] || die "--d4-bin needs an argument"; export D4="$2"; SOLVER="d4"; shift 2 ;;
     --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
@@ -117,9 +125,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" ]] || die "--solver must be maxent, addmc, or ddnnf, got: $SOLVER"
+[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--solver must be maxent, addmc, ddnnf, or d4, got: $SOLVER"
 if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
-  [[ "$SOLVER" == "ddnnf" ]] || die "--circuit/--save-circuit apply to the ddnnf solver only"
+  [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--circuit/--save-circuit apply to the ddnnf and d4 solvers only"
 fi
 if [[ -n "$CIRCUIT" ]]; then
   [[ -f "$CIRCUIT" ]] || die "circuit file not found: $CIRCUIT"
@@ -133,13 +141,21 @@ if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale mus
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
-  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" ]] || die "--evidence/--evidence-file apply to the addmc and ddnnf solvers only"
+  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, and d4 solvers only"
 fi
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
-if [[ "$SOLVER" == "ddnnf" ]]; then
+if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
+  if [[ "$SOLVER" == "d4" ]]; then
+    [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the ddnnf (home) compiler, not d4"
+    D4_BIN="${D4:-}"
+    if [[ -n "$D4_BIN" && ! -x "$D4_BIN" ]] && ! command -v "$D4_BIN" >/dev/null 2>&1; then
+      die "d4 compiler not found: '$D4_BIN' (set --d4-bin or the D4 env var; build d4v2's demo/compiler)"
+    fi
+  fi
   KW=""
+  [[ "$SOLVER" == "d4" ]] && KW="$KW :compiler :d4"
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"

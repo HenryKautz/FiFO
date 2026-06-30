@@ -318,6 +318,181 @@ returned circuit across many queries with DDNNF-QUERY / DDNNF-MARGINALS-SETS."
           (ddnnf--build int-clauses nvars a2i cost scale))))))
 
 ;;; ----------------------------------------------------------------------------
+;;; Alternative producer: compile the Boolean structure with the external d4
+;;; (d4v2) compiler, then parse + smooth its dump into the SAME ddnnf struct.
+;;;
+;;; d4 is the state-of-the-art decision-DNNF compiler; here it replaces the
+;;; home-grown mx--compile front end while everything downstream (evaluator,
+;;; evidence, persistence, marginals) is reused unchanged.  d4 only compiles the
+;;; HARD clauses (plain DIMACS) -- weights stay on our side and are applied at the
+;;; leaves during evaluation.  d4's output is a decision-DNNF in its arc format and
+;;; is NOT smooth, so we smooth it on import (insert free(v)=OR(+v,-v) for variables
+;;; that drop off a branch), which is exactly what our leaf-sum marginal evaluator
+;;; assumes.
+;;;
+;;; d4 arc format (one token stream per line, terminated by 0):
+;;;   o <id> 0 | a <id> 0 | t <id> 0 | f <id> 0   -- OR / AND / TRUE / FALSE node
+;;;   <src> <dst> <lit...> 0                       -- arc src->dst carrying literals
+;;; An OR node is the disjunction of its arcs; an AND node the conjunction; an arc
+;;; (dst, lits) denotes (conj of lits) AND (subtree at dst).
+;;; ----------------------------------------------------------------------------
+
+(defvar *d4* (or (uiop:getenv "D4")
+                 (namestring (merge-pathnames "../../d4v2/demo/compiler/build/compiler"
+                                              (or *load-pathname* *default-pathname-defaults*))))
+  "Path to the d4 (d4v2) d-DNNF compiler demo executable.  Defaults to the D4
+environment variable, else a sibling d4v2 checkout.  Optional -- only the d4
+producer needs it.")
+
+(defun ddnnf--write-dimacs-file (int-clauses nvars path)
+  "Write hard INT-CLAUSES (over variables 1..NVARS) as DIMACS CNF to PATH."
+  (with-open-file (s path :direction :output :if-exists :supersede :if-does-not-exist :create)
+    (format s "p cnf ~D ~D~%" nvars (length int-clauses))
+    (dolist (cl int-clauses)
+      (dolist (l cl) (format s "~D " l))
+      (format s "0~%"))))
+
+(defun ddnnf--run-d4 (cnf-file nnf-file &key (d4 *d4*))
+  "Run the d4 compiler on CNF-FILE, dumping its d-DNNF to NNF-FILE.  Preprocessing
+is left at d4's default 'basic', which performs NO variable elimination (so every
+variable still appears in the dump and our smoothing is correct)."
+  (multiple-value-bind (out err code)
+      (handler-case
+          (uiop:run-program (list d4 "-i" cnf-file "--dump-file" nnf-file)
+                            :output :string :error-output :string :ignore-error-status t)
+        (error (c)
+          (error "could not run the d4 compiler (~A): ~A~%Set the D4 environment variable or *d4* to the compiler binary."
+                 d4 c)))
+    (declare (ignore out))
+    (when (and code (not (zerop code)) (not (probe-file nnf-file)))
+      (error "d4 (~A) failed (exit ~A) and produced no dump.~%--- stderr ---~%~A" d4 code err))
+    (unless (probe-file nnf-file)
+      (error "d4 produced no dump file ~A~%--- stderr ---~%~A" nnf-file err))
+    nnf-file))
+
+(defun ddnnf--read-d4-nnf (path)
+  "Parse a d4 NNF dump.  Returns (values node-type arcs) where NODE-TYPE maps an
+id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits)."
+  (let ((node-type (make-hash-table)) (arcs (make-hash-table)))
+    (with-open-file (in path :direction :input)
+      (loop for line = (read-line in nil :eof)
+            until (eq line :eof)
+            for trimmed = (string-trim '(#\Space #\Tab #\Return) line)
+            unless (zerop (length trimmed))
+              do (if (alpha-char-p (char trimmed 0))
+                     (let ((toks (cl-ppcre:split "\\s+" trimmed)))
+                       (setf (gethash (parse-integer (second toks)) node-type)
+                             (ecase (char trimmed 0)
+                               (#\o :or) (#\a :and) (#\t :true) (#\f :false))))
+                     (let* ((toks (mapcar #'parse-integer (cl-ppcre:split "\\s+" trimmed)))
+                            (src (first toks)) (dst (second toks))
+                            (lits (butlast (cddr toks)))) ; drop terminating 0
+                       (push (cons dst lits) (gethash src arcs))))))
+    ;; restore arc order (we pushed)
+    (maphash (lambda (k v) (setf (gethash k arcs) (nreverse v))) arcs)
+    (values node-type arcs)))
+
+(defun ddnnf--d4-scope (id node-type arcs cache)
+  "Set (list) of variables occurring in the subtree rooted at d4 node ID; memoized."
+  (multiple-value-bind (s hit) (gethash id cache)
+    (if hit s
+        (setf (gethash id cache)
+              (case (gethash id node-type)
+                ((:true :false) '())
+                (t (let ((acc '()))
+                     (dolist (arc (gethash id arcs))
+                       (dolist (l (cdr arc)) (pushnew (abs l) acc))
+                       (dolist (v (ddnnf--d4-scope (car arc) node-type arcs cache))
+                         (pushnew v acc)))
+                     acc)))))))
+
+(defun ddnnf--d4-build (b id node-type arcs scopes build-cache)
+  "Build d4 node ID into builder B, smooth over its scope; returns our node id."
+  (or (gethash id build-cache)
+      (setf (gethash id build-cache)
+            (case (gethash id node-type)
+              (:true (bld-true b))
+              (:false (bld-false b))
+              (:or
+               ;; OR of arcs; smooth each arc up to the OR's scope.
+               (let ((oscope (gethash id scopes)) (kids '()))
+                 (dolist (arc (gethash id arcs))
+                   (let* ((dst (car arc)) (lits (cdr arc))
+                          (covered (copy-list (gethash dst scopes)))
+                          (akids (list (ddnnf--d4-build b dst node-type arcs scopes build-cache))))
+                     (dolist (l lits)
+                       (pushnew (abs l) covered)
+                       (push (bld-lit b l) akids))
+                     (dolist (v (set-difference oscope covered))
+                       (push (bld-free b v) akids))
+                     (push (bld-and b (nreverse akids)) kids)))
+                 (bld-or b (nreverse kids))))
+              (:and
+               ;; AND of arcs (decomposable: disjoint scopes, no smoothing needed).
+               (let ((kids '()))
+                 (dolist (arc (gethash id arcs))
+                   (let ((akids (list (ddnnf--d4-build b (car arc) node-type arcs scopes build-cache))))
+                     (dolist (l (cdr arc)) (push (bld-lit b l) akids))
+                     (push (bld-and b (nreverse akids)) kids)))
+                 (bld-and b (nreverse kids))))))))
+
+(defun ddnnf--build-from-d4 (nnf-file nvars a2i cost scale int-clauses)
+  "Turn a d4 NNF dump into a (smooth) DDNNF struct over variables 1..NVARS."
+  (multiple-value-bind (node-type arcs) (ddnnf--read-d4-nnf nnf-file)
+    (let ((dsts (make-hash-table)) (root-id nil)
+          (scopes (make-hash-table)) (build-cache (make-hash-table))
+          (b (bld-new)))
+      ;; root = the one node that is never an arc destination
+      (maphash (lambda (src lst) (declare (ignore src))
+                 (dolist (a lst) (setf (gethash (car a) dsts) t)))
+               arcs)
+      (maphash (lambda (id ty) (declare (ignore ty))
+                 (unless (gethash id dsts) (setf root-id id)))
+               node-type)
+      (unless root-id (error "could not find the d4 NNF root in ~A" nnf-file))
+      (maphash (lambda (id ty) (declare (ignore ty))
+                 (ddnnf--d4-scope id node-type arcs scopes))
+               node-type)
+      (let* ((body (ddnnf--d4-build b root-id node-type arcs scopes build-cache))
+             (never (set-difference (loop for v from 1 to nvars collect v)
+                                    (gethash root-id scopes)))
+             (root (bld-and b (append (mapcar (lambda (v) (bld-free b v)) never)
+                                      (list body))))
+             (i2a (make-array (1+ nvars))))
+        (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
+        (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
+                    :leaf-cost cost :scale scale :clauses int-clauses)))))
+
+(defun ddnnf-compile-d4 (scnf-file &key scale (d4 *d4*) (verbose t))
+  "Like DDNNF-COMPILE, but the Boolean structure is compiled by the external d4
+(d4v2) decision-DNNF compiler (via *d4* / D4) and smoothed on import, instead of
+the home-grown trace compiler.  Returns the same DDNNF struct, so DDNNF-QUERY,
+DDNNF-MARGINALS, evidence, and save/load all work identically.  Useful when an
+instance is too structured for the home-grown compiler (where d4's heuristics win)."
+  (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
+    (declare (ignore probs opts))
+    (let* ((scale (rw--resolve-scale scnf-file scale verbose))
+           (weight-atoms (mapcar (lambda (w) (rw--literal-atom-and-sign (second w)))
+                                 weight-forms)))
+      (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
+        (when (zerop nvars) (error "no atoms found in ~A" scnf-file))
+        (let* ((int-clauses (ddnnf--normalize-clauses
+                             (mapcar (lambda (cl) (coerce (mx--clause->ints cl a2i) 'list))
+                                     clauses)))
+               (cost (wmc--literal-costs weight-forms a2i))
+               (base (make-scratch-file-root))
+               (cnf (format nil "~A.cnf" base))
+               (nnf (format nil "~A.nnf" base)))
+          (unwind-protect
+               (progn
+                 (ddnnf--write-dimacs-file int-clauses nvars cnf)
+                 (ddnnf--run-d4 cnf nnf :d4 d4)
+                 (when verbose (format t "; compiled with d4: ~A~%" d4))
+                 (ddnnf--build-from-d4 nnf nvars a2i cost scale int-clauses))
+            (ignore-errors (delete-file cnf))
+            (ignore-errors (delete-file nnf))))))))
+
+;;; ----------------------------------------------------------------------------
 ;;; Persistence: save / load a compiled circuit
 ;;;
 ;;; A compiled circuit is a flat, topologically-ordered array of nodes whose
@@ -555,13 +730,16 @@ Returns (values circuit* clamp)."
         results))))
 
 (defun ddnnf-marginals (scnf-file &key circuit save-circuit out-file weighted-only scale
-                                       evidence evidence-file (verbose t))
-  "Exact marginal P(atom = true) of every atom via FiFO's own d-DNNF compiler.
+                                       evidence evidence-file (compiler :home) (d4 *d4*)
+                                       (verbose t))
+  "Exact marginal P(atom = true) of every atom via a compiled d-DNNF circuit.
 
 The theory comes from either CIRCUIT -- a prebuilt DDNNF struct or the path to one
 saved by DDNNF-SAVE, in which case NO recompilation happens -- or, when CIRCUIT is
-NIL, by compiling SCNF-FILE.  With SAVE-CIRCUIT (a path), the base circuit is
-written there for reuse on later calls.
+NIL, by compiling SCNF-FILE.  COMPILER selects the front end: :home (default) uses
+the built-in trace compiler; :d4 shells out to the external d4 (d4v2) compiler (at
+D4) and smooths its dump.  With SAVE-CIRCUIT (a path), the base circuit is written
+there for reuse on later calls.
 
 Conditions on EVIDENCE / EVIDENCE-FILE (ground FiFO formulas; unit literals reuse
 the circuit, anything else triggers a recompile from the stored clauses), and
@@ -571,7 +749,9 @@ on a loaded CIRCUIT, a non-NIL SCALE overrides the stored one without recompilin
 since the weights are kept separate from the Boolean structure).  Prints one
 (MARGINAL <atom> <p>) line per atom (and to OUT-FILE if given); returns an alist."
   (let ((base (cond (circuit (if (stringp circuit) (ddnnf-load circuit) circuit))
-                    (scnf-file (ddnnf-compile scnf-file :scale scale :verbose verbose))
+                    (scnf-file (if (eq compiler :d4)
+                                   (ddnnf-compile-d4 scnf-file :scale scale :d4 d4 :verbose verbose)
+                                   (ddnnf-compile scnf-file :scale scale :verbose verbose)))
                     (t (error "ddnnf-marginals: provide an scnf file or :circuit")))))
     (when (and circuit scale)
       (setf (ddnnf-scale base) (float scale 1.0d0)))
