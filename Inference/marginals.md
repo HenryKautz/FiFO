@@ -252,6 +252,18 @@ bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1)
 
 Cross-checked against the Method-1 enumeration: exact agreement (max `|P_enum − P_d4| = 0`) on the weighted test instances, including unit-evidence reuse and save→load of a d4-produced circuit.
 
+**Compilation on the LogisticsCosts benchmarks.** Compiling each SatPlan LogisticsCosts problem (see [satplan.md](../SatPlan/satplan.md#benchmark-smallest-horizons-for-the-logisticscosts-problems)) with d4 at its *smallest feasible horizon* — the hard clauses only, plain DIMACS — with a 10-minute cap:
+
+| Problem | Horizon | Variables | Clauses | d4 compile time | d-DNNF size (nodes + arcs) |
+|---|--:|--:|--:|--:|--:|
+| `pb6` | 6  | 528   | 3 710  | < 1 s | 128   |
+| `pb7` | 6  | 1 503 | 14 961 | 4 s   | 540   |
+| `pb1` | 8  | 1 888 | 17 606 | 3 s   | 2 857 |
+| `pb4` | 8  | 1 888 | 17 606 | 3 s   | 1 589 |
+| `pb3` | 10 | 3 423 | 39 417 | 3 s   | 4 428 |
+
+None came close to the cap — every instance compiled in seconds to a circuit of a few hundred to a few thousand nodes-plus-arcs. The reason is that the *smallest feasible* horizon is the most tightly constrained one: there is little slack, so few plans (and few partial assignments) survive, and the d-DNNF stays small. Pushing a problem to a longer-than-needed horizon is what makes compilation hard — the extra slices multiply logically-equivalent plans, and the circuit (and compile time) can explode by orders of magnitude. Note also that `pb1` and `pb4` have identical CNF dimensions yet different circuit sizes: same encoding, different goals.
+
 ------
 
 ### Conditioning on evidence
