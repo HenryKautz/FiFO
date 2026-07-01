@@ -430,6 +430,22 @@ The intermediate files the pipeline leaves behind (`.scnf`, `.cnf`, `.wcnf`, `.m
 
 The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path stop-after longer evidence evidence-file pddl-evidence pddl-evidence-file marginals counter)` runs the search (or, with `marginals`, the inference) and returns the status, horizon, and answer/scnf-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `lisp/FiFO.lisp`, `lisp/pddl2fifo.lisp`, and `lisp/planner.lisp` to call them from a Lisp listener.
 
+### Benchmark: smallest horizons for the LogisticsCosts problems
+
+The `SatPlan/Examples/LogisticsCosts` set (the `logistics-costs` domain — action costs load/unload = 1, drive = 4, fly = 15) collects seven problems: `pb1`–`pb5` are the PDDL4J logistics/rocket instances and `pb6`/`pb7` are small hand-written trucks+airplanes problems. Running each through `bin/planner.sh` (which tests feasibility with `kissat` at each horizon from the reachability lower bound upward, then minimizes cost with the MaxSAT solver at the smallest feasible horizon) gives the smallest horizon at which a plan exists, and its optimal cost:
+
+| Problem | PDDL4J origin | Reachability LB | Smallest feasible horizon | CNF at that horizon (vars / clauses) | Optimal cost |
+|---|---|--:|--:|--:|--:|
+| `pb1` | `rocket_ext.a`  | 3 | 8  | 1 888 / 17 606  | 99  |
+| `pb2` | `logistics.a`   | 5 | 12 | 7 518 / 90 356  | 126 |
+| `pb3` | `logistics.easy`| 5 | 10 | 3 423 / 39 417  | 68  |
+| `pb4` | `rocket_ext.b`  | 3 | 8  | 1 888 / 17 606  | 110 |
+| `pb5` | `logistics.b`   | 5 | 14 | 7 988 / 103 439 | 122 |
+| `pb6` | hand-written    | 3 | 6  | 528 / 3 710     | 44  |
+| `pb7` | hand-written    | 3 | 6  | 1 503 / 14 961  | 66  |
+
+The reachability lower bound (from `pddl2fifo`'s relaxed planning-graph analysis) is a loose floor; the true smallest horizon is one to nine slices higher because delete effects and resource contention (only so many trucks/airplanes act in parallel) force extra steps. All finished in well under a minute here — the SAT feasibility search dominates, and the MaxSAT cost step converged at the first feasible horizon for every instance. The intermediate `.wff`, `.scnf`, and `.wcnf` files for each problem (generated at its smallest feasible horizon) are kept under `SatPlan/Examples/LogisticsCosts/intermediates/`.
+
 ------
 
 ### Related Documents
