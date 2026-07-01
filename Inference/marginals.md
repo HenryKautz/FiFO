@@ -228,7 +228,29 @@ bin/marginals.sh --circuit problem.dnnf --scale 1            # re-weight, no rec
 
 **Scope.** This is for **FiFO-scale** instances — the same envelope where `maxent` enumeration is viable, but conditionable and persistable. A node cap (`*ddnnf-node-limit*`, also `--node-limit`) makes it fail gracefully on a too-structured (high-treewidth) instance and point you at `--solver addmc`, which remains the tool for large single counts. The marginals were cross-checked against the Method-1 enumeration on the test instances: exact agreement (max `|P_enum − P_ddnnf| = 0`), including under unit-clamp vs. recompiled-with-evidence and save→load.
 
-**Using the state-of-the-art compiler instead (`--solver d4`).** The home-grown compiler is for FiFO-scale; when an instance outgrows it, the *same* circuit machinery can be driven by **d4** ([d4v2](https://github.com/crillab/d4v2)), the state-of-the-art decision-DNNF compiler, via `ddnnf-compile-d4` / `--solver d4`. d4 compiles only the **Boolean structure** (the hard clauses, emitted as plain DIMACS); FiFO keeps the weights and applies them at the leaves, so nothing about the evaluator, evidence handling, or `.dnnf` persistence changes — d4 is just a different *producer* behind the same struct. d4's output is a decision-DNNF in its arc format and is **not smooth**, so FiFO smooths it on import (inserts `free(v)=OR(+v,−v)` for variables that drop off a branch), which is what the leaf-sum marginal evaluator assumes. Cross-checked against `maxent`: exact agreement (max `|P_enum − P_d4| = 0`) on the test instances, including unit-evidence reuse and save→load of a d4-produced circuit. d4 is an external binary (build d4v2's `demo/compiler`; located via `*d4*` / the `D4` env var / `--d4-bin`), optional — only `--solver d4` needs it.
+**Outgrowing it.** The home-grown compiler is for FiFO-scale; when an instance is too structured for it, the *same* circuit machinery can be driven by the state-of-the-art external **d4** compiler instead — see [d-DNNF via the external d4 compiler](#implemented-d-dnnf-via-the-external-d4-compiler-method-3) below.
+
+------
+
+### Implemented: d-DNNF via the external d4 compiler (Method 3)
+
+The home-grown compiler above is deliberately FiFO-scale. **d4** ([d4v2](https://github.com/crillab/d4v2)) is the state-of-the-art decision-DNNF knowledge compiler — years of work on branching heuristics, hypergraph-partition decomposition, and component caching — and it can compile instances far too structured (high-treewidth) for the trace compiler. FiFO can use it as a drop-in *producer* for the very same circuit, via `ddnnf-compile-d4` / `--solver d4`.
+
+**Producer behind the same struct.** The key design point is that d4 replaces only the *front end*. It compiles the **Boolean structure** — the hard clauses, which FiFO emits as plain DIMACS — and nothing else. FiFO keeps the weights on its own side and applies them at the leaves during evaluation, so d4 never sees a weight. Its dumped circuit is parsed into the identical node struct the home-grown compiler builds, and then **everything downstream is reused unchanged**: the two-pass value/derivative evaluator, all-marginals-at-once, unit-evidence clamping and reuse, non-unit recompilation, and `.dnnf` save/load. `--save-circuit` / `--circuit` and `--scale` re-weighting all work on a d4-produced circuit exactly as on a home-grown one.
+
+**Smoothing on import.** d4 emits a decision-DNNF in its arc format that is decomposable and deterministic but **not smooth** (a branch may drop a variable that a sibling constrains). Since the leaf-sum marginal pass assumes smoothness (see [above](#implemented-d-dnnf-compilation-fifos-own-method-3-no-external-binary)), FiFO smooths the dump on import — conjoining `free(v)=OR(+v,−v)` into any branch missing `v`, and adding a `free(v)` at the root for variables that appear in no clause. The result is a smooth, deterministic, decomposable circuit indistinguishable (to the evaluator) from a home-grown one.
+
+```sh
+# compile the structure with d4, report all marginals (weights applied by FiFO)
+bin/marginals.sh problem.scnf --solver d4
+bin/marginals.sh problem.scnf --solver d4 --evidence '(occurs (turn-off s1) 1)'
+bin/marginals.sh problem.scnf --solver d4 --save-circuit problem.dnnf   # persist, then reuse
+bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1))'
+```
+
+**Interface & dependency.** `--solver d4` (and the Lisp `ddnnf-compile-d4`, or `ddnnf-marginals … :compiler :d4`) needs the d4 compiler binary — d4v2's `demo/compiler` executable — located via the `*d4*` Lisp variable, the `D4` environment variable, or `--d4-bin <path>`. Build it from a d4v2 checkout (a macOS fork is at [github.com/HenryKautz/d4v2](https://github.com/HenryKautz/d4v2)); it is entirely optional — only `--solver d4` uses it, and every other back end works without it.
+
+Cross-checked against the Method-1 enumeration: exact agreement (max `|P_enum − P_d4| = 0`) on the weighted test instances, including unit-evidence reuse and save→load of a d4-produced circuit.
 
 ------
 
