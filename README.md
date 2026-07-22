@@ -314,6 +314,62 @@ SAT
 (COLOR E RED)
 ```
 
+Deduction 
+---------------------------------------
+
+Satisfiability testing can be used for deduction by negating the conclusion to be drawn from a set of assumptions. For example, suppose that Bob is shorter than Alice, Alice is shorter than Charlie, and shorter is transitive. Can you conclude that there is someone who is shorter than two other people? This problem could be encoded in FiFO as follows for proof by refutation.  The (unnegated) conclusion holds if the formula is unsatisfiable.
+
+```
+(domain Person (set Alice Bob Charlie))  
+(shorter Alice Bob)  
+(shorter Bob Charlie)  
+(all (x y z) Person true (implies (and (shorter x y) (shorter y z)) (shorter x z)))  
+(not (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
+```
+
+FiFO provides an alternative way of encoding a deduction problem by using the **prove** construct.  In this case, the last line above would be replaced by:
+
+```
+(prove () true (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
+```
+
+Note that the formula to be deduced is not negated.  Use of prove makes the goal of the FiFO problem clearer to a user.  
+
+## Answer Extraction for Deduction
+
+ Suppose we want to also *derive* the constant for person who is shorter than two other people. FiFO provides the operator "prove" to support answer extraction from proofs of unsatisfiability. A single prove operation may appear as the last schema in the list of input schemas. The last schema in previous example would be changed to:
+
+```
+(prove ((x Person)) true (exists (y z) Person (neq y z) (and (shorter x y) (shorter x z))))
+```
+
+Prove can also be used to extract the bindings for several variables by specifying a series of variables and domains in the operator. For example, suppose the problem involves people and jobs, and states that all mechanics are also drivers and Alice is a mechanic. We wish to find a person with two jobs and the names of those jobs.
+
+```
+(domain Person (set Alice Bob))  
+(domain Job (set Mechanic Driver Programmer))  
+(all x Person true (and (works x Mechanic) (works x Driver)))
+(works Alice Mechanic)  
+(works Bob Programmer)  
+(prove ((p Person) ((j1 j2) Job)) (neq j1 j2) (and (works p j1) (works p j2)))
+```
+
+Schema performs binary search on each answer variable to find the answer bindings.  Suppose the first variable is $t_1$. The parser makes $t_1$ universally quantified over half of its domain and variables $t_2, t_3, ...$ universally quantified over their full domains.  If this formula is satisfable, it repeats the process but making $t_1$ universally quantified over a quarter of its domain.  If the formula is unsatisfiable, then the process is repeated with $t_1$ universally quantified over the other half of its domain.  Eventually the process will fail or result in an answer binding for $t_1$.  The parser then continues on to search for a binding for $t_1, t_2$, etc. The maximum number of wffs returned by GetCNF before it returns FAIL or DONE, and thus the maximum number of calls to a SAT solver, is $\sum{\log|T_i|}$ where $T_i$ is the domain of answer variable $i$.  Note that is this is an improvement over a naive implementation of answer extraction which would be $\prod |T_i|$.
+
+Compact Encodings
+-----------------
+
+The input formulas need not be in conjunctive normal form. Converting a formula to CNF using only the user-defined propositions can cause its size to increase exponentially. By creating new propositions, the FiFO interpreter can guarantee the size of the output CNF formula is only exponential in the nesting of quantifiers. Specifically, where
+
+> M = number of input formulas  
+> L = length of the longest input formula  
+> D = size of the largest set appearing in a quantification statement  
+> N = deepest nesting of quantifiers in a formula
+
+the size of the output CNF is $O(MLD^N)$.
+
+When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to a model of the output formula.
+
 ## Optimization (Weighted MaxSAT)
 
 FiFO supports weighted optimization problems via the **weight** form:
@@ -456,48 +512,6 @@ For **conditional** probabilities, `--solver addmc` accepts `--evidence '<ground
 
 Because the learning pipeline scales costs by an integer factor (100 by default, set with `learn.sh --scale`) to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
 
-Deduction 
----------------------------------------
-
-Satisfiability testing can be used for deduction by negating the conclusion to be drawn from a set of assumptions. For example, suppose that Bob is shorter than Alice, Alice is shorter than Charlie, and shorter is transitive. Can you conclude that there is someone who is shorter than two other people? This problem could be encoded in FiFO as follows for proof by refutation.  The (unnegated) conclusion holds if the formula is unsatisfiable.
-
-```
-(domain Person (set Alice Bob Charlie))  
-(shorter Alice Bob)  
-(shorter Bob Charlie)  
-(all (x y z) Person true (implies (and (shorter x y) (shorter y z)) (shorter x z)))  
-(not (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
-```
-
-FiFO provides an alternative way of encoding a deduction problem by using the **prove** construct.  In this case, the last line above would be replaced by:
-
-```
-(prove () true (exists (x y z) Person (neq y z) (and (shorter x y) (shorter x z))))
-```
-
-Note that the formula to be deduced is not negated.  Use of prove makes the goal of the FiFO problem clearer to a user.  
-
-## Answer Extraction for Deduction
-
- Suppose we want to also *derive* the constant for person who is shorter than two other people. FiFO provides the operator "prove" to support answer extraction from proofs of unsatisfiability. A single prove operation may appear as the last schema in the list of input schemas. The last schema in previous example would be changed to:
-
-```
-(prove ((x Person)) true (exists (y z) Person (neq y z) (and (shorter x y) (shorter x z))))
-```
-
-Prove can also be used to extract the bindings for several variables by specifying a series of variables and domains in the operator. For example, suppose the problem involves people and jobs, and states that all mechanics are also drivers and Alice is a mechanic. We wish to find a person with two jobs and the names of those jobs.
-
-```
-(domain Person (set Alice Bob))  
-(domain Job (set Mechanic Driver Programmer))  
-(all x Person true (and (works x Mechanic) (works x Driver)))
-(works Alice Mechanic)  
-(works Bob Programmer)  
-(prove ((p Person) ((j1 j2) Job)) (neq j1 j2) (and (works p j1) (works p j2)))
-```
-
-Schema performs binary search on each answer variable to find the answer bindings.  Suppose the first variable is $t_1$. The parser makes $t_1$ universally quantified over half of its domain and variables $t_2, t_3, ...$ universally quantified over their full domains.  If this formula is satisfable, it repeats the process but making $t_1$ universally quantified over a quarter of its domain.  If the formula is unsatisfiable, then the process is repeated with $t_1$ universally quantified over the other half of its domain.  Eventually the process will fail or result in an answer binding for $t_1$.  The parser then continues on to search for a binding for $t_1, t_2$, etc. The maximum number of wffs returned by GetCNF before it returns FAIL or DONE, and thus the maximum number of calls to a SAT solver, is $\sum{\log|T_i|}$ where $T_i$ is the domain of answer variable $i$.  Note that is this is an improvement over a naive implementation of answer extraction which would be $\prod |T_i|$.
-
 ## Common Binary Relationship Patterns
 
 Suppose R is a binary relation.  Properties of R can be asserted as follows.
@@ -545,20 +559,6 @@ We say that a relationship over domains E and V is a mapping if (1) R is functio
 ;; (3) R is one to one
 (not (exists (x1 x2) E (neq x1 x2) (exists y V true (and (R x1 y) (R x2 y)))))
 ```
-
-Compact Encodings
------------------
-
-The input formulas need not be in conjunctive normal form. Converting a formula to CNF using only the user-defined propositions can cause its size to increase exponentially. By creating new propositions, the FiFO interpreter can guarantee the size of the output CNF formula is only exponential in the nesting of quantifiers. Specifically, where
-
-> M = number of input formulas  
-> L = length of the longest input formula  
-> D = size of the largest set appearing in a quantification statement  
-> N = deepest nesting of quantifiers in a formula
-
-the size of the output CNF is $O(MLD^N)$.
-
-When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to a model of the output formula.
 
 ## Options
 
@@ -707,7 +707,7 @@ diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 
 ### Known limitation: compact-encoding and nested exists
 
-With `(option *compact-encoding* 0)`, the OR-distribution step performs a full cross-product of clauses instead of introducing auxiliary Tseitin propositions. Nested `exists` quantifiers over large domains can cause exponential clause blowup. Keep domains small (<= 3 values) when using `*compact-encoding* 0` with nested quantifiers, or omit the option to use the default Tseitin encoding.
+With `(option *compact-encoding* 0)`, the OR-distribution step performs a full cross-product of clauses instead of introducing auxiliary Tseitin propositions. Nested `exists` quantifiers over large domains can cause exponential clause blowup. Keep domains small (<= 3 values) when using `*compact-encoding* 0` with nested quantifiers.
 
 ## Implementing SatPlan in FiFO
 
