@@ -7,7 +7,7 @@ henry.kautz@gmail.com
 
 FiFO is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The FiFO interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
 
-FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). The main differences are that it restricts weights to literals and provides a richer set of operators for working with observed predicates and domains.
+FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). The main differences are that it restricts weights to literals and provides a richer set of operators for working with static predicates and domains.
 
 The FiFO interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use FiFO.
 
@@ -46,11 +46,11 @@ Common Lisp API
 
 Invoke any implementation of Common Lisp, and load the file `lisp/FiFO.lisp` (or `~/lib/fifo/lisp/FiFO.lisp` once installed). The following Lisp functions are available. All arguments after the first are Common Lisp keyword arguments, so they are supplied by name, e.g. `(instantiate "test.wff" :scnfile "test.scnf")` or `(interpret "test.out" :sort-by-time nil)`.
 
-**(parse '(SCHEMA+) &key (observation-list '(OBSERVATION+))) returns ((OR LITERAL+)\*)**  
-Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each OBSERVATION is a positive ground literal or a observed quantified formula as described below. When the schemas are expanded, they are simplified by replacing observed atoms by true and all non-observed atoms that employ the same predicates by false.
+**(parse '(SCHEMA+) &key (static-list '(FACT+))) returns ((OR LITERAL+)\*)**  
+Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each FACT is a positive ground literal or a static quantified formula as described below. When the schemas are expanded, they are simplified by replacing static atoms by true and all non-static atoms that employ the same predicates by false. (`:observation-list` is accepted as a deprecated synonym for `:static-list`.)
 
-**(instantiate "test.wff" &key scnfile obsfile)**  
-Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file given by `:scnfile`. The `:obsfile` file contains a sequence of observed ground atoms.
+**(instantiate "test.wff" &key scnfile staticfile)**  
+Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file given by `:scnfile`. The `:staticfile` file contains a sequence of static ground atoms. (`:obsfile` is accepted as a deprecated synonym for `:staticfile`.)
 
 **(propositionalize "test.scnf" &key cnffile mapfile)**  
 Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS format CNF file3 "test.cnf". In DIMACS format (the standard input language for all modern SAT solvers), propositions are represented by positive and negative integers. The mapping from symbolic ground atoms to integers is written to the file "test.map". The file "test.cnf" may then be sent to a SAT solver. When the output file name is not given explicitly and the problem is written in one of the WCNF formats (see Optimization), the default extension is `.wcnf` instead of `.cnf`. `propositionalize` returns the pathname of the cnf/wcnf file it wrote.
@@ -63,8 +63,8 @@ Reads in the output of a SAT solver "test.out" and a mapping file (`:mapfile`), 
 
 The MaxSAT output format used by solvers such as `tt-open-wbo-inc` is also understood: the satisfiability status is taken from the `s` line, and the model is given as a single `v` line that is a bit string of length *numvar* (one `0`/`1` per variable) rather than a list of signed literals. When the output contains one or more `o <number>` (objective/cost) lines, the value from the last such line is written to "test.answer" as an atom of the form `(*objective* <number>)`, placed before the symbolic atoms.
 
-**(solve "test.wff" &key solnfile obsfile)**
-Reads in the FiFO file "test.wff" and an optional observation file (`:obsfile`), solves it using the **sat-solver** and writes the results in symbolic form to the answer file (`:solnfile`).  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
+**(solve "test.wff" &key solnfile staticfile)**
+Reads in the FiFO file "test.wff" and an optional static facts file (`:staticfile`; `:obsfile` is accepted as a deprecated synonym), solves it using the **sat-solver** and writes the results in symbolic form to the answer file (`:solnfile`).  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
 
 - If the formula does not contain a prove form and:
   - Is satisfiable: SAT followed by the positive ground literals in a satisying model.
@@ -99,7 +99,7 @@ Propositions are expressed in FiFO as either atomic symbols or complex propositi
 
 where "winner" is a predicate, "john" is a simple term, "round" is an uninterpreted function symbol, and "(round 24)" is a complex term.
 
-Any non-zero numeric value is treated as true and zero (0 or 0.0) is treated as false in numeric expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in numeric expressions. Numeric expressions may include integer or floating-point literals, arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges, union, intersection, set-difference), logical functions (and, or, not), and observed predicates. Non-observed predicates may not appear in a numeric expression. Note that logical operators in numeric expressions are evaluated by the FiFO interpreter and do not appear in the final CNF, unlike the logical operators that have the same names. When a numeric value is a whole number (e.g. 2.0), it is written as a plain integer (2) in the scnf output.
+Any non-zero numeric value is treated as true and zero (0 or 0.0) is treated as false in numeric expressions. The special constants "true" and "false" are equivalent to 1 and 0 respectively when they appear in numeric expressions. Numeric expressions may include integer or floating-point literals, arithmetic functions (+, -, \*, div, rem, mod), comparison functions (<, <=, =, >=, >, member, eq, neq, alldiff), set composition functions (enumerated sets, ranges, union, intersection, set-difference), logical functions (and, or, not), and static predicates. Non-static predicates may not appear in a numeric expression. Note that logical operators in numeric expressions are evaluated by the FiFO interpreter and do not appear in the final CNF, unlike the logical operators that have the same names. When a numeric value is a whole number (e.g. 2.0), it is written as a plain integer (2) in the scnf output.
 
 Comments can appear in the input.  They begin with ;; (double semicolon) and extend to the end of the line.
 
@@ -121,38 +121,38 @@ The for operator is used to compactly create a set of non-atomic ground terms.  
 
 This defines Node as a set containing the terms (n 2), (n 4), and so on up to (n 100).
 
-The **collect** operator builds a domain by pattern-matching against observed predicates:
+The **collect** operator builds a domain by pattern-matching against static predicates:
 
 ```
-(collect <variable> (<observed-predicate> <term-pattern>+))
+(collect <variable> (<static-predicate> <term-pattern>+))
 ```
 
-A `<term-pattern>` is like a term but may contain the variable itself or the wildcard symbol `*`. Both are treated as wildcards when matching against the set of observed propositions. The form returns the set of ground terms that the variable matched across all observed literals that fit the pattern. The result never contains duplicates.
+A `<term-pattern>` is like a term but may contain the variable itself or the wildcard symbol `*`. Both are treated as wildcards when matching against the set of static propositions. The form returns the set of ground terms that the variable matched across all static literals that fit the pattern. The result never contains duplicates.
 
-For example, given observations `(edge n1 n2)`, `(edge n2 n3)`, `(edge n3 n4)`:
+For example, given static facts `(edge n1 n2)`, `(edge n2 n3)`, `(edge n3 n4)`:
 
 ```
-;; Collect all source nodes of observed edges
+;; Collect all source nodes of static edges
 (domain sources (collect x (edge x *)))   ; {n1 n2 n3}
 
 ;; Collect all target nodes
 (domain targets (collect x (edge * x)))   ; {n2 n3 n4}
 
 ;; Self-loops only (variable appears twice — both must agree)
-(domain self-loops (collect x (edge x x)))   ; {} — no self-loops observed
+(domain self-loops (collect x (edge x x)))   ; {} — no static self-loop facts
 ```
 
 The variable can be nested inside a compound term pattern. In that case the term at that position (not the outer compound) is what gets collected:
 
 ```
-;; Given (at (truck 1) (place 1)) and (at (truck 2) (place 2)) are observed:
+;; Given (at (truck 1) (place 1)) and (at (truck 2) (place 2)) are static facts:
 (domain truck-ids (collect i (at (truck i) *)))   ; {1 2}
 
 ;; Collect whole compound terms that fill a pattern position:
 (domain trucks-at-p1 (collect x (at x (place 1))))   ; {(truck 1)}
 ```
 
-`collect` is especially useful in SatPlan-style encodings for deriving action sets directly from observed `Pre`/`Add`/`Del` facts rather than enumerating them manually.
+`collect` is especially useful in SatPlan-style encodings for deriving action sets directly from static `Pre`/`Add`/`Del` facts rather than enumerating them manually.
 
 While **domain** gives a name to a set of terms, **alias** gives a name to a single term, as in the following example.
 
@@ -205,11 +205,11 @@ is expanded to
 
 As in logic programming, ground terms refer to themselves, or in other words, formulas are interpreted over a Herbrand universe.  The predicates **eq** and **neq** check for syntactic equality at the time that formulas are instantiated.  The mathematical comparison predicates cited above check for numeric equality at instantiation time.  There is no semantic equality operator that would allow one to assert that two different Herbrand terms refer to the same entity.
 
-## Observed Predicates
+## Static Predicates
 
-Observed predicates are useful for describing fixed relationships in a problem instance. The true ground literals for such predicates are specified in a list provided to the FiFO interpreter.  The interpreter will then assume that all other literals for the predicates that appear in that list are asserted to be false.
+Static predicates are useful for describing fixed relationships in a problem instance. The true ground literals for such predicates are specified in a list provided to the FiFO interpreter.  The interpreter will then assume that all other literals for the predicates that appear in that list are asserted to be false.
 
-For example, consider representing problems about a graph. The observations would specify edges in the graph, for example:
+For example, consider representing problems about a graph. The static facts would specify edges in the graph, for example:
 
 ```
 (edge N1 N2)  
@@ -217,39 +217,41 @@ For example, consider representing problems about a graph. The observations woul
 (edge N3 N5)
 ```
 
-Making "connected" an observed predicate has several advantages:
+Making "connected" a static predicate has several advantages:
 
 - The closed world assumption is automatically applied to the predicate. In the example above, (not (connected R1 R5)) is implicitly asserted.
 - The predicate may be used inside test expressions.
-- The instantiated formula is smaller because observed literals are compiled away.
+- The instantiated formula is smaller because static literals are compiled away.
 
-A predicate can be declared to be observed in two ways. The **observed** form can be used to specify it's positive literals.  These should appear before any other formulas are asserted.  For example:
+A predicate can be declared to be static in two ways. The **static** form can be used to specify it's positive literals.  These should appear before any other formulas are asserted.  For example:
 
 ```
 (domain Node (set N1 N2 N3 N4 N5))
-(observed 
+(static 
 	(edge N1 N2)  
 	(edge N3 N4)  
 	(edge N3 N5))
 ```
 
-An alternative way to declare observed predicates and their true literals is to include the list of observed literals as an optional argument for the LISP API.  In this case, no explicit observations declaration is used.
+For backward compatibility, the keyword **observed** is accepted as a deprecated synonym for **static** (static predicates were originally called "observed predicates").
 
-## Observed Quantified Formulas
+An alternative way to declare static predicates and their true literals is to include the list of static literals as an optional argument for the LISP API.  In this case, no explicit static declaration is used.
 
-Quantified formulas can appear as observations with the restriction that only the forms **all**, **and**, **if**, and positive literals may appear in the body of a quantified formula.  For example, the following first defines a domain of 10 cells, and in the first observed formula asserts that the i-th cell is smaller than the i+1st cell.  The second observed formula asserts that smaller is transitively closed.
+## Static Quantified Formulas
+
+Quantified formulas can appear as static facts with the restriction that only the forms **all**, **and**, **if**, and positive literals may appear in the body of a quantified formula.  For example, the following first defines a domain of 10 cells, and in the first static formula asserts that the i-th cell is smaller than the i+1st cell.  The second static formula asserts that smaller is transitively closed.
 
 ```
 (domain cell (for i (range 1 10) true (set (cell i))))
 
-(observed
+(static
  (all i num (< num limit) (smaller (cell i) (cell (+ 1 i))))
  (all (a b c) cell (and (smaller a b) (smaller b c)) 
       (smaller a c))
  )
 ```
 
-Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* in the innermost **all**.  Recall that this is valid because observed literals can appear in a test.  Evaluating the form can add additional pairs to the observed predicate "smaller".  The FiFO program therefore re-evaluates *every* observed quantified formula if *any* such formula adds a *new* observed literal.  
+Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* in the innermost **all**.  Recall that this is valid because static literals can appear in a test.  Evaluating the form can add additional pairs to the static predicate "smaller".  The FiFO program therefore re-evaluates *every* static quantified formula if *any* such formula adds a *new* static literal.  
 
 ## SAT solvers
 
@@ -277,14 +279,14 @@ A framework for parallel (and, via D-Painless, distributed) SAT solving that com
 
 Discrete constraint satisfaction problems (CSPs) can easily be represented in FiFO.  The answer can be read off from the symbolic form of the SAT solution generated by the interpret function.
 
-As an example, consider graph 3-coloring: assign one of three colors to each node of a graph so that no two adjacent nodes share a color.  The graph is specified using an observed predicate `edge`, giving the closed-world assumption that unlisted edges do not exist.  Nodes are given colors using a predicate `color`, and two schemas assert (1) every node gets exactly one color and (2) adjacent nodes get different colors.
+As an example, consider graph 3-coloring: assign one of three colors to each node of a graph so that no two adjacent nodes share a color.  The graph is specified using a static predicate `edge`, giving the closed-world assumption that unlisted edges do not exist.  Nodes are given colors using a predicate `color`, and two schemas assert (1) every node gets exactly one color and (2) adjacent nodes get different colors.
 
 ```
 (domain Color (set Red Blue Green))
 (domain Node (set a b c d e))
 
 ;; Undirected edges (pentagon a-b-c-d-e-a plus chord b-d)
-(observed
+(static
   (edge a b) (edge b a)
   (edge b c) (edge c b)
   (edge c d) (edge d c)
@@ -414,7 +416,7 @@ The `.scnf` output separates clauses from weights:
 And conditional weights work too:
 
 ```
-(if (observed-predicate arg) (weight (option arg) 2.5))
+(if (static-predicate arg) (weight (option arg) 2.5))
 ```
 
 `weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses.
@@ -711,14 +713,14 @@ With `(option *compact-encoding* 0)`, the OR-distribution step performs a full c
 
 ## Implementing SatPlan in FiFO
 
-FiFO includes a SatPlan-style planner built on observed predicates and quantified formulas: a PDDL&rarr;FiFO translator (`pddl2fifo`), domain-independent SatPlan axioms, trajectory constraints, soft goals/preferences, per-step fluent costs, learning action/preference weights from probabilities, and an end-to-end planner driver (`planner.sh`). This material has its own document:
+FiFO includes a SatPlan-style planner built on static predicates and quantified formulas: a PDDL&rarr;FiFO translator (`pddl2fifo`), domain-independent SatPlan axioms, trajectory constraints, soft goals/preferences, per-step fluent costs, learning action/preference weights from probabilities, and an end-to-end planner driver (`planner.sh`). This material has its own document:
 
 **&rarr; [Implementing SatPlan in FiFO](SatPlan/satplan.md)**
 
 Schema BNF
 ----------
 
-    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <observations> | <weight>
+    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <statics> | <weight>
     
     <option> = (option <option name> <option value>)
     
@@ -752,7 +754,7 @@ Schema BNF
         (set-difference <set expression> <set expression>) | 
         (for <variable> <set expression> <test> <set expression>) |
         (for (<variable>+) <set expression> <test> <set expression>) |
-        (collect <variable> (<observed predicate symbol> <term-pattern>+)) |
+        (collect <variable> (<static predicate symbol> <term-pattern>+)) |
         (lisp <lisp list valued expression>)
     
     <term-pattern> = <variable> | * | <term>
@@ -767,7 +769,7 @@ Schema BNF
     <numeric expression> = <number> | 
         true | false |
         <variable ranging over a numeric domain> | 
-        (<observed predicate symbol> <term>*) |  
+        (<static predicate symbol> <term>*) |  
         (member <term> <set expression>) | 
         (alldiff <term> <term>+) |  
         (not <numeric expression>) | 
@@ -782,13 +784,15 @@ Schema BNF
     
     <literal> = <proposition> | (not <proposition>)
     
-    <observations> = (observed <observed-formula>+)
+    <statics> = (static <static-formula>+)
     
-    <observed-formula> = <proposition> |
-        (and <observed-formula>*) | 
-        (all <variable> <set expression> <test> <observed-formula>) |  
-        (all (<variable>+) <set expression> <test> <observed-formula>) |  
-        (if <test> <observed-formula>) 
+    <static-formula> = <proposition> |
+        (and <static-formula>*) | 
+        (all <variable> <set expression> <test> <static-formula>) |  
+        (all (<variable>+) <set expression> <test> <static-formula>) |  
+        (if <test> <static-formula>) 
+    
+    ;; "observed" is accepted as a deprecated synonym for "static" 
 
 ## Using FiFO with Python
 

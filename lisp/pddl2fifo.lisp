@@ -40,7 +40,7 @@
 
 (defparameter *static-dummy* 'pddl2fifo-static-dummy
   "A constant that appears in no object/type domain, used to register a static
-observed predicate even when it has no true instances.  Like satplan.wff's dummy
+predicate even when it has no true instances.  Like satplan.wff's dummy
 facts, such a dummy fact generates no clauses.")
 
 ;;; PDDL reading and access helpers
@@ -213,8 +213,8 @@ grouping consecutive parameters that share a domain."
 ;;;
 ;;; A predicate that never appears in any action's add or delete effect is
 ;;; static: its truth value is fixed by the initial state.  Such a predicate is
-;;; turned into an observed predicate -- its positive instances are asserted as
-;;; observations (from the initial state) and its preconditions become an
+;;; turned into a static predicate -- its positive instances are asserted as
+;;; static facts (from the initial state) and its preconditions become an
 ;;; instantiation-time guard rather than time-indexed Holds fluents.
 
 (defun action-effect-predicates (action-form)
@@ -636,7 +636,7 @@ preconditions, so these are rejected with an explanatory error."
         (and (negation-p p) (complex-head (second p))))))
 
 (defun translate-action (action-form forbidden effect-preds &optional (cost-scale 1))
-  "Translate one (:action ...) form into an observed FiFO formula.  Preconditions
+  "Translate one (:action ...) form into a static FiFO formula.  Preconditions
 on static predicates (those not in EFFECT-PREDS) become an (if ...) guard rather
 than Pre/PreNeg facts.  The action's cost (if any) is multiplied by COST-SCALE,
 the coefficient of (total-cost) in the :metric.
@@ -731,7 +731,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                       (when cost (list (list 'cost act (* cost-scale cost))))))
              (conj0 (if (rest facts) (cons 'and facts) (first facts)))
              ;; Gate the action's facts on its static preconditions: when the
-             ;; guard is false (an observed static atom does not hold) the (if ...)
+             ;; guard is false (a static atom does not hold) the (if ...)
              ;; expands to nothing, pruning that ground action at instantiation.
              (conj (if rguard (list 'if (cons 'and rguard) conj0) conj0))
              (quants (mapcar (lambda (b p)
@@ -856,7 +856,7 @@ none)."
                (effect-preds (collect-effect-predicates domain-def))
                (static-arities (collect-static-predicate-arities domain-def effect-preds))
                ;; Split the initial state: static-predicate facts become
-               ;; observations; the rest are time-indexed fluents (initial-state).
+               ;; static facts; the rest are time-indexed fluents (initial-state).
                (static-init (remove-if-not
                               (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (dynamic-init (remove-if
@@ -990,11 +990,11 @@ none)."
                           `(domain ,tp (set-difference objects objects)))))))
               (when (or static-arities static-init)
                 (terpri out)
-                (format out ";; Static predicates (never added or deleted): observed,~%")
-                (format out ";; with all positive instances from the initial state.  The~%")
-                (format out ";; dummy facts only register each predicate as observed.~%")
+                (format out ";; Static predicates (never added or deleted), with all~%")
+                (format out ";; positive instances from the initial state.  The dummy~%")
+                (format out ";; facts only register each predicate as static.~%")
                 (write-form out
-                  `(observed
+                  `(static
                      ,@(mapcar (lambda (pa)
                                  (cons (car pa)
                                        (make-list (cdr pa) :initial-element *static-dummy*)))
@@ -1002,7 +1002,7 @@ none)."
                      ,@static-init)))
               (terpri out)
               (format out ";; Action preconditions, effects, and costs~%")
-              (write-form out `(observed ,@action-forms))
+              (write-form out `(static ,@action-forms))
               (terpri out)
               (format out ";; Initial and goal states~%")
               (when dynamic-init
@@ -1035,7 +1035,7 @@ none)."
               (when evidence-fluents
                 (write-form out `(domain evidence-fluents (set ,@evidence-fluents))))
               (terpri out)
-              (format out ";; Domains derived from the observed action schemas~%")
+              (format out ";; Domains derived from the static action schemas~%")
               (write-form out
                 `(domain actions
                    ,(nested-union

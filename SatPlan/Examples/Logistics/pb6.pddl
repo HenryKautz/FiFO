@@ -8,8 +8,8 @@
 ;;   1 drive->airport  2 unload-truck  3 load-airplane  4 fly  5 unload-airplane
 ;;
 ;; A small two-city example (pb7 is the three-city version).  With city no longer
-;; a subtype of location and the static in-city predicate compiled to an observed
-;; predicate, this instantiates to ~4.5k clauses in ~2 seconds.
+;; a subtype of location and the static in-city predicate compiled to a FiFO
+;; static predicate, this instantiates to ~4.5k clauses in ~2 seconds.
 
 (define (problem pb6)
   (:domain logistics)

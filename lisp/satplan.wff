@@ -1,11 +1,11 @@
 ;; Domain Independent SatPlan axioms
 ;; Parallel Execution Semantics
 
-;; Register all observed predicates used in tests below, so that they are
+;; Register all static predicates used in tests below, so that they are
 ;; recognized even when a problem asserts no facts for some of them.
 ;; The dummy constants never appear in any actions/fluents/costs domain,
 ;; so these facts generate no clauses.
-(observed
+(static
    (Pre dummy-action dummy-fluent)
    (PreNeg dummy-action dummy-fluent)
    (Add dummy-action dummy-fluent)

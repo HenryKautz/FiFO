@@ -3,7 +3,7 @@
 (domain places (for i (range 1 3) true (set (place i))))
 (domain trucks (for i (range 1 2) true (set (truck i))))
 
-(observed
+(static
    (at (truck 1) (place 1))
    (at (truck 1) (place 3))
    (at (truck 2) (place 2))

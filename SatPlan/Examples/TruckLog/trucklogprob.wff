@@ -23,7 +23,7 @@
 (domain truck (set t1 t2))
 
 ;; Action preconditions, effects, and costs
-(observed
+(static
  (all pk package true
   (all tr truck true
    (all pl place true
@@ -47,7 +47,7 @@
  (set (at p1 l1) (at p2 l2) (at p3 l3) (at t1 l1) (at t2 l2)))
 (domain goal-state (set (at p1 l2) (at p3 l2) (at p2 l1)))
 
-;; Domains derived from the observed action schemas
+;; Domains derived from the static action schemas
 (domain actions
  (union (collect a (pre a *))
         (union (collect a (add a *)) (collect a (del a *)))))

@@ -1,0 +1,12 @@
+;; Backward compatibility: the deprecated (observed ...) form must behave
+;; exactly like (static ...).  Static facts are compiled away, so only the
+;; linked clauses licensed by the edge facts should appear in the output.
+(domain nodes (set n1 n2 n3))
+
+(observed
+  (edge n1 n2)
+  (edge n2 n3))
+
+(all x nodes true
+  (all y nodes (edge x y)
+    (linked x y)))

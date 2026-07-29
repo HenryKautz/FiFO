@@ -1,7 +1,7 @@
 (alias limit 10)
 (domain cell (for i (range 1 10) true (set (cell i))))
 
-(observed
+(static
  (all i (range 1 limit) (< i limit) (smaller (cell i) (cell (+ 1 i))))
  (all (a b c) cell (and (smaller a b) (smaller b c)) 
  			(smaller a c))

@@ -17,7 +17,7 @@
 (domain places   (for i (range 1 numplaces)   true (set (place i))))
 
 
-(observed
+(static
    (all tr trucks true
       (all pl places true
          (all pk packages true

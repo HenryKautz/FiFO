@@ -40,7 +40,7 @@ schema weights, because all ground instances of a schema share one weight
 small and the problem well-conditioned.
 
 **Fixed domains** (all training instances share the same element counts; they may
-still differ in initial/goal state or observed facts): every instance maps into the
+still differ in initial/goal state or static facts): every instance maps into the
 same $A$-dimensional count space, so all examples share one $\theta$. Tying is
 optional here but better-conditioned.
 

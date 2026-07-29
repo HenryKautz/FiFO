@@ -17,7 +17,7 @@
 (domain objects (set s1 s2 s3))
 
 ;; Action preconditions, effects, and costs
-(observed
+(static
  (all x objects true
   (and (preneg (turn-on x) (on x)) (add (turn-on x) (on x))
        (cost (turn-on x) 1)))
@@ -30,7 +30,7 @@
 (domain goal-state (set (on s2) (on s3)))
 (domain negative-goal-state (set (on s1)))
 
-;; Domains derived from the observed action schemas
+;; Domains derived from the static action schemas
 (domain actions
  (union (collect a (pre a *))
         (union (collect a (preneg a *))
@@ -47,4 +47,4 @@
 ;; Negative goals
 (all f negative-goal-state true (not (holds f numslices)))
 
-(include "../../satplan.wff")
+(include "../../../lisp/satplan.wff")

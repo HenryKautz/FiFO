@@ -15,7 +15,7 @@
 ;; horizon already yields the optimum.)
 ;;
 ;; As in the Logistics domain, city is its own type (not a subtype of location)
-;; and pddl2fifo compiles the static in-city predicate into an observed predicate,
+;; and pddl2fifo compiles the static in-city predicate into a FiFO static predicate,
 ;; which keeps the multi-city instances small.
 ;;
 ;; Status with FiFO (default solver tt-open-wbo-inc-Glucose4_1):

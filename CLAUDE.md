@@ -31,7 +31,7 @@ so they exercise the working copy. Set `FIFO_LISP` to override either.
 
 ## Key APIs (in lisp/FiFO.lisp)
 
-- `(parse schemas &key observation-list)` — Parse FiFO forms to ground clauses (all post-first args are keyword args)
+- `(parse schemas &key static-list)` — Parse FiFO forms to ground clauses (all post-first args are keyword args; `:observation-list` is a deprecated synonym)
 - `(instantiate "file.wff")` — File-based: wff -> scnf
 - `(propositionalize "file.scnf")` — File-based: scnf -> DIMACS cnf + map
 - `(satisfy "file.cnf")` — Run SAT solver (default: kissat)

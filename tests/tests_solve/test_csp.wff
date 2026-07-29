@@ -2,7 +2,7 @@
 (domain Node (set a b c d e))
 
 ;; Undirected edges of the graph (pentagon a-b-c-d-e-a plus chord b-d)
-(observed
+(static
   (edge a b) (edge b a)
   (edge b c) (edge c b)
   (edge c d) (edge d c)

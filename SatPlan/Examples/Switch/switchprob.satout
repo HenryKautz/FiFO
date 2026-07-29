@@ -27,14 +27,14 @@ c #Diff Weights= 2 | #Modified Weights= 2
 o 4
 c timeo 1 4 
 c before build neighbor
-c build instime is 1e-05
+c build instime is 8e-06
 c build NuWLS instance done!
 c changing to NuWLS solver!!!
 c max_flips = 10000000; max_non_improve_flip = 10000000
 c problem weighted = 1
 c nuwlsTimeLimit = 20
 c nuwls search done!
-c step 10000000 get_runtime 0.440736 time_limit_for_ls20
+c step 10000000 get_runtime 0.436251 time_limit_for_ls20
 o 4 
 c timeo 1 4 
 c Entering mutation sampling
@@ -46,4 +46,4 @@ c Warn: changing to LSU algorithm.
 c GTE auxiliary #clauses = 27
 s SATISFIABLE
 o 4 
-v 110010011100
+v 110011010010

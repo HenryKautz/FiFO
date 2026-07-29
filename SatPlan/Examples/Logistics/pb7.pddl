@@ -9,7 +9,7 @@
 ;;
 ;; This used to be impractical for FiFO, but two changes make it small now:
 ;; (1) city is no longer a subtype of location, and (2) pddl2fifo turns the
-;; static in-city predicate into an observed predicate, so invalid drives are
+;; static in-city predicate into a FiFO static predicate, so invalid drives are
 ;; pruned at instantiation.  It now instantiates to ~4k clauses in ~2 seconds
 ;; (the same order as the two-city pb6).
 

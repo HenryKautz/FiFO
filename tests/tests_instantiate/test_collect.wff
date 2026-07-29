@@ -2,7 +2,7 @@
 
 (domain node (set n1 n2 n3 n4))
 
-(observed
+(static
    (edge n1 n2)
    (edge n2 n3)
    (edge n3 n4))
@@ -17,7 +17,7 @@
 
 ;; Self-loops: variable appears twice, both positions must agree
 (domain self-loops (collect x (edge x x)))
-;; Should be empty (no self-loops observed)
+;; Should be empty (no static self-loop facts)
 
 ;; Use the collected domains
 (all s sources true (has-out s))

@@ -141,26 +141,28 @@ exactly where it was."
           ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
           (t nil))))
 
-(defun instantiate (WFFFILE &key SCNFILE OBSFILE)
+(defun instantiate (WFFFILE &key SCNFILE STATICFILE OBSFILE)
+  ;; :obsfile is a deprecated synonym for :staticfile
+  (setq STATICFILE (or STATICFILE OBSFILE))
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
-  (if (eq OBSFILE t)
-      (setq OBSFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
+  (if (eq STATICFILE t)
+      (setq STATICFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
   (if (not SCNFILE)
       (setq SCNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".scnf")))
   (with-clean-errors ("instantiating" WFFFILE)
     (with-open-file (INS WFFFILE :direction :input)
-      (with-open-stream (OBS (if OBSFILE (open OBSFILE :direction :input) (make-concatenated-stream)))
+      (with-open-stream (OBS (if STATICFILE (open STATICFILE :direction :input) (make-concatenated-stream)))
         (with-open-file (OUTS SCNFILE :direction :output :if-exists :supersede)
-          (let (CL SCHEMA OBSERVATION)
+          (let (CL SCHEMA STATIC-FACT)
             (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE)))
                   (*read-eval* nil))
               (setq CL (parse
                         (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
                               collect SCHEMA)
-                        :observation-list
-                        (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
-                              collect OBSERVATION))))
+                        :static-list
+                        (loop while (not (eql 'EOF (setq STATIC-FACT (read OBS nil 'EOF))))
+                              collect STATIC-FACT))))
             (loop for C in CL do (format OUTS "~S~%" C))
             (loop for W in Weights do (format OUTS "~S~%" W))
             (loop for P in Probabilities do (format OUTS "~S~%" P))
@@ -297,25 +299,27 @@ or maxent.lisp)."
                 (format OS "~{~S~%~}" litdata)))))
    t))
 
-(defun solve (WFFFILE &key SOLNFILE OBSFILE)
+(defun solve (WFFFILE &key SOLNFILE STATICFILE OBSFILE)
+  ;; :obsfile is a deprecated synonym for :staticfile
+  (setq STATICFILE (or STATICFILE OBSFILE))
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
   (if (not SOLNFILE)
       (setq SOLNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".answer")))
-  (if (eq OBSFILE t)
-      (setq OBSFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
+  (if (eq STATICFILE t)
+      (setq STATICFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
   (with-clean-errors ("solving" WFFFILE)
-    (let (schemas observations SCHEMA OBSERVATION)
+    (let (schemas static-facts SCHEMA STATIC-FACT)
       (let ((*read-eval* nil))
         (with-open-file (INS WFFFILE :direction :input)
           (setq schemas (loop while (not (eql 'EOF (setq SCHEMA (read INS nil 'EOF))))
                               collect SCHEMA)))
-        (if OBSFILE
-            (with-open-file (OBS OBSFILE :direction :input)
-              (setq observations (loop while (not (eql 'EOF (setq OBSERVATION (read OBS nil 'EOF))))
-                                       collect OBSERVATION)))))
+        (if STATICFILE
+            (with-open-file (OBS STATICFILE :direction :input)
+              (setq static-facts (loop while (not (eql 'EOF (setq STATIC-FACT (read OBS nil 'EOF))))
+                                       collect STATIC-FACT)))))
       (let ((*current-wff-directory* (uiop:pathname-directory-pathname (truename WFFFILE))))
-        (multiple-value-bind (result model-or-bindings) (solve-schemas schemas :observations observations)
+        (multiple-value-bind (result model-or-bindings) (solve-schemas schemas :static-facts static-facts)
           (with-open-file (ANSWER SOLNFILE :direction :output :if-exists :supersede)
             (format ANSWER "~a~%" result)
             (dolist (e model-or-bindings) (format ANSWER "~a~%" e)))
@@ -557,15 +561,17 @@ or maxent.lisp)."
 ;;     'COUNTEREXAMPLE, model (theory + negated conclusion is satisfiable)
 ;;     'PROVEN, bindings      (theory entails conclusion; answer extraction succeeded)
 ;;     'NOANSWER, nil         (theory entails conclusion; answer extraction failed)
-(defun solve-schemas (schemas &key observations)
+(defun solve-schemas (schemas &key static-facts observations)
+  ;; :observations is a deprecated synonym for :static-facts
+  (setq static-facts (or static-facts observations))
   (multiple-value-bind (prove-form rest-of-wff) (pull-out-prove schemas)
     (cond ((null prove-form)
-            (test-scnf (parse schemas :observation-list observations)))
+            (test-scnf (parse schemas :static-list static-facts)))
           (t
             (let* ((vdlist (cadr prove-form))
                    (test (caddr prove-form))
                    (qbody (cadddr prove-form))
-                   (assumptions (parse rest-of-wff :observation-list observations))
+                   (assumptions (parse rest-of-wff :static-list static-facts))
                    (notfound (expand-var-domain-list vdlist)))
               ;; First check whether the theory plus the negation of the prove
               ;; conclusion is satisfiable.  If SAT, that model is a counterexample.
@@ -588,98 +594,99 @@ or maxent.lisp)."
 
 ; Global variables
 (defvar Bind)
-(defvar ObservedPredicates)
-(defvar ObservedLiterals)
-;; Inverted index over the asserted observed literals, used by collect to avoid
+(defvar StaticPredicates)
+(defvar StaticLiterals)
+;; Inverted index over the asserted static literals, used by collect to avoid
 ;; scanning every literal.  Keys: (predicate position value) -> list of literals
 ;; whose argument at POSITION equals VALUE, and (predicate :all) -> all literals
 ;; of PREDICATE.
-(defvar ObservedIndex)
+(defvar StaticIndex)
 (defvar Weights)
 (defvar Probabilities)
-;; When true, parse-formula treats observed predicates as plain literals to assert
-;; (used when processing observation form bodies so newly derived pairs get added).
-(defvar observation-body-mode nil)
+;; When true, parse-formula treats static predicates as plain literals to assert
+;; (used when processing static form bodies so newly derived pairs get added).
+(defvar static-body-mode nil)
 
 (defun setup-global-env ()
   ; Set up global environment
   (setq Bind (make-hash-table :test #'eql))
-  (setq ObservedPredicates (make-hash-table :test #'eql))
-  (setq ObservedLiterals (make-hash-table :test #'equal))
-  (setq ObservedIndex (make-hash-table :test #'equal))
+  (setq StaticPredicates (make-hash-table :test #'eql))
+  (setq StaticLiterals (make-hash-table :test #'equal))
+  (setq StaticIndex (make-hash-table :test #'equal))
   (setq Weights nil)
   (setq Probabilities nil)
   (clrhash *probability-gids*)
-  (setf (gethash 'TRUE ObservedPredicates) 1)
-  (setf (gethash 'TRUE ObservedLiterals) 1)
-  (setf (gethash 'FALSE ObservedPredicates) 1)
-  (setf (gethash 'FALSE ObservedLiterals) 0))
+  (setf (gethash 'TRUE StaticPredicates) 1)
+  (setf (gethash 'TRUE StaticLiterals) 1)
+  (setf (gethash 'FALSE StaticPredicates) 1)
+  (setf (gethash 'FALSE StaticLiterals) 0))
 
-(defun parse (SCHEMA-LIST &key OBSERVATION-LIST)
+(defun parse (SCHEMA-LIST &key STATIC-LIST OBSERVATION-LIST)
+  ;; :observation-list is a deprecated synonym for :static-list
   (setup-global-env)
-  (parse-same-env SCHEMA-LIST :observation-list OBSERVATION-LIST))
+  (parse-same-env SCHEMA-LIST :static-list (or STATIC-LIST OBSERVATION-LIST)))
 
-(defun parse-same-env (SCHEMA-LIST &key OBSERVATION-LIST)
-  (parse-observations OBSERVATION-LIST)
+(defun parse-same-env (SCHEMA-LIST &key STATIC-LIST OBSERVATION-LIST)
+  (parse-statics (or STATIC-LIST OBSERVATION-LIST))
   (assign-probability-gids SCHEMA-LIST)
   (mapcar #'(lambda (c) (cons 'or c))
     (remove-valid-clauses
      (parse-schema-list SCHEMA-LIST))))
 
-;; Global variables used by parse observations
-(defvar new-observation)
+;; Global variables used by parse statics
+(defvar new-static)
 
-;;; Simple observations (no quantifiers)
-;;; Note that it sets global new-observation
+;;; Simple static facts (no quantifiers)
+;;; Note that it sets global new-static
 ;;; Each clause must be a unit clause (not a disjuction).
 ;;; We allow a clause to be proposition (so not a list).
 
-(defun parse-unit-observations (OBSERVATION-LIST)
-  ;; OBSERVATION-LIST is a list of unit positive literals.  Each literal is
+(defun parse-unit-statics (STATIC-LIST)
+  ;; STATIC-LIST is a list of unit positive literals.  Each literal is
   ;; either an atom (a 0-ary predicate) or a list (predicate arg1 arg2 ...).
-  (cond ((null OBSERVATION-LIST) nil)
+  (cond ((null STATIC-LIST) nil)
         (t
          (setf (gethash
-                 (if (listp (car OBSERVATION-LIST))
-                     (caar OBSERVATION-LIST)
-                     (car OBSERVATION-LIST))
-                 ObservedPredicates)
+                 (if (listp (car STATIC-LIST))
+                     (caar STATIC-LIST)
+                     (car STATIC-LIST))
+                 StaticPredicates)
                1)
-         (let ((lit (car OBSERVATION-LIST)))
-           (when (not (gethash lit ObservedLiterals))
-             (setf (gethash lit ObservedLiterals) 1)
-             (setq new-observation t)
+         (let ((lit (car STATIC-LIST)))
+           (when (not (gethash lit StaticLiterals))
+             (setf (gethash lit StaticLiterals) 1)
+             (setq new-static t)
              ;; Add the newly asserted literal to the inverted index.
              (when (consp lit)
                (let ((pred (car lit)))
-                 (push lit (gethash (list pred :all) ObservedIndex))
+                 (push lit (gethash (list pred :all) StaticIndex))
                  (loop for arg in (cdr lit) for i from 1 do
-                   (push lit (gethash (list pred i arg) ObservedIndex)))))))
-         (parse-unit-observations (cdr OBSERVATION-LIST)))))
+                   (push lit (gethash (list pred i arg) StaticIndex)))))))
+         (parse-unit-statics (cdr STATIC-LIST)))))
 
-(defun parse-observations (OBSERVATION-LIST)
-  ;; Re-evaluate each observation form until no new literals are added,
-  ;; so that quantified observations whose tests depend on earlier
-  ;; observations are fully expanded.
+(defun parse-statics (STATIC-LIST)
+  ;; Re-evaluate each static form until no new literals are added,
+  ;; so that quantified static forms whose tests depend on earlier
+  ;; static facts are fully expanded.
   (loop do
-        (setq new-observation nil)
-        (parse-observation-list OBSERVATION-LIST)
-        while new-observation)
+        (setq new-static nil)
+        (parse-static-list STATIC-LIST)
+        while new-static)
   nil)
 
-(defun parse-observation-list (OBSERVATION-LIST)
-  (cond ((null OBSERVATION-LIST) nil)
-        (t (parse-observation-form (car OBSERVATION-LIST))
-           (parse-observation-list (cdr OBSERVATION-LIST)))))
+(defun parse-static-list (STATIC-LIST)
+  (cond ((null STATIC-LIST) nil)
+        (t (parse-static-form (car STATIC-LIST))
+           (parse-static-list (cdr STATIC-LIST)))))
 
-(defun parse-observation-form (FORM)
-  ;; Parse the form to a list of clauses.  The language restricts observation
+(defun parse-static-form (FORM)
+  ;; Parse the form to a list of clauses.  The language restricts static-form
   ;; bodies to and/all/if and positive literals, so each clause is a unit
   ;; positive literal; take the car of each clause to recover it.
-  ;; observation-body-mode prevents parse-formula from treating observed
+  ;; static-body-mode prevents parse-formula from treating static
   ;; predicates as truth-value checks so newly derived literals get asserted.
-  (let ((observation-body-mode t))
-    (parse-unit-observations (mapcar #'car (parse-schema FORM)))))
+  (let ((static-body-mode t))
+    (parse-unit-statics (mapcar #'car (parse-schema FORM)))))
 
 ;; Recursive version of remove-valid-clauses blew up recursion stack
 ;;
@@ -713,13 +720,14 @@ or maxent.lisp)."
 (defun parse-schema (SCHEMA)
   (cond ((atom SCHEMA)
          (trace-message "[TRACE] Formula: ~S~%" SCHEMA))
-        ((member (car SCHEMA) '(domain alias option observed include weight probability)) nil)
+        ((member (car SCHEMA) '(domain alias option static observed include weight probability)) nil)
         (t (trace-message "[TRACE] Formula: (~A ...)~%" (car SCHEMA))))
   (cond ((atom SCHEMA) (parse-formula SCHEMA))
         ((eql (car SCHEMA) 'domain) (parse-domain (cdr SCHEMA)))
         ((eql (car SCHEMA) 'alias) (parse-alias (cdr SCHEMA)))
         ((eql (car SCHEMA) 'option) (parse-option (cdr SCHEMA)))
-        ((eql (car SCHEMA) 'observed) (parse-observations (cdr SCHEMA)))
+        ;; observed is a deprecated synonym for static
+        ((member (car SCHEMA) '(static observed)) (parse-statics (cdr SCHEMA)))
         ((eql (car SCHEMA) 'include) (parse-include (cadr SCHEMA)))
         ((eql (car SCHEMA) 'weight) (parse-weight (cdr SCHEMA)))
         ((eql (car SCHEMA) 'probability) (parse-probability SCHEMA))
@@ -849,29 +857,29 @@ the tie-group id assigned to this source form by assign-probability-gids."
 (defun binding-of (VAR)
   (gethash VAR Bind))
 
-(defun is-observed-literal (F)
+(defun is-static-literal (F)
   (cond ((not (is-literal F)) nil)
         ((and (listp F) (eql (car F) 'not))
-          (is-observed-literal (cadr F)))
+          (is-static-literal (cadr F)))
         ((listp F)
-          (gethash (car F) ObservedPredicates))
+          (gethash (car F) StaticPredicates))
         (t
-          (gethash F ObservedPredicates))))
+          (gethash F StaticPredicates))))
 
-(defun parse-observed-literal (F)
-  ;; returns NIL if observed literal is true and (nil) if it is false
+(defun parse-static-literal (F)
+  ;; returns NIL if static literal is true and (nil) if it is false
   (cond ((and (listp F) (eql (car F) 'not))
-          (if (is-true (gethash (parse-literal (cadr F)) ObservedLiterals 0))
+          (if (is-true (gethash (parse-literal (cadr F)) StaticLiterals 0))
               '(())
               '()))
         (t
-          (if (is-true (gethash (parse-literal F) ObservedLiterals 0))
+          (if (is-true (gethash (parse-literal F) StaticLiterals 0))
               '()
               '(())))))
 
 (defun parse-formula (F)
   ;; (format t "entering parse ~S" F)
-  (cond ((and (not observation-body-mode) (is-observed-literal F)) (parse-observed-literal F))
+  (cond ((and (not static-body-mode) (is-static-literal F)) (parse-static-literal F))
         ((is-literal F) (list (list (parse-literal F))))
         ((eql (car F) 'not) (parse-not (cadr F)))
         ((eql (car F) 'and) (parse-and (cdr F)))
@@ -1055,8 +1063,8 @@ the tie-group id assigned to this source form by assign-probability-gids."
     (t :fail)))
 
 (defun collect-candidates (PRED VAR pat-args)
-  "Candidate observed literals for a (collect VAR (PRED . pat-args)) form,
-narrowed via ObservedIndex.  If some pattern position is a definite constraint
+  "Candidate static literals for a (collect VAR (PRED . pat-args)) form,
+narrowed via StaticIndex.  If some pattern position is a definite constraint
 -- an atom other than VAR or * -- look up the (PRED position value) bucket for
 the first such position; otherwise return all literals of PRED.  Every literal
 that can actually match is in the returned list (the caller still verifies the
@@ -1064,15 +1072,15 @@ full pattern), so this never drops a valid match."
   (loop for pat in pat-args and i from 1 do
     (when (and (atom pat) (not (eq pat VAR)) (not (eq pat '*)))
       (return-from collect-candidates
-        (gethash (list PRED i (parse-term pat)) ObservedIndex))))
-  (gethash (list PRED :all) ObservedIndex))
+        (gethash (list PRED i (parse-term pat)) StaticIndex))))
+  (gethash (list PRED :all) StaticIndex))
 
 (defun parse-collect (VAR PATTERN)
   ;; (collect VAR (pred pat+))
-  ;; Iterates over the true observed literals matching PATTERN and returns the
+  ;; Iterates over the true static literals matching PATTERN and returns the
   ;; set of ground terms that VAR binds to.  Both VAR and * are wildcards;
   ;; other atoms/compounds are evaluated as terms and compared exactly.
-  ;; Candidate literals come from ObservedIndex rather than a full scan.
+  ;; Candidate literals come from StaticIndex rather than a full scan.
   (let ((pred (parse-name (car PATTERN)))
         (pat-args (cdr PATTERN))
         (results nil))
@@ -1215,8 +1223,8 @@ bound.  Referencing a bound domain symbol returns the stored list verbatim."
                                              (cadddr EXPR) (car (cddddr EXPR))))
                    ((eql op 'collect) (parse-collect (cadr EXPR) (caddr EXPR)))
                    ((eql op 'alldiff) (all-different (mapcar #'parse-expression (cdr EXPR))))
-                   ((gethash op ObservedPredicates)
-                     (parse-observed-literal-expression EXPR))
+                   ((gethash op StaticPredicates)
+                     (parse-static-literal-expression EXPR))
                    ((eql op 'lisp)
                      (evaluate-lisp-expression (cadr EXPR)))
                    ((and (member op binary-functions) (= (length EXPR) 3))
@@ -1260,11 +1268,11 @@ bound.  Referencing a bound domain symbol returns the stored list verbatim."
     (cond ((> low high) nil)
           (t (cons low (parse-range (1+ low) high))))))
 
-(defun parse-observed-literal-expression (EXPR)
+(defun parse-static-literal-expression (EXPR)
   (let* ((name (car EXPR))
          (args (map 'list #'parse-expression (cdr EXPR)))
          (key (if (null args) name (cons name args))))
-    (gethash key ObservedLiterals 0)))
+    (gethash key StaticLiterals 0)))
 
 (defun parse-enumerated-set (EXPR)
   (cond ((null EXPR) nil)

@@ -30,16 +30,16 @@
 (domain truck (set pgh-truck bos-truck la-truck))
 (domain vehicle (set airplane1 airplane2 pgh-truck bos-truck la-truck))
 
-;; Static predicates (never added or deleted): observed,
-;; with all positive instances from the initial state.  The
-;; dummy facts only register each predicate as observed.
-(observed (in-city pddl2fifo-static-dummy pddl2fifo-static-dummy)
+;; Static predicates (never added or deleted), with all
+;; positive instances from the initial state.  The dummy
+;; facts only register each predicate as static.
+(static (in-city pddl2fifo-static-dummy pddl2fifo-static-dummy)
  (in-city pgh-po pgh) (in-city pgh-airport pgh) (in-city pgh-central pgh)
  (in-city bos-po bos) (in-city bos-airport bos) (in-city bos-central bos)
  (in-city la-po la) (in-city la-airport la) (in-city la-central la))
 
 ;; Action preconditions, effects, and costs
-(observed
+(static
  (all obj package true
   (all truck-v truck true
    (all loc location true
@@ -99,7 +99,7 @@
 (domain goal-state
  (set (at package1 bos-po) (at package2 la-po) (at package3 bos-po)))
 
-;; Domains derived from the observed action schemas
+;; Domains derived from the static action schemas
 (domain actions
  (union (collect a (pre a *))
         (union (collect a (add a *)) (collect a (del a *)))))

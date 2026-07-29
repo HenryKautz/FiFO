@@ -8,7 +8,7 @@
 ;; that city is its own type rather than a subtype of location.  Nothing is ever
 ;; "at" a city or driven to a city, so making cities locations only bloated the
 ;; FiFO location domain.  pddl2fifo also compiles in-city (a static predicate --
-;; never added or deleted) into an observed predicate, so invalid drives are
+;; never added or deleted) into a FiFO static predicate, so invalid drives are
 ;; pruned at instantiation.  Together these shrink the multi-city instances by
 ;; one to two orders of magnitude.
 ;;

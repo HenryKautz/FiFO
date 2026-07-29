@@ -2,7 +2,7 @@
 
 Part of the [FiFO documentation](../README.md).
 
-Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's observed predicates and quantified formulas make the encoding concise and readable.
+Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's static predicates and quantified formulas make the encoding concise and readable.
 
 ### Representation
 
@@ -13,7 +13,7 @@ A planning problem consists of:
 - **Initial state** — the set of fluents that are true at time 1 (all others are false)
 - **Goal state** — a set of fluents that must be true at the final time step
 
-Action schemas are described using four PDDL-style observed predicates:
+Action schemas are described using four PDDL-style static predicates:
 
 | Predicate | Meaning |
 |-----------|---------|
@@ -38,11 +38,11 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
 ;; Domain Independent SatPlan axioms
 ;; Parallel Execution Semantics
 
-;; Register all observed predicates used in tests below, so that they are
+;; Register all static predicates used in tests below, so that they are
 ;; recognized even when a problem asserts no facts for some of them.
 ;; The dummy constants never appear in any actions/fluents/costs domain,
 ;; so these facts generate no clauses.
-(observed
+(static
    (Pre dummy-action dummy-fluent)
    (PreNeg dummy-action dummy-fluent)
    (Add dummy-action dummy-fluent)
@@ -124,7 +124,7 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
    (Holds f numslices))
 ```
 
-The `observed` block at the top registers the five observed predicates so that the quantified tests below parse even when a problem asserts no facts for some of them (for example, a problem with no negative preconditions or no action costs). The dummy constants never appear in any domain, so the registration generates no clauses.
+The `static` block at the top registers the five static predicates so that the quantified tests below parse even when a problem asserts no facts for some of them (for example, a problem with no negative preconditions or no action costs). The dummy constants never appear in any domain, so the registration generates no clauses.
 
 The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other, or if one adds a negative precondition of the other.
 
@@ -160,7 +160,7 @@ The bundled examples under `SatPlan/Examples/` are written in PDDL and translate
   (:goal (and (at pkg1 a2) (at pkg2 a1))))
 ```
 
-`pddl2fifo` turns this into exactly the FiFO encoding described above: an `observed` block of `Pre`/`Add`/`Del`/`Cost` facts for each ground action, the `actions`/`fluents`/`costs` domains derived from those facts with `collect`, the `initial-state` and `goal-state` domains, and a trailing `(include "satplan.wff")`. Because `Pre`, `Add`, `Del`, and `Cost` are observed predicates, the axioms use them as tests in quantified filters (e.g. `(all flu fluents (Pre act flu) ...)`), generating clauses only for relevant fluent–action pairs.
+`pddl2fifo` turns this into exactly the FiFO encoding described above: a `static` block of `Pre`/`Add`/`Del`/`Cost` facts for each ground action, the `actions`/`fluents`/`costs` domains derived from those facts with `collect`, the `initial-state` and `goal-state` domains, and a trailing `(include "satplan.wff")`. Because `Pre`, `Add`, `Del`, and `Cost` are static predicates, the axioms use them as tests in quantified filters (e.g. `(all flu fluents (Pre act flu) ...)`), generating clauses only for relevant fluent–action pairs.
 
 The optimal plan runs the two deliveries in lockstep over five parallel action slices (drive → unload-truck → load-airplane → fly → unload-airplane), so it solves at a horizon of six time slices.
 
@@ -315,12 +315,12 @@ If the domain file is not given, the root of its file name is taken from the `(:
 
 The translation is written to `<problem-root>.wff` in the directory of the problem file. The output:
 
-- Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `observed` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
-- Derives the `actions`, `fluents`, and `costs` domains from the observed facts using `collect`.
+- Defines a universal `objects` domain plus one FiFO domain per PDDL type. A type's domain contains the objects declared with that type or any of its subtypes, following the `(:types ...)` hierarchy; objects and parameters left untyped fall back to `objects`. Each PDDL action schema is translated into a quantified `static` formula asserting `Pre`, `Add`, `Del`, and `Cost` facts, with each parameter quantified over its type's domain.
+- Derives the `actions`, `fluents`, and `costs` domains from the static facts using `collect`.
 - Emits the time horizon as `(alias numslices (lisp ...))`, which evaluates to the Lisp variable `*satplan-numslices*` when it is bound to an integer and otherwise to `2`. Set the horizon without editing the output by binding `*satplan-numslices*` — e.g. `(setq *satplan-numslices* 10)` on the command line before `solve`/`instantiate`, or `(option *satplan-numslices* 10)` ahead of the alias — or edit the alias line directly.
 - Ends with `(include "satplan.wff")` (or whatever `:satplan-path` was given), so the SatPlan axiom file must be reachable from the directory containing the output file.
 
-Negative preconditions are translated into `PreNeg` observed facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
+Negative preconditions are translated into `PreNeg` static facts, which the axioms in `satplan.wff` handle directly. Negative goals produce a `negative-goal-state` domain together with an axiom asserting those fluents are false at the final time slice.
 
 `pddl2fifo` also runs a relaxed planning-graph reachability analysis on the problem and returns, as a second value, a lower bound on the number of time slices a plan needs (or `:unreachable` if the goals cannot be reached even in the relaxation). The planner uses this to choose its default horizon range; see *Running the planner* below.
 

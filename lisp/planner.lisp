@@ -7,7 +7,7 @@
 ;;;;
 ;;;; The driver calls FiFO's file-based API (instantiate / propositionalize /
 ;;;; satisfy / interpret) repeatedly in one Lisp image.  The parse-level globals
-;;;; (Bind, ObservedPredicates, ObservedLiterals, Weights) are reset by
+;;;; (Bind, StaticPredicates, StaticLiterals, Weights) are reset by
 ;;;; setup-global-env, which parse -- and therefore instantiate -- calls on every
 ;;;; iteration, so no parse state leaks between horizons.  The only globals that
 ;;;; persist are the option variables, and the loop sets the three it depends on
