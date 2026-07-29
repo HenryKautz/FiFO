@@ -178,30 +178,6 @@ The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL 
 
 The two forms are equivalent; giving both on the same action is an error. The cost must be a constant number (a cost that varies with the action's parameters is not supported by either form).
 
-#### Learning costs and weights from probabilities
-
-Anywhere a cost or weight is specified, you can instead give a **`:probability <p>`** (with `0 < p < 1`) — the learnable alternative. The probability flows into the wff as a target marginal, is **tied** so related ground instances share one weight, and is learned by the weight pipeline. The three places, and what each becomes in the *learned* copy:
-
-| Spec (in PDDL) | Where | `:probability` means | Tied | Becomes |
-|---|---|---|---|---|
-| action `:probability p` | domain | P(the action occurs, per slice) | per action schema | action `:cost w` |
-| `(preference n body :probability p)` | instance (in `:goal`/`:constraints`) | P(the preference is **satisfied**) | per preference | `(preference n body w)` |
-| `(:fluent-cost lit :probability p)` | instance | P(the fluent holds, per slice) | per fluent | `(:fluent-cost lit w)` |
-
-A cost/weight and a probability are alternatives for the same spec (not both at once); existing fixed costs/weights are left untouched. Learned weights may be **negative** (a signed cost — when the target probability favors the penalized state), which the forms now accept.
-
-`bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write `<domain>_learned.pddl` and/or `<problem>_learned.pddl` (whichever carried probabilities) with each `:probability` replaced by the learned value. For example:
-
-```lisp
-(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :probability 0.7)
-;; after `learn-pddl.sh prob.pddl --domain dom.pddl`:
-(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :cost -85)
-```
-
-Run `learn-pddl.sh --help` for all options. With `--maxent` the problem must be feasible at the chosen `--numslices`; log-odds is horizon-independent.
-
-With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
-
 #### Trajectory constraints
 
 With `:constraints`, the problem may carry a `(:constraints ...)` section of hard state-trajectory constraints over the plan's slice timeline (slice 1 is the initial state, `numslices` the final state). The contents are a single modal formula or an `and` of them. Four operators are supported:
@@ -326,7 +302,39 @@ Negative preconditions are translated into `PreNeg` static facts, which the axio
 
 Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs. The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` is a logistics task using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`).
 
-### Running the planner
+### Learning and Inference
+
+We now describe our pipelines for 
+
+- Computing costs and weights from probabilities
+- Cost-optimal planning and maximum likelihood plan recognition
+- Computing marginal probabilities from a planning domain together with evidence
+
+#### Computing costs and weights from probabilities
+
+Anywhere a cost or weight is specified, you can instead give a **`:probability <p>`** (with `0 < p < 1`) — the learnable alternative. The probability flows into the wff as a target marginal, is **tied** so related ground instances share one weight, and is learned by the weight pipeline. The three places, and what each becomes in the *learned* copy:
+
+| Spec (in PDDL)                       | Where                                | `:probability` means               | Tied              | Becomes                 |
+| ------------------------------------ | ------------------------------------ | ---------------------------------- | ----------------- | ----------------------- |
+| action `:probability p`              | domain                               | P(the action occurs, per slice)    | per action schema | action `:cost w`        |
+| `(preference n body :probability p)` | instance (in `:goal`/`:constraints`) | P(the preference is **satisfied**) | per preference    | `(preference n body w)` |
+| `(:fluent-cost lit :probability p)`  | instance                             | P(the fluent holds, per slice)     | per fluent        | `(:fluent-cost lit w)`  |
+
+A cost/weight and a probability are alternatives for the same spec (not both at once); existing fixed costs/weights are left untouched. Learned weights may be **negative** (a signed cost — when the target probability favors the penalized state), which the forms now accept.
+
+`bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write `<domain>_learned.pddl` and/or `<problem>_learned.pddl` (whichever carried probabilities) with each `:probability` replaced by the learned value. For example:
+
+```lisp
+(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :probability 0.7)
+;; after `learn-pddl.sh prob.pddl --domain dom.pddl`:
+(:action turn-on :parameters (?x) :precondition (not (on ?x)) :effect (on ?x) :cost -85)
+```
+
+Run `learn-pddl.sh --help` for all options. With `--maxent` the problem must be feasible at the chosen `--numslices`; log-odds is horizon-independent.
+
+With `:disjunctive-preconditions`, the problem `:goal` may be a general goal description built from `and`, `or`, `not`, and `imply` over the goal atoms, not just a conjunction of literals. For example `(:goal (or (at pkg1 a2) (at pkg1 l1)))` is satisfied by a plan that achieves either disjunct. The reachability lower bound used to default `minslices` is weakened to stay admissible for disjunctive goals (it requires only the cheapest disjunct to be reachable). Note that even though `:disjunctive-preconditions` is accepted, only disjunctions in the goal are supported: a disjunctive or quantified precondition on an `:action` is rejected with an error.
+
+#### Running the planner
 
 `bin/planner.sh` is an end-to-end driver. It translates a PDDL problem with `pddl2fifo` (or takes a `.wff` directly), then **searches for the smallest workable time horizon** and solves at it. At each horizon it instantiates the problem and tests feasibility with a pure SAT solver; if the domain has action costs, it then re-solves the smallest feasible horizon with a weighted (MaxSAT) solver to minimize total cost. The two solvers are configured at the top of the script (`kissat` and `tt-open-wbo-inc-Glucose4_1` by default).
 
@@ -349,7 +357,7 @@ After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem
 
 `--longer K` trades plan length for cost. By default the planner minimizes cost only at the smallest feasible horizon *s*; with `--longer K` it instead minimizes cost at each horizon *s* … *s+K* and returns the **cheapest** plan found across that range — useful because a longer horizon can admit a lower-cost plan (e.g. a cheap sequence of actions in place of one expensive parallel step). Costs at different horizons are compared as true plan costs (the MaxSAT objective, corrected by the weight scale/offset when weights were shifted, as with negative learned costs). `--longer` has no effect on a domain without action costs (every feasible plan then has cost 0). For example, `bin/planner.sh prob.pddl --longer 3` reports the cost at each of *s* … *s+3* slices and keeps the lowest.
 
-#### Conditioning on evidence, and marginal inference
+#### Conditioning on evidence and marginal inference
 
 `--evidence '<formula>'` (repeatable) and `--evidence-file <file>` **condition** the problem on a FiFO formula. Unlike the `.scnf`-level evidence of `marginals.sh`/`wmc.sh` (which must be ground), here the formula may be **quantified over the problem's domains** — e.g. `--evidence '(all (s) actslices true (not (occurs (turn-on s1) s)))'` — because the planner instantiates it through the full pipeline. At each working horizon the evidence is parsed **in the same environment as the problem**, so its quantifiers ground over the same `slices`/`objects`/… domains at that horizon, and the resulting hard clauses are written to a **separate** `<root>-evidence.scnf`. That file is then concatenated with the problem `.scnf` and handed downstream — so without `--marginals`, the planner searches for the smallest-horizon, lowest-cost plan **that also satisfies the evidence** (the evidence is a hard constraint). For instance, forbidding an action the shortest plan relies on can push the solution to a longer horizon that routes around it.
 
