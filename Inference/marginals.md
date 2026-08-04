@@ -308,3 +308,16 @@ For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.
 - [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline: target marginal probabilities → integer literal weights (the inverse direction of inference).
 - [../Learning/learning-background.md](../Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
 - [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner, which lifts conditioning and marginal inference to PDDL (`--evidence`/`--pddl-evidence`, `--marginals`), with an end-to-end worked example.
+
+### References
+
+- **The MLN probability model** (hard clauses + weighted atoms as a log-linear distribution) — M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
+- **MC-SAT** (Method 2) — H. Poon & P. Domingos (2006). Sound and efficient inference with probabilistic and deterministic dependencies. *AAAI-06*, pp. 458–463.
+- **Probabilistic inference by weighted model counting** (Method 3) — T. Sang, P. Beame & H. Kautz (2005). Performing Bayesian inference by weighted model counting. *AAAI-05*, pp. 475–482; M. Chavira & A. Darwiche (2008). On probabilistic inference by weighted model counting. *Artificial Intelligence* 172(6–7):772–799.
+- **ADDMC** — J. M. Dudek, V. H. N. Phan & M. Y. Vardi (2020). ADDMC: Weighted model counting with algebraic decision diagrams. *AAAI-20*, pp. 1468–1476. ADDs themselves: R. I. Bahar, E. A. Frohm, C. M. Gaona, G. D. Hachtel, E. Macii, A. Pardo & F. Somenzi (1997). Algebraic decision diagrams and their applications. *Formal Methods in System Design* 10(2–3):171–206.
+- **d-DNNF and the knowledge compilation map** — A. Darwiche (2001). Decomposable negation normal form. *Journal of the ACM* 48(4):608–647; A. Darwiche & P. Marquis (2002). A knowledge compilation map. *Journal of Artificial Intelligence Research* 17:229–264.
+- **Two-pass circuit evaluation for all marginals** (the `ddnnf-marginals` scheme) — A. Darwiche (2003). A differential approach to inference in Bayesian networks. *Journal of the ACM* 50(3):280–305.
+- **Compiling by tracing an exhaustive DPLL search** (the design of FiFO's own compiler: decisions → OR, disjoint components → AND, component cache → DAG) — J. Huang & A. Darwiche (2005). DPLL with a trace: From SAT to knowledge compilation. *IJCAI-05*, pp. 156–162.
+- **Component caching for model counting** — T. Sang, F. Bacchus, P. Beame, H. Kautz & T. Pitassi (2004). Combining component caching and clause learning for effective model counting. *SAT 2004*; M. Thurley (2006). sharpSAT — counting models with advanced component caching and implicit BCP. *SAT 2006*, LNCS 4121, pp. 424–429.
+- **The d4 compiler** (`--solver d4`) — J.-M. Lagniez & P. Marquis (2017). An improved decision-DNNF compiler. *IJCAI-17*, pp. 667–673.
+- **The MCC weighted-CNF format** — J. K. Fichte, M. Hecher & F. Hamiti (2021). The model counting competition 2020. *ACM Journal of Experimental Algorithmics* 26:1–26.

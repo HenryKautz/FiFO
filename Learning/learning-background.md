@@ -326,3 +326,26 @@ half that defines the problem.
 - [learning.md](learning.md) — the implemented weight-learning pipeline (`learn.sh` / `learn-pddl.sh`) that puts this theory into practice.
 - [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting (the counting half referenced throughout this document).
 - [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner and PDDL translation, which consume the learned action/preference weights.
+
+## References
+
+Full citations for the works named in §12 (Provenance / related work):
+
+- M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
+- J. Besag (1975). Statistical analysis of non-lattice data. *The Statistician* 24(3):179–195. (Pseudo-likelihood.)
+- P. Singla & P. Domingos (2005). Discriminative training of Markov logic networks. *AAAI-05*, pp. 868–873.
+- T. Huynh & R. Mooney (2009). Max-margin weight learning for Markov logic networks. *ECML PKDD 2009*, LNCS 5781, pp. 564–579.
+- S. Riedel (2008). Improving the accuracy and efficiency of MAP inference for Markov logic. *UAI 2008*, pp. 468–475.
+- J. Noessner, M. Niepert & H. Stuckenschmidt (2013). RockIt: Exploiting parallelism and symmetry for MAP inference in statistical relational models. *AAAI-13*.
+- N. Ratliff, J. A. Bagnell & M. Zinkevich (2006). Maximum margin planning. *ICML 2006*, pp. 729–736.
+- B. D. Ziebart, A. Maas, J. A. Bagnell & A. K. Dey (2008). Maximum entropy inverse reinforcement learning. *AAAI-08*, pp. 1433–1438.
+- A. Y. Ng & S. Russell (2000). Algorithms for inverse reinforcement learning. *ICML 2000*, pp. 663–670.
+- C.-N. J. Yu & T. Joachims (2009). Learning structural SVMs with latent variables. *ICML 2009*.
+- S. Della Pietra, V. Della Pietra & J. Lafferty (1997). Inducing features of random fields. *IEEE Transactions on Pattern Analysis and Machine Intelligence* 19(4):380–393.
+- G. Druck, G. Mann & A. McCallum (2008). Learning from labeled features using generalized expectation criteria. *SIGIR 2008*, pp. 595–602.
+- G. Mann & A. McCallum (2010). Generalized expectation criteria for semi-supervised learning with weakly labeled data. *Journal of Machine Learning Research* 11:955–984.
+- P. Liang, M. I. Jordan & D. Klein (2009). Learning from measurements in exponential families. *ICML 2009*.
+- K. Ganchev, J. Graça, J. Gillenwater & B. Taskar (2010). Posterior regularization for structured latent variable models. *Journal of Machine Learning Research* 11:2001–2049.
+- M. Jaeger & O. Schulte (2018). Inference, learning, and population size: Projectivity for SRL models. *Eighth International Workshop on Statistical Relational AI (StarAI)*, arXiv:1807.00564.
+- D. Poole, D. Buchman, S. M. Kazemi, K. Kersting & S. Natarajan (2014). Population size extrapolation in relational probabilistic modelling. *SUM 2014*, LNCS 8720, pp. 292–305.
+- O. Kuželka (2021). Weighted first-order model counting in the two-variable fragment with counting quantifiers. *Journal of Artificial Intelligence Research* 70:1281–1307.

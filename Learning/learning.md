@@ -226,3 +226,21 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
   weighted theory (the inverse direction of learning: weights → marginals).
 - [../SatPlan/satplan.md](../SatPlan/satplan.md) — the SatPlan planner and PDDL
   translation, which consume the learned action/preference weights and probabilities.
+
+## References
+
+- **Maximum-entropy fitting of log-linear models** (the `--maxent` estimator: convex
+  log Z + θ·τ objective, moment matching at the optimum) — S. Della Pietra,
+  V. Della Pietra & J. Lafferty (1997). Inducing features of random fields.
+  *IEEE Transactions on Pattern Analysis and Machine Intelligence* 19(4):380–393.
+- **Numerical optimization for MaxEnt** (why gradient/Newton updates, as in the
+  damped diagonal-Newton fit, beat iterative scaling) — R. Malouf (2002).
+  A comparison of algorithms for maximum entropy parameter estimation.
+  *CoNLL-2002*, pp. 49–55.
+- **Tied weights over ground instances of a first-order source** (tie groups; weights
+  as log-odds when clauses decouple) — M. Richardson & P. Domingos (2006).
+  Markov logic networks. *Machine Learning* 62(1–2):107–136.
+- **Weighted partial MaxSAT / WCNF** (the downstream solver format the learned
+  integer weights feed) — F. Bacchus, M. Järvisalo & R. Martins (2021). Maximum
+  satisfiability. In *Handbook of Satisfiability*, 2nd ed., IOS Press, ch. 24,
+  pp. 929–991.

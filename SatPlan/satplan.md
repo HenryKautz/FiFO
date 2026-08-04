@@ -467,3 +467,17 @@ The reachability lower bound (from `pddl2fifo`'s relaxed planning-graph analysis
 - [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline that turns target probabilities into the action/preference weights this planner consumes.
 - [../Learning/learning-background.md](../Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
 - [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting, the back ends behind `planner.sh --marginals`.
+
+### References
+
+- **Planning as satisfiability** — H. Kautz & B. Selman (1992). Planning as satisfiability. *ECAI-92*, pp. 359–363.
+- **Parallel encodings, mutexes, and explanatory frame axioms in SAT planning** — H. Kautz & B. Selman (1996). Pushing the envelope: Planning, propositional logic, and stochastic search. *AAAI-96*, pp. 1194–1201.
+- **Combining planning-graph reachability with SAT** (the pattern behind the relaxed reachability bound feeding the horizon search) — H. Kautz & B. Selman (1999). Unifying SAT-based and graph-based planning. *IJCAI-99*, pp. 318–325.
+- **The SatPlan system** — H. Kautz, B. Selman & J. Hoffmann (2006). SatPlan: Planning as satisfiability. In *Abstracts of the 5th International Planning Competition*.
+- **Planning graphs and mutual exclusion** — A. Blum & M. Furst (1997). Fast planning through planning graph analysis. *Artificial Intelligence* 90(1–2):281–300.
+- **Delete-relaxation reachability** (the `reachable-min-slices` lower bound ignores delete effects) — J. Hoffmann & B. Nebel (2001). The FF planning system: Fast plan generation through heuristic search. *Journal of Artificial Intelligence Research* 14:253–302.
+- **Explanatory frame axioms** — A. Haas (1987). The case for domain-specific frame axioms. In F. Brown (ed.), *The Frame Problem in Artificial Intelligence: Proc. of the 1987 Workshop*; L. Schubert (1990). Monotonic solution of the frame problem in the situation calculus. In *Knowledge Representation and Defeasible Reasoning*, Kluwer, pp. 23–67.
+- **PDDL** — D. McDermott, M. Ghallab, A. Howe, C. Knoblock, A. Ram, M. Veloso, D. Weld & D. Wilkins (1998). PDDL — The Planning Domain Definition Language. Tech. Rep. CVC TR-98-003 / DCS TR-1165, Yale University.
+- **PDDL 3.0: trajectory constraints and preferences** — A. Gerevini & D. Long (2005). Plan constraints and preferences in PDDL3. Tech. Rep. RT 2005-08-47, Università degli Studi di Brescia; A. Gerevini, P. Haslum, D. Long, A. Saetti & Y. Dimopoulos (2009). Deterministic planning in the fifth international planning competition: PDDL3 and experimental evaluation of the planners. *Artificial Intelligence* 173(5–6):619–668.
+- **Anytime weighted MaxSAT** (the cost-minimization step; TT-Open-WBO-Inc) — A. Nadel (2019). Anytime weighted MaxSAT with improved polarity selection and bit-vector optimization. *FMCAD 2019*, pp. 193–202.
+- **Plan recognition via planners** (the conditioning / maximum-likelihood plan-recognition tier) — M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*.

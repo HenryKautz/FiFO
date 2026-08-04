@@ -864,3 +864,13 @@ So FiFO formulas and schemas should be built as nested **tuples**, with bare str
 - [Learning/learning-background.md](Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
 - [Inference/marginals.md](Inference/marginals.md) — marginal inference: computing the probability of every atom under a weighted theory.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
+
+## References
+
+- **Tseitin encoding** (the default CNF conversion; `option compact-encoding` disables it) — G. S. Tseitin (1968). On the complexity of derivation in the propositional calculus. In A. O. Slisenko (ed.), *Studies in Constructive Mathematics and Mathematical Logic, Part II*, pp. 115–125 (English translation: Consultants Bureau, 1970).
+- **Kissat** (the default SAT solver) — A. Biere, K. Fazekas, M. Fleury & M. Heisinger (2020). CaDiCaL, Kissat, Paracooba, Plingeling and Treengeling entering the SAT Competition 2020. In *Proc. of SAT Competition 2020 — Solver and Benchmark Descriptions*, University of Helsinki, pp. 51–53.
+- **TT-Open-WBO-Inc** (the default MaxSAT solver for weighted problems) — A. Nadel (2019). Anytime weighted MaxSAT with improved polarity selection and bit-vector optimization. *FMCAD 2019*, pp. 193–202. Built on Open-WBO: R. Martins, V. Manquinho & I. Lynce (2014). Open-WBO: A modular MaxSAT solver. *SAT 2014*, LNCS 8561, pp. 438–445.
+- **Weighted partial MaxSAT and the WCNF format** — F. Bacchus, M. Järvisalo & R. Martins (2021). Maximum satisfiability. In *Handbook of Satisfiability*, 2nd ed., IOS Press, ch. 24, pp. 929–991.
+- **Weighted literals as a log-linear model** (the `weight`/`probability` semantics) — M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
+- **Probabilistic inference by weighted model counting** (`wmc.sh`, `marginals.sh`) — T. Sang, P. Beame & H. Kautz (2005). Performing Bayesian inference by weighted model counting. *AAAI-05*, pp. 475–482; M. Chavira & A. Darwiche (2008). On probabilistic inference by weighted model counting. *Artificial Intelligence* 172(6–7):772–799.
+- **ADDMC** (the external weighted model counter) — J. M. Dudek, V. H. N. Phan & M. Y. Vardi (2020). ADDMC: Weighted model counting with algebraic decision diagrams. *AAAI-20*, pp. 1468–1476.
