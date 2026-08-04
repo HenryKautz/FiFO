@@ -5,6 +5,15 @@
 ;;;;   :typing                  typed parameters, objects, constants, and
 ;;;;                            (:types ...) hierarchies
 ;;;;   :negative-preconditions  (not <atom>) in action preconditions and goals
+;;;;   :quantified-preconditions  (forall ...) / (exists ...) in the problem
+;;;;                            :goal, :constraints, and preference bodies
+;;;;                            (NOT in action preconditions); also accepted
+;;;;                            as :universal-/:existential-preconditions
+;;;;   :constraints             trajectory constraints in the PDDL 3.0 con-GD
+;;;;                            grammar: (and ...) and (forall ...) over the
+;;;;                            modals always / at-end / hold-during /
+;;;;                            occur-sometime, whose bodies are full goal
+;;;;                            descriptions (and/or/not/imply/forall/exists)
 ;;;;   :action-costs            simple static costs only, i.e. effects of the
 ;;;;                            form (increase (total-cost) <number>)
 ;;;;
@@ -30,6 +39,7 @@
 
 (defparameter *supported-requirements*
   '(:strips :typing :negative-preconditions :disjunctive-preconditions
+    :universal-preconditions :existential-preconditions :quantified-preconditions
     :constraints :preferences :action-costs))
 
 (defparameter *reserved-domain-names*
@@ -37,6 +47,11 @@
     "INITIAL-STATE" "GOAL-STATE" "NEGATIVE-GOAL-STATE" "GOAL-FLUENTS"
     "CONSTRAINT-FLUENTS" "PREF-FLUENTS" "FLUENTCOST-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
+
+(defparameter *reserved-formula-variables* '(s)
+  "Variables the translator itself emits inside quantified formula bodies (the
+slice variable of trajectory constraints and action probabilities); PDDL
+quantifier and parameter variables are renamed away from these.")
 
 (defparameter *static-dummy* 'pddl2fifo-static-dummy
   "A constant that appears in no object/type domain, used to register a static
@@ -173,6 +188,9 @@ type is QUERY-TYPE or one of its subtypes."
 (defun negation-p (form)
   (and (consp form) (sym-name= (first form) "NOT")))
 
+(defun preference-p (x)
+  (and (consp x) (sym-name= (first x) "PREFERENCE")))
+
 (defun pddl-variable-p (x)
   (and (symbolp x)
        (plusp (length (symbol-name x)))
@@ -186,14 +204,39 @@ type is QUERY-TYPE or one of its subtypes."
           do (setq name (concatenate 'string name "-V")))
     (intern (string-upcase name))))
 
-(defun substitute-terms (form bindings action-name)
+(defun substitute-terms (form bindings context)
+  "Replace each PDDL ?variable in FORM by its FiFO variable from the BINDINGS
+alist; CONTEXT is a string naming the enclosing construct for error messages."
   (cond ((consp form)
-         (cons (substitute-terms (car form) bindings action-name)
-               (substitute-terms (cdr form) bindings action-name)))
+         (cons (substitute-terms (car form) bindings context)
+               (substitute-terms (cdr form) bindings context)))
         ((pddl-variable-p form)
          (or (cdr (assoc form bindings))
-             (error "Variable ~s in action ~a is not a parameter" form action-name)))
+             (error "Variable ~s in ~a is not bound by a parameter or quantifier"
+                    form context)))
         (t form)))
+
+(defun parse-quantifier-pairs (spec context)
+  "Parse and validate the typed variable list of a PDDL (forall ...) / (exists ...):
+each variable must be a ?variable and each type a symbol or (either ...)."
+  (let ((pairs (parse-typed-list spec context)))
+    (dolist (p pairs pairs)
+      (unless (pddl-variable-p (car p))
+        (error "Quantified variable ~s in ~a is not a ?variable" (car p) context))
+      (unless (or (symbolp (cdr p)) (either-type-p (cdr p)))
+        (error "Unsupported type ~s for quantified variable ~s in ~a"
+               (cdr p) (car p) context)))))
+
+(defun translate-quantified (head pairs bindings forbidden body-fn)
+  "Wrap nested HEAD ('all or 'exists) quantifiers, one per (?var . type) pair,
+and call BODY-FN with the extended bindings and forbidden list innermost."
+  (if (null pairs)
+      (funcall body-fn bindings forbidden)
+      (destructuring-bind ((var . type) . rest) pairs
+        (let ((fv (fifo-variable var forbidden)))
+          (list head fv (type-set-expression type) 'true
+                (translate-quantified head rest (acons var fv bindings)
+                                      (cons fv forbidden) body-fn))))))
 
 (defun wrap-quantifiers (pairs body)
   "Wrap BODY in nested (all ...) quantifiers, one per (var . domain) pair,
@@ -250,6 +293,38 @@ action precondition."
             (when (and (consp atom) (static-predicate-p (first atom) effect-preds))
               (unless (assoc (first atom) arities :test #'sym-name=)
                 (push (cons (first atom) (length (rest atom))) arities)))))))))
+
+(defun collect-formula-static-arities (form effect-preds)
+  "Alist (predicate-name . arity) for the static predicates referenced anywhere
+in a goal / constraint / preference / evidence formula, including under
+connectives, quantifiers, and modals.  Such predicates are emitted as bare
+literals, so they must be registered in the (static ...) section for FiFO to
+resolve them at instantiation time."
+  (let ((arities '()))
+    (labels ((walk (f)
+               (cond ((not (consp f)) nil)
+                     ((negation-p f) (walk (second f)))
+                     ((member (symbol-name (first f)) '("AND" "OR" "IMPLY")
+                              :test #'string-equal)
+                      (mapc #'walk (rest f)))
+                     ((member (symbol-name (first f)) '("FORALL" "EXISTS")
+                              :test #'string-equal)
+                      (walk (third f)))
+                     ((member (symbol-name (first f)) '("ALWAYS" "AT-END")
+                              :test #'string-equal)
+                      (walk (second f)))
+                     ((sym-name= (first f) "HOLD-DURING") (walk (fourth f)))
+                     ;; occur-sometime / never / at reference actions, and a
+                     ;; nested preference is rejected later in translation
+                     ((member (symbol-name (first f))
+                              '("OCCUR-SOMETIME" "NEVER" "AT" "PREFERENCE")
+                              :test #'string-equal)
+                      nil)
+                     ((static-predicate-p (first f) effect-preds)
+                      (unless (assoc (first f) arities :test #'sym-name=)
+                        (push (cons (first f) (length (rest f))) arities))))))
+      (walk form))
+    arities))
 
 ;;; Reachability analysis
 ;;;
@@ -321,9 +396,15 @@ costs."
 ;;; Goals
 ;;;
 ;;; A goal description is a literal (an atom or (not atom)) or a combination with
-;;; and / or / not / imply.  A "simple" goal -- a conjunction of literals -- is
-;;; handled by the goal-state / negative-goal-state domains; anything using or or
-;;; imply (or nesting) is emitted as a direct FiFO formula instead.
+;;; and / or / not / imply / forall / exists.  A "simple" goal -- a conjunction of
+;;; literals -- is handled by the goal-state / negative-goal-state domains;
+;;; anything else is emitted as a direct FiFO formula instead.  PDDL quantifiers
+;;; map to FiFO's guarded all/exists with the type's domain, so grounding happens
+;;; at FiFO instantiation time.  Inside a formula, an atom of a STATIC predicate
+;;; stays a bare literal -- FiFO resolves it against the (static ...) facts at
+;;; instantiation time -- while a fluent atom becomes (holds <atom> <slice>).
+;;; (Known limitation: the simple-goal path does not special-case static atoms;
+;;; a static predicate in a plain conjunctive goal is treated as a fluent.)
 
 (defun goal-connective-p (sym)
   (and (symbolp sym)
@@ -342,79 +423,177 @@ costs."
         ((and (consp g) (sym-name= (first g) "AND")) (every #'goal-literal-p (rest g)))
         (t (goal-literal-p g))))
 
-(defun collect-goal-fluents (g)
-  "All atomic fluents appearing anywhere in goal G (regardless of polarity)."
-  (cond ((null g) '())
-        ((negation-p g) (collect-goal-fluents (second g)))
-        ((and (consp g) (or (sym-name= (first g) "AND")
-                            (sym-name= (first g) "OR")
-                            (sym-name= (first g) "IMPLY")))
-         (remove-duplicates (mapcan #'collect-goal-fluents (rest g)) :test #'equal))
-        ((consp g) (list g))
-        (t '())))
+(defun known-type-p (type object-pairs type-table)
+  "True if every component of TYPE is the universal type, is declared in
+(:types ...), or is the declared type of some object.  Guards against a typo'd
+quantifier type silently grounding to a vacuous quantifier."
+  (every (lambda (component)
+           (or (sym-name= component "OBJECT")
+               (assoc component type-table :test #'string-equal)
+               (some (lambda (op) (member component (type-components (cdr op))
+                                          :test #'string-equal))
+                     object-pairs)))
+         (type-components type)))
 
-(defun translate-state-formula (g slice)
-  "Translate a state description G (a literal or an and/or/not/imply combination
-of literals) into a FiFO formula asserting it at SLICE: each atom becomes
-(holds <atom> slice)."
-  (cond ((negation-p g) (list 'not (translate-state-formula (second g) slice)))
-        ((and (consp g) (sym-name= (first g) "AND"))
-         (cons 'and (mapcar (lambda (x) (translate-state-formula x slice)) (rest g))))
-        ((and (consp g) (sym-name= (first g) "OR"))
-         (cons 'or (mapcar (lambda (x) (translate-state-formula x slice)) (rest g))))
-        ((and (consp g) (sym-name= (first g) "IMPLY"))
-         (list 'implies (translate-state-formula (second g) slice)
-                        (translate-state-formula (third g) slice)))
-        ((consp g) (list 'holds g slice))
-        (t (error "Cannot translate state formula ~s" g))))
+(defun collect-quantified-fluents (pairs body bindings object-pairs type-table collect-fn)
+  "Ground the quantifier PAIRS over their types' objects and collect fluents
+from BODY under every instantiation via COLLECT-FN, which is called with the
+body and the extended bindings.  A k-variable quantifier over n objects grounds
+n^k bodies -- the same cost class as the relaxed-reachability grounding -- and
+the callers deduplicate the resulting atom lists."
+  (if (null pairs)
+      (funcall collect-fn body bindings)
+      (destructuring-bind ((var . type) . rest) pairs
+        (unless (known-type-p type object-pairs type-table)
+          (error "Unknown type ~s for quantified variable ~s" type var))
+        (mapcan (lambda (obj)
+                  (collect-quantified-fluents rest body (acons var obj bindings)
+                                              object-pairs type-table collect-fn))
+                (reachability-param-objects type object-pairs type-table)))))
 
-(defun translate-goal-formula (g)
+(defun collect-goal-fluents (g bindings object-pairs type-table effect-preds)
+  "All ground atomic fluents appearing anywhere in goal G (regardless of
+polarity), with quantified variables expanded over their types' objects.
+Atoms of static predicates are excluded: they are resolved at instantiation
+time, not compiled to Holds fluents."
+  (flet ((recurse (x b) (collect-goal-fluents x b object-pairs type-table effect-preds)))
+    (cond ((null g) '())
+          ((negation-p g) (recurse (second g) bindings))
+          ((and (consp g) (or (sym-name= (first g) "AND")
+                              (sym-name= (first g) "OR")
+                              (sym-name= (first g) "IMPLY")))
+           (remove-duplicates
+             (mapcan (lambda (x) (recurse x bindings)) (rest g))
+             :test #'equal))
+          ((and (consp g) (or (sym-name= (first g) "FORALL")
+                              (sym-name= (first g) "EXISTS")))
+           (remove-duplicates
+             (collect-quantified-fluents
+               (parse-quantifier-pairs (second g) "a quantified goal formula")
+               (third g) bindings object-pairs type-table #'recurse)
+             :test #'equal))
+          ((consp g)
+           (if (static-predicate-p (first g) effect-preds)
+               '()
+               (list (reachability-ground-substitute g bindings))))
+          (t '()))))
+
+(defun translate-state-formula (g slice bindings forbidden effect-preds context)
+  "Translate a state description G (a goal description over literals with
+and / or / not / imply / forall / exists) into a FiFO formula asserting it at
+SLICE: each fluent atom becomes (holds <atom> slice), while an atom of a static
+predicate stays a bare literal that FiFO resolves at instantiation time.
+BINDINGS maps in-scope PDDL ?variables to FiFO variables; CONTEXT names the
+enclosing construct for error messages."
+  (flet ((recurse (x &optional (b bindings) (f forbidden))
+           (translate-state-formula x slice b f effect-preds context)))
+    (cond ((negation-p g) (list 'not (recurse (second g))))
+          ((and (consp g) (sym-name= (first g) "AND"))
+           (cons 'and (mapcar #'recurse (rest g))))
+          ((and (consp g) (sym-name= (first g) "OR"))
+           (cons 'or (mapcar #'recurse (rest g))))
+          ((and (consp g) (sym-name= (first g) "IMPLY"))
+           (list 'implies (recurse (second g)) (recurse (third g))))
+          ((and (consp g) (or (sym-name= (first g) "FORALL")
+                              (sym-name= (first g) "EXISTS")))
+           (translate-quantified
+             (if (sym-name= (first g) "FORALL") 'all 'exists)
+             (parse-quantifier-pairs (second g) context)
+             bindings forbidden
+             (lambda (b f) (recurse (third g) b f))))
+          ((preference-p g)
+           (error "Preference ~s is nested inside a formula in ~a;~@
+                   preferences must be top-level conjuncts of :goal or :constraints"
+                  g context))
+          ((consp g)
+           (let ((subst (substitute-terms g bindings context)))
+             (if (static-predicate-p (first g) effect-preds)
+                 subst
+                 (list 'holds subst slice))))
+          (t (error "Cannot translate state formula ~s in ~a" g context)))))
+
+(defun translate-goal-formula (g forbidden effect-preds)
   "Translate a PDDL goal description G into a FiFO formula asserting it at the
 final time slice (numslices)."
-  (translate-state-formula g 'numslices))
+  (translate-state-formula g 'numslices '() forbidden effect-preds
+                           "the problem :goal"))
 
-;;; Trajectory constraints (the :constraints section).  We support four modal
-;;; operators over the slice timeline (slice 1 = initial state, numslices =
-;;; final): (always phi), (at-end phi), (hold-during t1 t2 phi), and
-;;; (occur-sometime t1 t2 <ground-action>).  Time bounds t1..t2 are inclusive
-;;; integer slice numbers.  phi is a state description; the action of
-;;; occur-sometime is a fully instantiated action term.
+;;; Trajectory constraints (the :constraints section), in the PDDL 3.0 con-GD
+;;; grammar: (and <con-GD>+) and (forall (<typed vars>) <con-GD>) -- universal
+;;; quantification only, per the standard -- over four modal operators on the
+;;; slice timeline (slice 1 = initial state, numslices = final): (always phi),
+;;; (at-end phi), (hold-during t1 t2 phi), and (occur-sometime t1 t2 <action>).
+;;; Time bounds t1..t2 are inclusive integer slice numbers.  phi is a full goal
+;;; description (and/or/not/imply/forall/exists over literals); the action of
+;;; occur-sometime is an action term whose variables, if any, are bound by
+;;; enclosing forall quantifiers.
 
 (defun constraint-time-bound (x role c)
   (unless (integerp x)
     (error "The ~a of constraint ~s must be an integer slice number, got ~s" role c x))
   x)
 
-(defun collect-constraint-fluents (c)
+(defun collect-constraint-fluents (c bindings object-pairs type-table effect-preds)
   "Fluents referenced by a state-formula constraint, so they get Holds variables
-and frame axioms.  occur-sometime refers to an action, not a fluent, and a single
-state may be referenced at any slice, so its fluents come via collect-goal-fluents."
-  (cond ((and (consp c) (sym-name= (first c) "ALWAYS")) (collect-goal-fluents (second c)))
-        ((and (consp c) (sym-name= (first c) "AT-END")) (collect-goal-fluents (second c)))
-        ((and (consp c) (sym-name= (first c) "HOLD-DURING")) (collect-goal-fluents (fourth c)))
-        ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME")) '())
-        (t '())))
+and frame axioms.  occur-sometime (and the evidence forms never/at) refer to
+actions, not fluents, and a state formula may be referenced at any slice, so its
+fluents come via collect-goal-fluents."
+  (flet ((goal-fluents (g b) (collect-goal-fluents g b object-pairs type-table effect-preds)))
+    (cond ((and (consp c) (sym-name= (first c) "ALWAYS")) (goal-fluents (second c) bindings))
+          ((and (consp c) (sym-name= (first c) "AT-END")) (goal-fluents (second c) bindings))
+          ((and (consp c) (sym-name= (first c) "HOLD-DURING")) (goal-fluents (fourth c) bindings))
+          ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME")) '())
+          ((and (consp c) (sym-name= (first c) "FORALL"))
+           (remove-duplicates
+             (collect-quantified-fluents
+               (parse-quantifier-pairs (second c) "a quantified constraint")
+               (third c) bindings object-pairs type-table
+               (lambda (body b)
+                 (collect-constraint-fluents body b object-pairs type-table effect-preds)))
+             :test #'equal))
+          ((and (consp c) (sym-name= (first c) "AND"))
+           (remove-duplicates
+             (mapcan (lambda (x)
+                       (collect-constraint-fluents x bindings object-pairs type-table effect-preds))
+                     (rest c))
+             :test #'equal))
+          (t '()))))
 
-(defun translate-constraint (c)
-  "Translate one (:constraints ...) modal formula into a FiFO formula over the
-slice timeline.  Supported: always, at-end, hold-during, occur-sometime."
-  (cond
-    ((and (consp c) (sym-name= (first c) "ALWAYS"))
-     `(all s slices true ,(translate-state-formula (second c) 's)))
-    ((and (consp c) (sym-name= (first c) "AT-END"))
-     (translate-state-formula (second c) 'numslices))
-    ((and (consp c) (sym-name= (first c) "HOLD-DURING"))
-     (let ((t1 (constraint-time-bound (second c) "first time bound" c))
-           (t2 (constraint-time-bound (third c) "second time bound" c)))
-       `(all s slices (and (>= s ,t1) (<= s ,t2))
-          ,(translate-state-formula (fourth c) 's))))
-    ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME"))
-     (let ((t1 (constraint-time-bound (second c) "first time bound" c))
-           (t2 (constraint-time-bound (third c) "second time bound" c)))
-       `(exists s actslices (and (>= s ,t1) (<= s ,t2))
-          (occurs ,(fourth c) s))))
-    (t (error "Unsupported trajectory constraint ~s~@
-               (supported: always, at-end, hold-during, occur-sometime)" c))))
+(defun translate-constraint (c bindings forbidden effect-preds context)
+  "Translate one con-GD from the :constraints section into a FiFO formula over
+the slice timeline.  Supported: the modals always, at-end, hold-during, and
+occur-sometime, combined with (and ...) and universal (forall ...)."
+  (flet ((state (g slice b f) (translate-state-formula g slice b f effect-preds context)))
+    (cond
+      ((and (consp c) (sym-name= (first c) "ALWAYS"))
+       `(all s slices true ,(state (second c) 's bindings forbidden)))
+      ((and (consp c) (sym-name= (first c) "AT-END"))
+       (state (second c) 'numslices bindings forbidden))
+      ((and (consp c) (sym-name= (first c) "HOLD-DURING"))
+       (let ((t1 (constraint-time-bound (second c) "first time bound" c))
+             (t2 (constraint-time-bound (third c) "second time bound" c)))
+         `(all s slices (and (>= s ,t1) (<= s ,t2))
+            ,(state (fourth c) 's bindings forbidden))))
+      ((and (consp c) (sym-name= (first c) "OCCUR-SOMETIME"))
+       (let ((t1 (constraint-time-bound (second c) "first time bound" c))
+             (t2 (constraint-time-bound (third c) "second time bound" c)))
+         `(exists s actslices (and (>= s ,t1) (<= s ,t2))
+            (occurs ,(substitute-terms (fourth c) bindings context) s))))
+      ((and (consp c) (sym-name= (first c) "FORALL"))
+       (translate-quantified 'all
+         (parse-quantifier-pairs (second c) context)
+         bindings forbidden
+         (lambda (b f) (translate-constraint (third c) b f effect-preds context))))
+      ((and (consp c) (sym-name= (first c) "AND"))
+       (cons 'and (mapcar (lambda (x) (translate-constraint x bindings forbidden effect-preds context))
+                          (rest c))))
+      ((and (consp c) (sym-name= (first c) "EXISTS"))
+       (error "Existential quantification over trajectory constraints is not part of ~
+               PDDL 3.0; got ~s in ~a (exists is allowed inside a modal's state formula)"
+              c context))
+      (t (error "Unsupported trajectory constraint ~s in ~a~@
+                 (supported: always, at-end, hold-during, occur-sometime, ~
+                  combined with and / forall)" c context)))))
 
 ;;; PDDL-syntax evidence (planner --pddl-evidence / --pddl-evidence-file).  The
 ;;; same modal language as :constraints, but the translated formulas are NOT
@@ -425,23 +604,34 @@ slice timeline.  Supported: always, at-end, hold-during, occur-sometime."
 ;;; constraint's.  Two extra operators over actions: (never <action>) and
 ;;; (at <slice> <action>).
 
-(defun translate-evidence-form (c)
+(defun translate-evidence-form (c bindings forbidden effect-preds)
   "Translate one PDDL-style evidence form C into a horizon-independent FiFO
 formula over the slice timeline.  Supports the trajectory operators always,
-at-end, hold-during, occur-sometime, plus (never <action>) and (at <slice>
-<action>).  Quantifiers ground over slices/actslices when the planner
-re-instantiates at each horizon."
-  (cond
-    ((and (consp c) (sym-name= (first c) "NEVER"))
-     `(all s actslices true (not (occurs ,(second c) s))))
-    ((and (consp c) (sym-name= (first c) "AT"))
-     `(occurs ,(third c) ,(constraint-time-bound (second c) "slice" c)))
-    ((and (consp c)
-          (member (symbol-name (first c)) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
-                  :test #'string-equal))
-     (translate-constraint c))
-    (t (error "Unsupported PDDL evidence form ~s~@
-               (supported: always, at-end, hold-during, occur-sometime, never, at)" c))))
+at-end, hold-during, occur-sometime -- combined with (and ...) and (forall ...)
+-- plus (never <action>) and (at <slice> <action>).  Quantifiers ground over
+slices/actslices when the planner re-instantiates at each horizon."
+  (let ((context "PDDL evidence"))
+    (cond
+      ((and (consp c) (sym-name= (first c) "NEVER"))
+       `(all s actslices true (not (occurs ,(substitute-terms (second c) bindings context) s))))
+      ((and (consp c) (sym-name= (first c) "AT"))
+       `(occurs ,(substitute-terms (third c) bindings context)
+                ,(constraint-time-bound (second c) "slice" c)))
+      ((and (consp c) (sym-name= (first c) "FORALL"))
+       (translate-quantified 'all
+         (parse-quantifier-pairs (second c) context)
+         bindings forbidden
+         (lambda (b f) (translate-evidence-form (third c) b f effect-preds))))
+      ((and (consp c) (sym-name= (first c) "AND"))
+       (cons 'and (mapcar (lambda (x) (translate-evidence-form x bindings forbidden effect-preds))
+                          (rest c))))
+      ((and (consp c)
+            (member (symbol-name (first c)) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
+                    :test #'string-equal))
+       (translate-constraint c bindings forbidden effect-preds context))
+      (t (error "Unsupported PDDL evidence form ~s~@
+                 (supported: always, at-end, hold-during, occur-sometime, never, at, ~
+                  combined with and / forall)" c)))))
 
 ;;; Preferences (soft goals / soft constraints).
 ;;;
@@ -453,9 +643,6 @@ re-instantiates at each horizon."
 ;;; (weight (pref-violated <name>) w) charges w when it is true.  The MaxSAT solver
 ;;; then minimizes total weight, so (pref-violated <name>) is true in the answer
 ;;; exactly for the violated preferences.
-
-(defun preference-p (x)
-  (and (consp x) (sym-name= (first x) "PREFERENCE")))
 
 (defun parse-preference (f)
   "Parse (preference <name> <body> [<weight> | :probability <p>]) into the list
@@ -487,25 +674,31 @@ each preference is (name body weight prob) -- weight/prob nil unless given inlin
     (values (nreverse hard) (nreverse prefs))))
 
 (defun constraint-head-p (body)
-  "True if BODY is a trajectory-constraint modal formula (vs. a state description)."
+  "True if BODY is a trajectory-constraint con-GD (vs. a state description):
+a modal formula, possibly under (forall ...) / (and ...) combinations."
   (and (consp body)
-       (member (first body) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
-               :test #'sym-name=)))
+       (or (member (first body) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
+                   :test #'sym-name=)
+           (and (sym-name= (first body) "FORALL") (constraint-head-p (third body)))
+           (and (sym-name= (first body) "AND") (rest body)
+                (every #'constraint-head-p (rest body))))))
 
-(defun translate-preference-body (body)
+(defun translate-preference-body (name body forbidden effect-preds)
   "Translate a preference BODY to the FiFO formula whose truth means the
 preference is satisfied: a trajectory-constraint body via translate-constraint, a
 plain state description as a goal (asserted at the final slice)."
   (if (constraint-head-p body)
-      (translate-constraint body)
-      (translate-goal-formula body)))
+      (translate-constraint body '() forbidden effect-preds
+                            (format nil "preference ~a" name))
+      (translate-state-formula body 'numslices '() forbidden effect-preds
+                               (format nil "preference ~a" name))))
 
-(defun collect-preference-fluents (body)
+(defun collect-preference-fluents (body object-pairs type-table effect-preds)
   "Fluents referenced by a preference body, so they get Holds variables and frame
 axioms."
   (if (constraint-head-p body)
-      (collect-constraint-fluents body)
-      (collect-goal-fluents body)))
+      (collect-constraint-fluents body '() object-pairs type-table effect-preds)
+      (collect-goal-fluents body '() object-pairs type-table effect-preds)))
 
 (defun parse-metric-term (term)
   "Decode one :metric summand.  Returns (values KIND NAME COEFF): KIND is :cost
@@ -599,6 +792,32 @@ optimistically (assumed satisfiable), which keeps the resulting bound admissible
         ((consp g) (gethash g reachable))
         (t t)))
 
+(defun ground-goal-quantifiers (g object-pairs type-table)
+  "Rewrite the quantifiers of goal description G for the relaxed-reachability
+check: forall -> (and <instances>) and exists -> (or <instances>).  A forall
+over an empty type becomes (and) -- trivially satisfiable -- and an exists
+becomes (or) -- unsatisfiable -- matching FiFO's vacuous-quantifier semantics."
+  (labels ((walk (g bindings)
+             (cond ((not (consp g)) g)
+                   ((member (symbol-name (first g)) '("FORALL" "EXISTS")
+                            :test #'string-equal)
+                    (let ((head (if (sym-name= (first g) "FORALL") 'and 'or))
+                          (pairs (parse-quantifier-pairs (second g) "a quantified goal formula")))
+                      (cons head
+                            (mapcar (lambda (b) (walk (third g) b))
+                                    (ground-bindings pairs bindings)))))
+                   ((member (symbol-name (first g)) '("AND" "OR" "NOT" "IMPLY")
+                            :test #'string-equal)
+                    (cons (first g) (mapcar (lambda (x) (walk x bindings)) (rest g))))
+                   (t (reachability-ground-substitute g bindings))))
+           (ground-bindings (pairs bindings)
+             (if (null pairs)
+                 (list bindings)
+                 (destructuring-bind ((var . type) . rest) pairs
+                   (mapcan (lambda (obj) (ground-bindings rest (acons var obj bindings)))
+                           (reachability-param-objects type object-pairs type-table))))))
+    (walk g '())))
+
 (defun reachable-min-slices (domain-def object-pairs type-table init goal)
   "Lower bound on numslices from relaxed planning-graph reachability.  GOAL is the
 raw goal description (so disjunctive goals are handled: a disjunct that becomes
@@ -606,6 +825,7 @@ satisfiable earlier lowers the bound).  Returns an integer >= 2, or :unreachable
 if the goal is unreachable even in the relaxation (so the problem is unsolvable)."
   (let ((actions (relaxed-ground-actions domain-def object-pairs type-table))
         (reachable (make-hash-table :test #'equal))
+        (goal (ground-goal-quantifiers goal object-pairs type-table))
         (level 0))
     (dolist (f init) (setf (gethash f reachable) t))
     (loop
@@ -661,6 +881,7 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                      param-pairs))
            (vars (mapcar #'cdr bindings))
            (act (if vars (cons name vars) name))
+           (action-context (format nil "action ~a" name))
            (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil) (prob nil))
       (dolist (p (conjuncts precondition))
         (cond ((preference-p p)
@@ -670,19 +891,19 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                       name p))
               ((disjunctive-precondition-p p)
                (error "Action ~a has a disjunctive or quantified precondition ~s.~@
-                       pddl2fifo supports :disjunctive-preconditions only in the ~
-                       problem :goal, not in action preconditions."
+                       pddl2fifo supports disjunctions and quantifiers in the ~
+                       problem :goal and :constraints, not in action preconditions."
                       name p))
               ((negation-p p)
                (let ((atom (second p)))
                  (unless (consp atom)
                    (error "Cannot translate precondition ~s of action ~a" p name))
-                 (let ((subst (substitute-terms atom bindings name)))
+                 (let ((subst (substitute-terms atom bindings action-context)))
                    (if (static-predicate-p (first atom) effect-preds)
                        (push (list 'not subst) guard)
                        (push subst pre-)))))
               ((consp p)
-               (let ((subst (substitute-terms p bindings name)))
+               (let ((subst (substitute-terms p bindings action-context)))
                  (if (static-predicate-p (first p) effect-preds)
                      (push subst guard)
                      (push subst pre+))))
@@ -696,9 +917,9 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                  (error "Action ~a has more than one cost effect" name))
                (setq cost (third e)))
               ((negation-p e)
-               (push (substitute-terms (second e) bindings name) dels))
+               (push (substitute-terms (second e) bindings action-context) dels))
               ((consp e)
-               (push (substitute-terms e bindings name) adds))
+               (push (substitute-terms e bindings action-context) adds))
               (t (error "Cannot translate effect ~s of action ~a" e name))))
       ;; A :cost slot is an alternative to an (increase (total-cost) n) effect.
       (when cost-slot
@@ -852,29 +1073,54 @@ none)."
                (all-objects (mapcar #'car all-object-pairs))
                (forbidden (append all-objects
                                   (mapcar #'car type-table)
-                                  *reserved-domain-names*))
+                                  *reserved-domain-names*
+                                  *reserved-formula-variables*))
                (effect-preds (collect-effect-predicates domain-def))
-               (static-arities (collect-static-predicate-arities domain-def effect-preds))
+               ;; A goal using or/imply/quantifiers (or nesting) is emitted as a
+               ;; direct formula rather than the goal-state/negative-goal-state
+               ;; domains.
+               (general-goal (not (simple-goal-p goal)))
+               ;; Static predicates named in action preconditions, plus any named
+               ;; only inside goal/constraint/preference/evidence formulas --
+               ;; those are emitted as bare literals, so they must be registered
+               ;; in the (static ...) section for FiFO to resolve them.
+               (static-arities
+                 (let ((arities (collect-static-predicate-arities domain-def effect-preds)))
+                   (dolist (form (append (when general-goal (list goal))
+                                         constraints
+                                         (mapcar #'second preferences)
+                                         pddl-evidence)
+                                 arities)
+                     (dolist (pa (collect-formula-static-arities form effect-preds))
+                       (unless (assoc (car pa) arities :test #'sym-name=)
+                         (push pa arities))))))
                ;; Split the initial state: static-predicate facts become
                ;; static facts; the rest are time-indexed fluents (initial-state).
                (static-init (remove-if-not
                               (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (dynamic-init (remove-if
                                (lambda (f) (static-predicate-p (first f) effect-preds)) init))
-               ;; A goal using or/imply (or nesting) is emitted as a direct
-               ;; formula rather than the goal-state/negative-goal-state domains.
-               (general-goal (not (simple-goal-p goal)))
-               (goal-fluents (when general-goal (collect-goal-fluents goal)))
+               (goal-fluents (when general-goal
+                               (collect-goal-fluents goal '() all-object-pairs
+                                                     type-table effect-preds)))
                ;; Fluents mentioned by trajectory constraints need Holds
                ;; variables and frame axioms even if no action/goal touches them.
                (constraint-fluents (remove-duplicates
-                                     (mapcan #'collect-constraint-fluents constraints)
+                                     (mapcan (lambda (c)
+                                               (collect-constraint-fluents
+                                                 c '() all-object-pairs type-table effect-preds))
+                                             constraints)
                                      :test #'equal))
                ;; PDDL evidence: translated FiFO forms (returned, not written) and
                ;; the fluents they reference (registered for Holds vars + frame axioms).
-               (evidence-fifo (mapcar #'translate-evidence-form pddl-evidence))
+               (evidence-fifo (mapcar (lambda (c)
+                                        (translate-evidence-form c '() forbidden effect-preds))
+                                      pddl-evidence))
                (evidence-fluents (remove-duplicates
-                                   (mapcan #'collect-constraint-fluents pddl-evidence)
+                                   (mapcan (lambda (c)
+                                             (collect-constraint-fluents
+                                               c '() all-object-pairs type-table effect-preds))
+                                           pddl-evidence)
                                    :test #'equal))
                ;; Preferences (soft goals/constraints).  The :metric gives the
                ;; coefficient of (total-cost) -- by which action costs are scaled
@@ -912,16 +1158,24 @@ none)."
                (pref-fluents (remove-duplicates
                                (append
                                  (loop for entry in active-prefs
-                                       append (collect-preference-fluents (second entry)))
+                                       append (collect-preference-fluents
+                                                (second entry) all-object-pairs
+                                                type-table effect-preds))
                                  (loop for entry in prob-prefs
-                                       append (collect-preference-fluents (second entry))))
+                                       append (collect-preference-fluents
+                                                (second entry) all-object-pairs
+                                                type-table effect-preds)))
                                :test #'equal))
                ;; Per-step fluent costs (:fluent-cost forms).  Like preferences,
-               ;; the named fluents need Holds variables and frame axioms.
+               ;; the named fluents need Holds variables and frame axioms.  The
+               ;; literal's atom is taken directly (not via collect-goal-fluents,
+               ;; whose static-atom exclusion must not drop a fluent that the
+               ;; emitted (weight (holds ...)) form will reference).
                (fluent-cost-list (fluent-costs problem-def))
                (fluentcost-fluents (remove-duplicates
                                      (loop for fc in fluent-cost-list
-                                           append (collect-goal-fluents (car fc)))
+                                           collect (let ((lit (car fc)))
+                                                     (if (negation-p lit) (second lit) lit)))
                                      :test #'equal))
                ;; Reachability lower bound on the horizon (see reachable-min-slices).
                (min-slices (reachable-min-slices domain-def all-object-pairs type-table init goal))
@@ -1073,12 +1327,13 @@ none)."
               (when general-goal
                 (terpri out)
                 (format out ";; Goal (disjunctive/nested) asserted directly at the final slice~%")
-                (write-form out (translate-goal-formula goal)))
+                (write-form out (translate-goal-formula goal forbidden effect-preds)))
               (when constraints
                 (terpri out)
                 (format out ";; Trajectory constraints (:constraints)~%")
                 (dolist (c constraints)
-                  (write-form out (translate-constraint c))))
+                  (write-form out (translate-constraint c '() forbidden effect-preds
+                                                        "the :constraints section"))))
               ;; Preferences: reify each body's satisfaction with (pref-violated
               ;; <name>) and charge its violation weight via a soft (weight ...).
               (when active-prefs
@@ -1088,7 +1343,8 @@ none)."
                 (dolist (entry active-prefs)
                   (destructuring-bind (name body . w) entry
                     (write-form out
-                      `(or ,(translate-preference-body body) (pref-violated ,name)))
+                      `(or ,(translate-preference-body name body forbidden effect-preds)
+                           (pref-violated ,name)))
                     (write-form out `(weight (pref-violated ,name) ,w)))))
               ;; Preference probabilities: reify as above, but give (pref-violated
               ;; <name>) a target marginal -- the weight is learned downstream.  The
@@ -1100,7 +1356,8 @@ none)."
                 (dolist (entry prob-prefs)
                   (destructuring-bind (name body p) entry
                     (write-form out
-                      `(or ,(translate-preference-body body) (pref-violated ,name)))
+                      `(or ,(translate-preference-body name body forbidden effect-preds)
+                           (pref-violated ,name)))
                     (write-form out
                       `(probability (pref-violated ,name) ,(- 1 p) (:pref ,name))))))
               ;; Per-step fluent costs: charge the cost for every slice the fluent holds.

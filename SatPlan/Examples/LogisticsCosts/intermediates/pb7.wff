@@ -29,9 +29,9 @@
 ;; Static predicates (never added or deleted), with all
 ;; positive instances from the initial state.  The dummy
 ;; facts only register each predicate as static.
-(static (in-city pddl2fifo-static-dummy pddl2fifo-static-dummy)
- (in-city l1 c1) (in-city a1 c1) (in-city l2 c2) (in-city a2 c2)
- (in-city l3 c3) (in-city a3 c3))
+(static (in-city pddl2fifo-static-dummy pddl2fifo-static-dummy) (in-city l1 c1)
+ (in-city a1 c1) (in-city l2 c2) (in-city a2 c2) (in-city l3 c3)
+ (in-city a3 c3))
 
 ;; Action preconditions, effects, and costs
 (static

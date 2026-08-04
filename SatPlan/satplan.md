@@ -166,7 +166,7 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
+The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:quantified-preconditions` (equivalently `:universal-preconditions` / `:existential-preconditions` — quantifiers are supported in the problem `:goal`, `:constraints`, and preference bodies, but not in action preconditions), `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
 
 ```lisp
 (:action turn-off
@@ -180,7 +180,7 @@ The two forms are equivalent; giving both on the same action is an error. The co
 
 #### Trajectory constraints
 
-With `:constraints`, the problem may carry a `(:constraints ...)` section of hard state-trajectory constraints over the plan's slice timeline (slice 1 is the initial state, `numslices` the final state). The contents are a single modal formula or an `and` of them. Four operators are supported:
+With `:constraints`, the problem may carry a `(:constraints ...)` section of hard state-trajectory constraints over the plan's slice timeline (slice 1 is the initial state, `numslices` the final state), written in the PDDL 3.0 con-GD grammar: modal formulas combined with `(and ...)` and universally quantified with `(forall (<typed vars>) ...)` (existential quantification *over* a modal is not part of PDDL 3.0 and is rejected; use `exists` inside the modal's state formula instead). Four modal operators are supported:
 
 | Constraint | Meaning | Encoding |
 |---|---|---|
@@ -189,15 +189,20 @@ With `:constraints`, the problem may carry a `(:constraints ...)` section of har
 | `(hold-during t1 t2 φ)` | φ holds in every state of the inclusive slice window `[t1, t2]` | `(all s slices (and (>= s t1) (<= s t2)) (holds φ s))` |
 | `(occur-sometime t1 t2 a)` | the ground action `a` occurs at some slice in `[t1, t2]` | `(exists s actslices (and (>= s t1) (<= s t2)) (occurs a s))` |
 
-Here φ is a state description (a literal, or an `and`/`or`/`not`/`imply` combination of literals) and `a` is a fully instantiated action term, e.g. `(fly-airplane p1 a1 a2)`. The time bounds `t1`/`t2` are inclusive integer slice numbers. `occur-sometime` is a FiFO-specific extension (it has no standard PDDL counterpart). Constraints only restrict the set of valid plans, so they do not change the reachability lower bound on `minslices`. φ must refer to dynamic fluents (predicates that some action adds or deletes); a constraint over a static predicate, or any unsupported operator, is rejected with an error. For example:
+Here φ is a full state description — a literal, or an `and`/`or`/`not`/`imply`/`forall`/`exists` combination of literals — and `a` is an action term, fully instantiated (e.g. `(fly-airplane p1 a1 a2)`) except for variables bound by enclosing `forall` quantifiers. The time bounds `t1`/`t2` are inclusive integer slice numbers. `occur-sometime` is a FiFO-specific extension (it has no standard PDDL counterpart). Constraints only restrict the set of valid plans, so they do not change the reachability lower bound on `minslices`. Inside φ, an atom of a *dynamic* fluent becomes a time-indexed `Holds` proposition, while an atom of a *static* predicate (one no action adds or deletes) is left as a bare FiFO literal, resolved at instantiation time — so static predicates work as guards inside quantified constraints. For example:
 
 ```lisp
 (:constraints
    (and
       (always (not (at pkg1 l2)))            ; pkg1 never passes through l2
       (hold-during 1 2 (in pkg1 t1))         ; pkg1 stays in t1 for the first two slices
-      (occur-sometime 4 5 (fly-airplane p1 a1 a2))))  ; that flight happens in slice 4 or 5
+      (occur-sometime 4 5 (fly-airplane p1 a1 a2))  ; that flight happens in slice 4 or 5
+      (forall (?t - truck)                   ; every truck always sits at some
+         (always (exists (?l - location)     ; location of city c1 (in-city is
+            (and (in-city ?l c1) (at ?t ?l)))))))  ; static: a compile-time guard)
 ```
+
+A PDDL quantifier compiles directly to FiFO's guarded quantifier over the type's domain — `(forall (?t - truck) ...)` becomes `(all t truck true ...)` — so grounding happens at FiFO instantiation time, and `either`-types become domain unions. The same quantifier syntax is accepted in the problem `:goal` (both `forall` and `exists`, arbitrarily nested with the other connectives) under the `:quantified-preconditions` requirement flag.
 
 #### Forcing Plan to Incorporate Known Facts
 
@@ -214,11 +219,11 @@ Trajectory constraints are also useful for pinning a plan to facts you already k
       (hold-during 1 4 (at pkg1 boston))))                        ; pkg1 at boston in steps 1..4
 ```
 
-The plan must reach the goal *and* respect both constraints, so the planner holds the plane in Washington and fires the flight at the earliest allowed step (3, landing in Boston at step 4), while `pkg1` — which starts at Boston and is never moved — satisfies the `hold-during` window. Recall the windows use absolute slice numbers and do not raise the reachability bound, so ensure the search horizon reaches them (here the `occur-sometime` window already forces a horizon of 4); the `hold-during` body must name a dynamic fluent.
+The plan must reach the goal *and* respect both constraints, so the planner holds the plane in Washington and fires the flight at the earliest allowed step (3, landing in Boston at step 4), while `pkg1` — which starts at Boston and is never moved — satisfies the `hold-during` window. Recall the windows use absolute slice numbers and do not raise the reachability bound, so ensure the search horizon reaches them (here the `occur-sometime` window already forces a horizon of 4); a `hold-during` body should name dynamic fluents (static atoms in it are resolved once at instantiation time, so a window over only static atoms constrains nothing slice by slice).
 
 #### Preferences (soft goals and soft constraints)
 
-With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body> [<weight>])` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (one of the four operators above). To prefer that something *not* hold, negate the body (e.g. `(preference tidy (not (at junk depot)) 5)`); weights are always non-negative penalties, so a negative weight is an error.
+With `:preferences`, the `:goal` and `:constraints` sections may contain `(preference <name> <body> [<weight>])` forms. A preference is a *soft* requirement: a plan need not satisfy it, but each violation adds its weight to the plan metric. A preference in the `:goal` has a state-description body (satisfied iff it holds in the final state); a preference in `:constraints` has a trajectory-constraint body (a con-GD: the four modal operators above, possibly combined with `and` / `forall` — e.g. `(preference everywhere (forall (?p - package) (at-end (at ?p depot))))` is satisfied only if *every* package ends at the depot). To prefer that something *not* hold, negate the body (e.g. `(preference tidy (not (at junk depot)) 5)`); weights are always non-negative penalties, so a negative weight is an error.
 
 The optional fourth element gives the violation weight inline. When it is omitted, the weight comes from the `(:metric minimize ...)` form, whose `(is-violated <name>)` terms name the preferences. So the same preferences can be written either way:
 
