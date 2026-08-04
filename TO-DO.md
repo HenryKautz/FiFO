@@ -1,8 +1,8 @@
 # FiFO TO-DO
 
-Open work items. See [Learning/learning.md](Learning/learning.md) for the
+Open work items. See [Probability/probability.md](Probability/probability.md) for the
 weight-learning pipeline as it stands and
-[Learning/learning-background.md](Learning/learning-background.md) for the theory.
+[Probability/probability-background.md](Probability/probability-background.md) for the theory.
 
 ## 1. End-to-end weight learning from an uninstantiated `.wff` — DONE
 
@@ -17,7 +17,7 @@ of the source `.wff` with each `(probability ...)` replaced by its tied
 `(weight ...)` cost — re-instantiable at a new domain size. `propositionalize`
 rejects an `.scnf` that still contains `PROBABILITY` forms. Overlapping forms
 (one literal under two groups) and non-constant `p` within a group are errors.
-See [Learning/learning.md](Learning/learning.md).
+See [Probability/probability.md](Probability/probability.md).
 
 ## 2. Probabilities instead of costs in the SatPlan compiler
 
@@ -38,13 +38,13 @@ Open questions / subtasks:
 - What the marginal *means* for a planning fluent/action (per time slice? over the
   whole plan?), and whether the feasible set for MaxEnt is the set of valid plans.
 - Tie into the planner's horizon search: learn on a small horizon, transfer.
-- Connect to Learning/learning-background.md §10 (domain-size dependence) — plan cost may
+- Connect to Probability/probability-background.md §10 (domain-size dependence) — plan cost may
   not be size-invariant; may need size-modulated features.
 
 ## Note: validating the small-domain → full-size transfer
 
 Both items hinge on **schema tying** — the assumption that weights learned on
-small domains transfer unchanged to larger ones. Learning/learning-background.md §10 warns
+small domains transfer unchanged to larger ones. Probability/probability-background.md §10 warns
 this can be **misspecified** when the true cost has size-dependent structure
 (congestion, economies of scale, fixed overheads). When we build and validate the
 transfer, keep the §10 diagnostic in mind: residual regret that **grows

@@ -1,5 +1,12 @@
 # FiFO 2.0 Users Guide
 
+## Table of Contents
+
+- $\color{red}{\textbf{README.md}}$ — the FiFO language reference and user guide.
+- [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
+- [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
+- [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
+
 henry.kautz@gmail.com
 ---------------------
 
@@ -423,7 +430,7 @@ And conditional weights work too:
 
 ### Probabilities (target marginals)
 
-Instead of stating a weight directly, you can state a **target marginal probability** with the **probability** form, and let the learning pipeline ([Learning/](Learning/)) compute the weight that realizes it:
+Instead of stating a weight directly, you can state a **target marginal probability** with the **probability** form, and let the learning pipeline ([Probability/](Probability/)) compute the weight that realizes it:
 
 ```
 (probability <literal> <p> [<tie-label>])
@@ -431,9 +438,9 @@ Instead of stating a weight directly, you can state a **target marginal probabil
 
 `<p>` is the desired probability (in `[0,1]`) that `<literal>` is true. `probability` is parsed and placed exactly like `weight` (top level, or in the body of `and`/`all`/`exists`/`if`), and `instantiate` passes it through to the `.scnf` as `(PROBABILITY <literal> <p> <gid>)`.
 
-**Tie groups.** Every ground instance of one source `probability` form shares a **tie-group id** `<gid>`, so the learner fits **one** weight for the whole group (parameter tying — see [Learning/learning-background.md](Learning/learning-background.md)). By default each `probability` form is its own group (an auto-assigned integer); an optional trailing symbol `<tie-label>` overrides this to merge forms into a shared group or split them. For example, `(all x items true (probability (faulty x) 0.05))` gives every `(faulty x)` the same target and the same learned weight.
+**Tie groups.** Every ground instance of one source `probability` form shares a **tie-group id** `<gid>`, so the learner fits **one** weight for the whole group (parameter tying — see [Probability/probability-background.md](Probability/probability-background.md)). By default each `probability` form is its own group (an auto-assigned integer); an optional trailing symbol `<tie-label>` overrides this to merge forms into a shared group or split them. For example, `(all x items true (probability (faulty x) 0.05))` gives every `(faulty x)` the same target and the same learned weight.
 
-A `.scnf` containing `(PROBABILITY ...)` forms carries *target probabilities, not weights*, so `propositionalize` rejects it with an error: convert it to a weight-only file first with the learning pipeline. That pipeline can also write the learned weights back into a copy of the source `.wff` (replacing each `probability` form with the tied `weight`), which you can then edit and re-instantiate at a different domain size. See [Learning/learning.md](Learning/learning.md).
+A `.scnf` containing `(PROBABILITY ...)` forms carries *target probabilities, not weights*, so `propositionalize` rejects it with an error: convert it to a weight-only file first with the learning pipeline. That pipeline can also write the learned weights back into a copy of the source `.wff` (replacing each `probability` form with the tied `weight`), which you can then edit and re-instantiate at a different domain size. See [Probability/probability.md](Probability/probability.md).
 
 ### Weighted CNF output formats
 
@@ -487,9 +494,9 @@ No license hassle, no compilation, and the Python API is pleasant. Note CP-SAT t
 
 ### Weight Learning
 
-For a discussion about learning weights in FiFO, see [Learning/learning-background.md](Learning/learning-background.md).
+For a discussion about learning weights in FiFO, see [Probability/probability-background.md](Probability/probability-background.md).
 
-For the implemented learning pipeline — turning target marginal probabilities into integer literal weights — and how to run it, see [Learning/learning.md](Learning/learning.md).
+For the implemented learning pipeline — turning target marginal probabilities into integer literal weights — and how to run it, see [Probability/probability.md](Probability/probability.md).
 
 The driver `bin/learn.sh` wraps the pipeline: it reads an instantiated `.scnf` of `(PROBABILITY ...)` targets and writes a reweighted `.scnf` of integer `(WEIGHT ...)` costs (and, with `--wff`, a weighted copy of the source `.wff`). It selects the estimator with `--method log-odds` (default) or `--maxent`. Run `learn.sh --help` for the full list of options.
 
@@ -512,7 +519,7 @@ ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC]
 
 For **conditional** probabilities, `--solver addmc` accepts `--evidence '<ground formula>'` (repeatable) and `--evidence-file <f>`: the ground FiFO formula is clausified and conjoined with the theory as a hard constraint, so each reported marginal becomes `P(atom | evidence)` (and `wmc.sh` returns the conditioned partition function). Quantified evidence isn't ground, so it belongs at the `.wff` level (add the assertion and re-instantiate).
 
-Because the learning pipeline scales costs by an integer factor (100 by default, set with `learn.sh --scale`) to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Inference/marginals.md](Inference/marginals.md).
+Because the learning pipeline scales costs by an integer factor (100 by default, set with `learn.sh --scale`) to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Probability/probability.md](Probability/probability.md).
 
 ## Common Binary Relationship Patterns
 
@@ -857,13 +864,6 @@ cl4py converts data between the languages automatically, but note which Python t
 | int, float | number |
 
 So FiFO formulas and schemas should be built as nested **tuples**, with bare strings for symbols. Results return as `cl4py.List` and `cl4py.Symbol` objects; a `List` behaves as a Python sequence and can be converted with `list(...)`.
-
-## Related Documents
-
-- [Learning/learning.md](Learning/learning.md) — the weight-learning pipeline: turning target marginal probabilities into integer literal weights.
-- [Learning/learning-background.md](Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
-- [Inference/marginals.md](Inference/marginals.md) — marginal inference: computing the probability of every atom under a weighted theory.
-- [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 
 ## References
 

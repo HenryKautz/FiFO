@@ -1,7 +1,7 @@
 ;;; ddnnf.lisp
 ;;;
 ;;; FiFO's OWN d-DNNF compiler + circuit evaluator for exact marginal inference.
-;;; This is the third "Method 3 (WMC tools)" backend of Inference/marginals.md,
+;;; This is the third "Method 3 (WMC tools)" backend of Probability/probability.md,
 ;;; alongside maxent.lisp (exact Lisp enumeration) and wmc.lisp (the external
 ;;; ADDMC counter).  Unlike either of those, it COMPILES the hard theory ONCE into
 ;;; a circuit and then answers many queries cheaply -- in particular, conditioning

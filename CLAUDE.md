@@ -16,7 +16,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 - `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `marginals.sh` (marginal inference on an scnf; `--solver maxent` enumeration (default), `--solver addmc`, `--solver ddnnf` (FiFO's own d-DNNF compiler), or `--solver d4` (compile the structure with the external d4 compiler, same circuit machinery); `--save-circuit`/`--circuit` persist & reuse a compiled circuit for ddnnf/d4), `wmc.sh` (weighted model count / partition function via ADDMC), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
 - `Makefile` — `make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override `BINDIR`/`LISPDIR`)
 - `SatPlan/Examples/` — example PDDL domains/problems
-- `Learning/` — weight-learning docs (`learning.md`) and example `.scnf` files
+- `Probability/` — probabilistic-layer docs (`probability.md` — the practice guide for marginal inference and weight learning; `probability-background.md` — the theory) and example `.scnf` files
 - `*.wff` — FiFO formula input files
 - `*.scnf` — Symbolic CNF output files (intermediate)
 - `*.cnf` — DIMACS CNF files (input to SAT solver)

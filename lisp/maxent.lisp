@@ -2,7 +2,7 @@
 ;;;
 ;;; FiFO weight-learning, Case 4 (beliefs about marginals), EXACT iterative
 ;;; maximum-entropy estimator -- the fixed point that the independent log-odds
-;;; estimator in reweight.lisp only approximates (learning-background.md S4/S8).
+;;; estimator in reweight.lisp only approximates (Probability/probability-background.md S4/S8).
 ;;;
 ;;; The independent estimator sets theta_a = log((1-p_a)/p_a) per atom, which is
 ;;; correct only when the hard clauses leave the weighted atoms independent.  When
@@ -220,7 +220,7 @@ theta_a += eta * (m_a - tau_a) / max(m_a (1-m_a), 1e-3)."
   "Tied variant of mx--fit over tracked atoms 0..N-1.  Atom a with (aref GROUP-OF a)
 >= 0 is a SOFT atom in that group; all soft atoms of a group share one theta, so
 the model energy is sum_g theta_g N_g(x) (+ the fixed part below), N_g the count of
-true group-g atoms (the schema-tying sufficient statistic, learning-background.md
+true group-g atoms (the schema-tying sufficient statistic, Probability/probability-background.md
 S1).  Atom a with group -1 is a FIXED atom whose theta is held at (aref FIXED-THETA
 a) -- its explicit weight's cost-when-true -- and never updated, so the soft groups
 are fit in the PRESENCE of the fixed weights.  TAUS is the per-atom target
@@ -424,7 +424,7 @@ inconsistent with the hard clauses~@[ and the fixed weights~].~%"
                   (values out-file gid->spec))))))))))
 
 ;;; ----------------------------------------------------------------------------
-;;; Marginal inference (Method 1 of Inference/"Marginal Inference in FiFO.md":
+;;; Marginal inference (the exact-enumeration back end of Probability/probability.md:
 ;;; exact enumeration).  Reuses the same feasible-set enumeration the MaxEnt fit
 ;;; uses, but tracks EVERY atom -- not just the weighted ones -- so it reports the
 ;;; marginal of every variable in the theory (e.g. SatPlan Holds state atoms as

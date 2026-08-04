@@ -1,6 +1,11 @@
 # Implementing SatPlan in FiFO
 
-Part of the [FiFO documentation](../README.md).
+### Table of Contents
+
+- [README.md](../README.md) — the FiFO language reference and user guide.
+- $\color{red}{\textbf{SatPlan/satplan.md}}$ — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
+- [Probability/probability.md](../Probability/probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
+- [Probability/probability-background.md](../Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 
 Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's static predicates and quantified formulas make the encoding concise and readable.
 
@@ -379,7 +384,7 @@ After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem
 
 State formulas inside the operators may use `and`/`or`/`not`/`imply` over fluents (e.g. `(at-end (or (on s1) (on s2)))`). For example, `--pddl-evidence '(never (turn-on s1))'` becomes `(all s actslices true (not (occurs (turn-on s1) s)))`, written to `<root>-evidence.scnf` exactly as a FiFO `--evidence` would be — the two flags can be mixed, and the fluents an evidence form names are registered so they get `Holds` variables and frame axioms. PDDL evidence requires a PDDL problem (there is no translation step for a `.wff` input). This first version is ground; quantifying over object types (`forall ?x - switch`) is a planned extension.
 
-`--marginals` switches from planning to **inference**: instead of searching for a plan, the planner instantiates the problem (conjoined with any evidence) once at the working horizon and runs **weighted model counting**, printing `(MARGINAL <atom> <p>)` — the probability `P(atom | evidence)` of each atom under the Gibbs distribution defined by the action costs. The horizon is the fixed `--numslices`, or the reachability/`--minslices` lower bound. `--counter <name>` selects the model counter: `maxent` (the default, the built-in exact enumeration of `lisp/maxent.lisp`) or the name/path of an **ADDMC** binary (e.g. `--counter addmc`, or `--counter /path/to/addmc`), which scales much further. See [../Inference/marginals.md](../Inference/marginals.md) for the counting back ends and the weight-scale handling. If the evidence contradicts the problem, the count is 0 (no feasible set) and that is reported.
+`--marginals` switches from planning to **inference**: instead of searching for a plan, the planner instantiates the problem (conjoined with any evidence) once at the working horizon and runs **weighted model counting**, printing `(MARGINAL <atom> <p>)` — the probability `P(atom | evidence)` of each atom under the Gibbs distribution defined by the action costs. The horizon is the fixed `--numslices`, or the reachability/`--minslices` lower bound. `--counter <name>` selects the model counter: `maxent` (the default, the built-in exact enumeration of `lisp/maxent.lisp`) or the name/path of an **ADDMC** binary (e.g. `--counter addmc`, or `--counter /path/to/addmc`), which scales much further. See [../Probability/probability.md](../Probability/probability.md) for the counting back ends and the weight-scale handling. If the evidence contradicts the problem, the count is 0 (no feasible set) and that is reported.
 
 #### Worked example: the Switch domain, end to end
 
@@ -460,13 +465,6 @@ The `SatPlan/Examples/LogisticsCosts` set (the `logistics-costs` domain — acti
 The reachability lower bound (from `pddl2fifo`'s relaxed planning-graph analysis) is a loose floor; the true smallest horizon is one to nine slices higher because delete effects and resource contention (only so many trucks/airplanes act in parallel) force extra steps. All finished in well under a minute here — the SAT feasibility search dominates, and the MaxSAT cost step converged at the first feasible horizon for every instance. The intermediate `.wff`, `.scnf`, and `.wcnf` files for each problem (generated at its smallest feasible horizon) are kept under `SatPlan/Examples/LogisticsCosts/intermediates/`.
 
 ------
-
-### Related Documents
-
-- [../README.md](../README.md) — the FiFO language reference and user guide.
-- [../Learning/learning.md](../Learning/learning.md) — the weight-learning pipeline that turns target probabilities into the action/preference weights this planner consumes.
-- [../Learning/learning-background.md](../Learning/learning-background.md) — the theory behind weight learning: data regimes, convexity, the oracle, and related work.
-- [../Inference/marginals.md](../Inference/marginals.md) — marginal inference and weighted model counting, the back ends behind `planner.sh --marginals`.
 
 ### References
 

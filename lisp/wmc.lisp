@@ -3,7 +3,7 @@
 ;;; FiFO -> ADDMC bridge: exact weighted model counting and marginal inference
 ;;; via ADDMC (Algebraic Decision Diagram Model Counter, vardigroup/ADDMC).
 ;;;
-;;; This is "Method 3 (WMC tools)" of Inference/marginals.md.  Where maxent.lisp's
+;;; This is "Method 3 (WMC tools)" of Probability/probability.md.  Where maxent.lisp's
 ;;; (marginals ...) enumerates the feasible set in Lisp -- exact but exponential --
 ;;; this path compiles the same weighted .scnf to a weighted CNF, hands it to the
 ;;; ADDMC executable, and parses the count back.  ADDMC counts via algebraic

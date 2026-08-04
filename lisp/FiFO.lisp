@@ -183,7 +183,7 @@ exactly where it was."
                                do (when (and (consp clause) (eq (car clause) 'probability))
                                     (error "~A contains (PROBABILITY ...) forms; it carries target ~
 marginal probabilities, not weights, and cannot be propositionalized directly. ~
-Convert it to a weight-only file first with the learning pipeline (Learning/reweight.lisp ~
+Convert it to a weight-only file first with the learning pipeline (lisp/reweight.lisp ~
 or maxent.lisp)."
                                            SCNFFILE))
                                   (unless (and (consp clause)
