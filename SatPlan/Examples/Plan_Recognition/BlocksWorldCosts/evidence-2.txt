@@ -1,0 +1,2 @@
+;; First 2 of 5 observations from BlockWords/evidence-partial.txt.
+(occur-in-order (unstack r p) (pick-up o))

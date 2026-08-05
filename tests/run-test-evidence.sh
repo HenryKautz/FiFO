@@ -120,6 +120,40 @@ else
   tail -5 log | sed 's/^/      | /'
 fi
 
+# Recognition-style marginals: a disjunctive goal (which introduces Tseitin
+# auxiliary variables in the CNF) conditioned on occur-in-order evidence, under
+# the maxent counter.  Guards the reweight.lisp fix that lets marginal inference
+# tolerate bare Tseitin-variable literals; observing (flip a) must tilt the
+# posterior toward the "a" hypothesis (R a) over the "b" hypothesis (R b).
+printf '  %-52s ... ' "disjunctive-goal marginals under occur-in-order"
+work="$TMP/case-$((PASS+FAIL))"; mkdir -p "$work"; cd "$work"
+cat > dm.pddl <<'PDDL'
+(define (domain dm)
+  (:requirements :strips :typing :action-costs :disjunctive-preconditions)
+  (:functions (total-cost))
+  (:predicates (p ?x) (q ?x) (r ?x))
+  (:action flip :parameters (?x) :precondition (p ?x)
+     :effect (and (q ?x) (not (p ?x)) (increase (total-cost) 1)))
+  (:action boost :parameters (?x) :precondition (q ?x)
+     :effect (and (r ?x) (increase (total-cost) 1))))
+PDDL
+cat > pm.pddl <<'PDDL'
+(define (problem pm) (:domain dm)
+  (:objects a b)
+  (:init (p a) (p b) (= (total-cost) 0))
+  (:goal (or (and (r a) (q a)) (and (r b) (q b)))))
+PDDL
+if bash "$PLANNER" pm.pddl --domain dm.pddl --numslices 3 --marginals \
+     --pddl-evidence '(occur-in-order (flip a))' >log 2>&1; then
+  ra=$(sed -n 's/.*(MARGINAL (HOLDS (R A) 3) \([0-9.]*\)).*/\1/p' log)
+  rb=$(sed -n 's/.*(MARGINAL (HOLDS (R B) 3) \([0-9.]*\)).*/\1/p' log)
+  if [[ -n "$ra" && -n "$rb" ]] && awk "BEGIN{exit !($ra > $rb)}"; then pass
+  else fail "expected P(R a) > P(R b), got R a=$ra R b=$rb"; fi
+else
+  fail "marginals crashed (Tseitin literal in disjunctive goal?)"
+  tail -5 log | sed 's/^/      | /'
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]

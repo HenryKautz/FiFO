@@ -15,7 +15,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
   - `lisp/satplan.wff` — domain-independent SatPlan axioms (a runtime dependency)
 - `bin/` — Shell scripts: `planner.sh` (planner CLI), `learn.sh` (scnf weight-learning CLI), `learn-pddl.sh` (PDDL weight-learning CLI), `marginals.sh` (marginal inference on an scnf; `--solver maxent` enumeration (default), `--solver addmc`, `--solver ddnnf` (FiFO's own d-DNNF compiler), or `--solver d4` (compile the structure with the external d4 compiler, same circuit machinery); `--save-circuit`/`--circuit` persist & reuse a compiled circuit for ddnnf/d4), `wmc.sh` (weighted model count / partition function via ADDMC), `cleanupfifo.sh` (delete intermediate files), `run_regression_tests.sh`
 - `Makefile` — `make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override `BINDIR`/`LISPDIR`)
-- `SatPlan/Examples/` — example PDDL domains/problems
+- `SatPlan/Examples/` — example PDDL domains/problems; `Plan_Recognition/` holds the Ramírez & Geffner recognition benchmarks (BlockWords, IntrusionDetection) plus `make-recognition-instance.lisp`, which turns a dataset problem (domain + `template.pddl` + `hyps.dat` + an `occur-in-order` evidence file) into a full recognition instance — uniform-cost domain (Boltzmann model), disjunctive goal over all hypotheses, and incremental `evidence-<i>.txt` files (the generated `*Costs/` dirs)
 - `Probability/` — probabilistic-layer docs (`probability.md` — the practice guide for marginal inference and weight learning; `probability-background.md` — the theory) and example `.scnf` files
 - `*.wff` — FiFO formula input files
 - `*.scnf` — Symbolic CNF output files (intermediate)

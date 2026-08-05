@@ -51,18 +51,25 @@
 
 (ql:quickload :cl-ppcre :silent t)
 
+(defun rw--atom-p (x)
+  "True if X is usable as a literal's atom: a proposition (PRED args...) or a
+bare symbol.  Bare symbols arise as Tseitin auxiliary variables (e.g. #:XX679)
+introduced when a disjunctive/nested formula is converted to CNF."
+  (or (consp x) (and (symbolp x) (not (null x)))))
+
 (defun rw--literal-atom-and-sign (literal)
   "Split LITERAL into its underlying atom and a flag for whether it is positive.
-Returns (values atom positive-p).  A literal is either (PRED args...) or
-(NOT (PRED args...))."
+Returns (values atom positive-p).  A literal is (PRED args...), a bare Tseitin
+variable symbol, or (NOT <either>)."
   (if (and (consp literal) (eq (car literal) 'not))
       (progn
-        (unless (and (consp (cdr literal)) (null (cddr literal)) (consp (cadr literal)))
+        (unless (and (consp (cdr literal)) (null (cddr literal)) (rw--atom-p (cadr literal)))
           (error "malformed negative literal: ~S" literal))
         (values (cadr literal) nil))
       (progn
-        (unless (consp literal)
-          (error "malformed literal (expected (PRED ...) or (NOT (PRED ...))): ~S" literal))
+        (unless (rw--atom-p literal)
+          (error "malformed literal (expected (PRED ...), a variable symbol, or (NOT ...)): ~S"
+                 literal))
         (values literal t))))
 
 (defun rw--target-marginal (literal p)

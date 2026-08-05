@@ -1,0 +1,2 @@
+;; First 1 of 5 observations from IntrusionDetection/evidence-partial.txt.
+(occur-in-order (recon taurus))

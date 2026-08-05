@@ -19,6 +19,10 @@ nine newer ones.
   performs recon on ten hosts and then gathers information, vandalizes, or
   steals data; the ten candidate goals name attacker objectives over subsets
   of the hosts.
+- `BlocksWorldCosts/`, `IntrusionDetectionCosts/` — full recognition instances
+  (uniform action costs, a disjunctive goal over all hypotheses, incremental
+  evidence files) generated from the two above by
+  `make-recognition-instance.lisp`. See "Recognition instances" below.
 
 Each directory carries the recognition instance in the dataset's own format
 plus a concrete planning problem derived from it:
@@ -29,6 +33,7 @@ plus a concrete planning problem derived from it:
 | `hyps.dat` | the candidate goals, one comma-separated conjunction per line |
 | `real_hyp.dat` | the hidden true goal (one line of `hyps.dat`) |
 | `obs.dat` | the observed action sequence, in order (here 100% observability) |
+| `evidence-partial.txt` | a 50%-observability slice of `obs.dat` as one `occur-in-order` form |
 | `pb1.pddl` | `template.pddl` with the hidden goal substituted in |
 | `pb1.answer` | the plan found by `planner.sh` |
 | `intermediates/pb1.wff` | the pddl2fifo translation (regression-checked by `tests/run-test-pddl.sh`) |
@@ -51,28 +56,76 @@ Neither domain has action costs, so the SAT solver is free to include
 superfluous actions (visible in `IntrusionDetection/pb1.answer`); only
 feasibility is being solved.
 
-## Toward recognition instances
+## Recognition instances: disjunctive goal + costs + evidence
 
-These directories carry everything a FiFO plan-recognition instance needs:
-the lines of `hyps.dat` become a disjunctive goal whose disjuncts carry prior
-probabilities, `obs.dat` becomes evidence, and the posterior over the
-candidate goals is read off with `--marginals`. Under full observability,
-`--pddl-evidence` `at` forms pin each observation to its slice; under partial
-observability — order known, times unknown — one `occur-in-order` form
-asserts the observed subsequence. `BlockWords/evidence-partial.txt` is the
-50%-observability version of its `obs.dat` (every other action):
+The `pb1` problems above pin down a *single* hypothesis and solve for
+feasibility. A genuine recognition instance instead keeps *all* the
+hypotheses and asks, given the observations, for the posterior over them. That
+needs three changes to the raw dataset problem, all produced by
+`make-recognition-instance.lisp`:
+
+1. **Uniform action costs** (`(increase (total-cost) 1)` on every action).
+   Without costs, every trajectory consistent with the evidence has equal
+   weight and the posterior is a mere volume count; with a uniform cost the
+   distribution over plans becomes the Boltzmann model `P(plan) ∝ exp(−β·length)`
+   that Ramírez & Geffner assume — the recognizer then favors goals for which
+   the observed behavior is *efficient*, not merely *possible*. The temperature
+   is `β = cost / scale` (the scnf weight scale, default 1). See FAQ.md
+   ("Mixing Probabilities and Utilities").
+2. **A disjunctive goal** — the `or` of all the `hyps.dat` candidates — so a
+   single theory ranges over every hypothesis at once.
+3. **Incremental evidence files** `evidence-1.txt … evidence-k.txt`, the first
+   *i* observations of `evidence-partial.txt` as an `occur-in-order` form, for
+   watching the posterior sharpen as observations accrue.
+
+### Generating an instance
 
 ```sh
-bin/planner.sh SatPlan/Examples/Plan_Recognition/BlockWords/pb1.pddl \
-    --domain SatPlan/Examples/Plan_Recognition/BlockWords/block-words.pddl \
-    --minslices 9 --maxslices 12 \
-    --pddl-evidence-file SatPlan/Examples/Plan_Recognition/BlockWords/evidence-partial.txt
+cd SatPlan/Examples/Plan_Recognition
+sbcl --script make-recognition-instance.lisp \
+     BlockWords/block-words.pddl BlockWords/template.pddl \
+     BlockWords/hyps.dat BlockWords/evidence-partial.txt \
+     BlocksWorldCosts            # optional 6th arg: the uniform cost (default 1)
 ```
 
-The plan found embeds the five observed actions at strictly increasing slices
-(see `tests/run-test-evidence.sh`, which regression-tests exactly this). See
-FAQ.md ("Mixing Probabilities and Utilities") for how to keep goal priors and
-action weights in one coherent probability model.
+The checked-in `BlocksWorldCosts/` and `IntrusionDetectionCosts/` were produced
+exactly this way. Each holds `<domain>-costs.pddl`, `problem.pddl` (the
+disjunctive goal), and `evidence-1.txt … evidence-5.txt`.
+
+### Running the pipeline
+
+**Most likely explanation** (MAP) — weighted MaxSAT picks the cheapest plan,
+over all hypotheses, that embeds the observed subsequence in order:
+
+```sh
+bin/planner.sh SatPlan/Examples/Plan_Recognition/BlocksWorldCosts/problem.pddl \
+    --domain SatPlan/Examples/Plan_Recognition/BlocksWorldCosts/block-words-costs.pddl \
+    --minslices 9 --maxslices 12 \
+    --pddl-evidence-file SatPlan/Examples/Plan_Recognition/BlocksWorldCosts/evidence-5.txt
+```
+
+**Posterior over the goals** (marginal inference) — `--marginals` reports
+`P(atom | evidence)`; the goal atoms' marginals are the posterior over the
+hypotheses. Exact enumeration (`--counter maxent`, the default) is only
+tractable on tiny instances, so use an ADDMC binary here:
+
+```sh
+bin/planner.sh SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/problem.pddl \
+    --domain SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/intrusion-detection-costs.pddl \
+    --numslices 4 --marginals --counter ../ADDMC/addmc \
+    --pddl-evidence-file SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt
+```
+
+At horizon 4 after three observed recons, the `(information-gathered …)` atoms
+carry the posterior mass (the recons are efficient only under the
+espionage hypothesis) while `(data-stolen-from …)` and `(vandalized …)` are 0 —
+no break-in was observed and four slices are too few to recon, break in, and
+steal. Feeding `evidence-1.txt` through `evidence-5.txt` in turn shows the
+distribution concentrate as observations accumulate.
+
+Note the horizon caveat: a k-observation sequence needs at least k+1 slices, and
+a disjunctive goal does not raise the reachability lower bound, so set
+`--numslices`/`--minslices` high enough to fit the observations.
 
 ## References
 

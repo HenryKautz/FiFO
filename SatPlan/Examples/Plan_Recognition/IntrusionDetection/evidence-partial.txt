@@ -1,0 +1,8 @@
+;; 50%-observability version of obs.dat (every other action, order known,
+;; times unknown), as occur-in-order evidence for --pddl-evidence-file.
+(occur-in-order
+  (recon taurus)
+  (recon leo)
+  (recon virgo)
+  (recon sagittarius)
+  (recon cassiopea))
