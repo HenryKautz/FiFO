@@ -6,6 +6,7 @@
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - $\color{red}{\textbf{Probability/probability.md}}$ — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - [Probability/probability-background.md](probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
+- [FAQ.md](../FAQ.md) — frequently asked questions about modeling with FiFO.
 
 A FiFO theory with weighted literals defines a probability distribution over the
 models of its hard clauses. That single fact supports two directions of
