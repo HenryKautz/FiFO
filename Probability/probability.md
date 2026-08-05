@@ -7,6 +7,7 @@
 - $\color{red}{\textbf{Probability/probability.md}}$ — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - [Probability/probability-background.md](probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [FAQ.md](../FAQ.md) — frequently asked questions about modeling with FiFO.
+- [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 
 A FiFO theory with weighted literals defines a probability distribution over the
 models of its hard clauses. That single fact supports two directions of
@@ -197,29 +198,7 @@ bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1)
 
 Cross-checked against the enumeration back end: exact agreement (max `|P_enum − P_d4| = 0`) on the weighted test instances, including unit-evidence reuse and save→load of a d4-produced circuit.
 
-**Compilation on the LogisticsCosts benchmarks.** Compiling each SatPlan LogisticsCosts problem (see [satplan.md](../SatPlan/satplan.md#benchmark-smallest-horizons-for-the-logisticscosts-problems)) with d4 at its *smallest feasible horizon* — the hard clauses only, plain DIMACS — with a 10-minute cap:
-
-| Problem | Horizon | Variables | Clauses | d4 compile time | d-DNNF size (nodes + arcs) |
-|---|--:|--:|--:|--:|--:|
-| `pb6` | 6  | 528   | 3 710  | < 1 s | 128   |
-| `pb7` | 6  | 1 503 | 14 961 | 4 s   | 540   |
-| `pb1` | 8  | 1 888 | 17 606 | 3 s   | 2 857 |
-| `pb4` | 8  | 1 888 | 17 606 | 3 s   | 1 589 |
-| `pb3` | 10 | 3 423 | 39 417 | 3 s   | 4 428 |
-
-None came close to the cap — every instance compiled in seconds to a circuit of a few hundred to a few thousand nodes-plus-arcs. The reason is that the *smallest feasible* horizon is the most tightly constrained one: there is little slack, so few plans (and few partial assignments) survive, and the d-DNNF stays small. Note also that `pb1` and `pb4` have identical CNF dimensions yet different circuit sizes: same encoding, different goals.
-
-**The cost of slack.** Pushing each problem *one* and *two* slices past its minimum — the same instances, just more room to maneuver — makes the compiled circuit explode, even though the CNF barely grows (a slice adds only a few hundred variables). Circuit size (nodes + arcs) and d4 compile time at horizon +0 / +1 / +2:
-
-| Problem | d-DNNF size (+0 / +1 / +2) | d4 time (+0 / +1 / +2) |
-|---|--:|--:|
-| `pb6` | 128 / 1 162 / 8 300               | < 1 s / 1 s / 1 s |
-| `pb7` | 540 / 6 524 / 1 948 897           | 4 s / 1 s / 15 s |
-| `pb1` | 2 857 / 406 757 / 23 574 047      | 3 s / 6 s / 271 s |
-| `pb4` | 1 589 / 192 335 / 10 926 204      | 3 s / 4 s / 150 s |
-| `pb3` | 4 428 / 976 103 / — (timeout)     | 3 s / 13 s / **> 600 s** |
-
-One extra slice already grows the d-DNNF by one to three orders of magnitude (pb3: 4 428 → 976 103 nodes-plus-arcs); a second slice reaches tens of millions (pb1 at +2: 23.5 M) and, for `pb3` at horizon 12, blows past the 10-minute cap. Compile time follows the same curve — seconds at the minimum, but 271 s for `pb1` at +2 and a timeout for `pb3`. This is the concrete reason to plan at the smallest feasible horizon (and why the home-grown compiler carries a node cap): the slack slices multiply logically-equivalent plans, and the circuit — which must represent *all* of them — grows accordingly.
+The d4 compile times and d-DNNF circuit sizes on the LogisticsCosts benchmarks — at each problem's smallest feasible horizon and the way they explode a slice or two beyond it — are tabulated in [benchmarks.md](../benchmarks.md#d-dnnf-compilation-on-the-logisticscosts-benchmarks).
 
 ------
 

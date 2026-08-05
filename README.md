@@ -7,6 +7,7 @@
 - [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [FAQ.md](FAQ.md) — frequently asked questions about modeling with FiFO.
+- [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 
 henry.kautz@gmail.com
 ---------------------
