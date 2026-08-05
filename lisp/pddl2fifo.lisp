@@ -58,6 +58,10 @@ quantifier and parameter variables are renamed away from these.")
 predicate even when it has no true instances.  Like satplan.wff's dummy
 facts, such a dummy fact generates no clauses.")
 
+(defvar *evidence-sequence-counter* 0
+  "Chain index distinguishing the monitor fluents of multiple (occur-in-order
+...) evidence forms in one translation; rebound to 0 per pddl2fifo call.")
+
 ;;; PDDL reading and access helpers
 
 (defun sym-name= (x name)
@@ -535,9 +539,12 @@ final time slice (numslices)."
 
 (defun collect-constraint-fluents (c bindings object-pairs type-table effect-preds)
   "Fluents referenced by a state-formula constraint, so they get Holds variables
-and frame axioms.  occur-sometime (and the evidence forms never/at) refer to
-actions, not fluents, and a state formula may be referenced at any slice, so its
-fluents come via collect-goal-fluents."
+and frame axioms.  occur-sometime (and the evidence forms never/at/
+occur-in-order) refer to actions, not fluents -- occur-in-order's ObsDone
+monitor atoms are defined by their own biconditionals and must NOT be
+fluent-registered, since frame axioms would contradict their actionless
+slice-to-slice changes -- and a state formula may be referenced at any slice,
+so its fluents come via collect-goal-fluents."
   (flet ((goal-fluents (g b) (collect-goal-fluents g b object-pairs type-table effect-preds)))
     (cond ((and (consp c) (sym-name= (first c) "ALWAYS")) (goal-fluents (second c) bindings))
           ((and (consp c) (sym-name= (first c) "AT-END")) (goal-fluents (second c) bindings))
@@ -601,15 +608,103 @@ occur-sometime, combined with (and ...) and universal (forall ...)."
 ;;; them to a SEPARATE evidence scnf and conjoins them (or counts under them).
 ;;; The referenced fluents still need Holds variables + frame axioms in the
 ;;; problem, so they are registered via collect-constraint-fluents like any
-;;; constraint's.  Two extra operators over actions: (never <action>) and
-;;; (at <slice> <action>).
+;;; constraint's.  Three extra operators over actions: (never <action>),
+;;; (at <slice> <action>), and (occur-in-order <action>+).
+;;;
+;;; (occur-in-order a1 ... ak) asserts an order-preserving embedding of the
+;;; observation sequence into the action trace: there are slices t1 < ... < tk
+;;; (strictly increasing) with (Occurs ai ti).  The actions must be ground.
+;;; The encoding is the standard observation-monitor compilation: fresh atoms
+;;; (ObsDone c i s) -- "the first i observations of chain c are explained by
+;;; slice s" -- with BICONDITIONAL progression axioms, so the monitor atoms are
+;;; fully determined by the action trace.  That determinism makes them
+;;; count-neutral under weighted model counting (a one-directional encoding
+;;; would double the count per underdetermined atom), so the same form serves
+;;; planning, conditioning, and --marginals.  O(k * numslices) clauses.
 
-(defun translate-evidence-form (c bindings forbidden effect-preds)
+(defun find-action-schema (name domain-def)
+  "The (:action ...) form in DOMAIN-DEF named NAME, or NIL."
+  (find-if (lambda (s) (and (consp s) (eq (first s) :action)
+                            (sym-name= (second s) name)))
+           (define-sections domain-def)))
+
+(defun check-observed-action (a env effect-preds)
+  "Validate one ground observed action A from an occur-in-order evidence form:
+its head must name an action schema of matching arity, each argument must be an
+object of the parameter's type, and the schema's static-precondition guards
+must hold for those arguments.  An unchecked observation of an action the
+theory can never execute would leave its Occurs atom unconstrained, letting the
+monitor fire vacuously.  (The never/at evidence forms currently skip these
+checks.)"
+  (destructuring-bind (&key domain-def object-pairs type-table static-init) env
+    (unless (and (consp a) (symbolp (first a)) (not (pddl-variable-p (first a))))
+      (error "Malformed observed action ~s in occur-in-order evidence ~
+              (expected (<action-name> <object>*))" a))
+    (dolist (arg (rest a))
+      (when (pddl-variable-p arg)
+        (error "Observed action ~s in occur-in-order evidence contains the ~
+                variable ~s; occur-in-order takes ground actions only" a arg)))
+    (let ((schema (find-action-schema (first a) domain-def)))
+      (unless schema
+        (error "Unknown action ~s in occur-in-order evidence" (first a)))
+      (let ((params (parse-typed-list (getf (cddr schema) :parameters)
+                                      (format nil "parameters of action ~a" (first a)))))
+        (unless (= (length (rest a)) (length params))
+          (error "Observed action ~s in occur-in-order evidence has ~d argument~:p; ~
+                  action ~a takes ~d" a (length (rest a)) (first a) (length params)))
+        (loop for arg in (rest a) for p in params do
+          (unless (member arg (reachability-param-objects (cdr p) object-pairs type-table)
+                          :test #'sym-name=)
+            (error "In occur-in-order evidence ~s, ~s is not an object of type ~s ~
+                    (parameter ~s of action ~a)" a arg (cdr p) (car p) (first a))))
+        (let ((binding (mapcar #'cons (mapcar #'car params) (rest a))))
+          (dolist (p (conjuncts (getf (cddr schema) :precondition)))
+            (let* ((neg (negation-p p))
+                   (atom (if neg (second p) p)))
+              (when (and (consp atom) (static-predicate-p (first atom) effect-preds))
+                (let ((ground (reachability-ground-substitute atom binding)))
+                  (when (if neg
+                            (member ground static-init :test #'equal)
+                            (not (member ground static-init :test #'equal)))
+                    (error "Observed action ~s in occur-in-order evidence is never ~
+                            executable: its static precondition ~s fails"
+                           a (if neg (list 'not ground) ground))))))))))))
+
+(defun translate-occur-in-order (actions env effect-preds)
+  "Translate (occur-in-order a1 ... ak) into the monitor-fluent FiFO formula
+described in the section comment above.  Observation indices are unrolled to
+literal integers; only the slice variable s stays symbolic."
+  (unless actions
+    (error "occur-in-order evidence requires at least one action"))
+  (dolist (a actions) (check-observed-action a env effect-preds))
+  (let ((chain (incf *evidence-sequence-counter*))
+        (k (length actions)))
+    `(and
+       ;; Slice 1: nothing has been observed yet.
+       ,@(loop for i from 1 to k collect `(not (ObsDone ,chain ,i 1)))
+       ;; Progression: the first i observations are explained by slice s+1 iff
+       ;; they were explained by s, or the first i-1 were and a_i occurs at s.
+       ,@(loop for i from 1 to k
+               for a in actions
+               collect `(all s actslices true
+                          (equiv (ObsDone ,chain ,i (+ s 1))
+                                 (or (ObsDone ,chain ,i s)
+                                     ,(if (= i 1)
+                                          `(occurs ,a s)
+                                          `(and (ObsDone ,chain ,(1- i) s)
+                                                (occurs ,a s)))))))
+       ;; The evidence itself: all k observations explained by the final slice.
+       (ObsDone ,chain ,k numslices))))
+
+(defun translate-evidence-form (c bindings forbidden effect-preds env)
   "Translate one PDDL-style evidence form C into a horizon-independent FiFO
 formula over the slice timeline.  Supports the trajectory operators always,
 at-end, hold-during, occur-sometime -- combined with (and ...) and (forall ...)
--- plus (never <action>) and (at <slice> <action>).  Quantifiers ground over
-slices/actslices when the planner re-instantiates at each horizon."
+-- plus (never <action>), (at <slice> <action>), and the ground-only
+(occur-in-order <action>+).  Quantifiers ground over slices/actslices when the
+planner re-instantiates at each horizon.  ENV carries the problem context
+(:domain-def :object-pairs :type-table :static-init) for validating observed
+actions."
   (let ((context "PDDL evidence"))
     (cond
       ((and (consp c) (sym-name= (first c) "NEVER"))
@@ -617,13 +712,19 @@ slices/actslices when the planner re-instantiates at each horizon."
       ((and (consp c) (sym-name= (first c) "AT"))
        `(occurs ,(substitute-terms (third c) bindings context)
                 ,(constraint-time-bound (second c) "slice" c)))
+      ((and (consp c) (sym-name= (first c) "OCCUR-IN-ORDER"))
+       (when bindings
+         (error "occur-in-order evidence must be at the top level, not under ~
+                 forall: it takes ground actions only, got ~s under bindings ~s"
+                c (mapcar #'car bindings)))
+       (translate-occur-in-order (rest c) env effect-preds))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all
          (parse-quantifier-pairs (second c) context)
          bindings forbidden
-         (lambda (b f) (translate-evidence-form (third c) b f effect-preds))))
+         (lambda (b f) (translate-evidence-form (third c) b f effect-preds env))))
       ((and (consp c) (sym-name= (first c) "AND"))
-       (cons 'and (mapcar (lambda (x) (translate-evidence-form x bindings forbidden effect-preds))
+       (cons 'and (mapcar (lambda (x) (translate-evidence-form x bindings forbidden effect-preds env))
                           (rest c))))
       ((and (consp c)
             (member (symbol-name (first c)) '("ALWAYS" "AT-END" "HOLD-DURING" "OCCUR-SOMETIME")
@@ -631,7 +732,7 @@ slices/actslices when the planner re-instantiates at each horizon."
        (translate-constraint c bindings forbidden effect-preds context))
       (t (error "Unsupported PDDL evidence form ~s~@
                  (supported: always, at-end, hold-during, occur-sometime, never, at, ~
-                  combined with and / forall)" c)))))
+                  occur-in-order, combined with and / forall)" c)))))
 
 ;;; Preferences (soft goals / soft constraints).
 ;;;
@@ -1113,9 +1214,14 @@ none)."
                                      :test #'equal))
                ;; PDDL evidence: translated FiFO forms (returned, not written) and
                ;; the fluents they reference (registered for Holds vars + frame axioms).
-               (evidence-fifo (mapcar (lambda (c)
-                                        (translate-evidence-form c '() forbidden effect-preds))
-                                      pddl-evidence))
+               (evidence-fifo (let ((*evidence-sequence-counter* 0)
+                                    (env (list :domain-def domain-def
+                                               :object-pairs all-object-pairs
+                                               :type-table type-table
+                                               :static-init static-init)))
+                                (mapcar (lambda (c)
+                                          (translate-evidence-form c '() forbidden effect-preds env))
+                                        pddl-evidence)))
                (evidence-fluents (remove-duplicates
                                    (mapcan (lambda (c)
                                              (collect-constraint-fluents

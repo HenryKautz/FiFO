@@ -55,11 +55,24 @@ feasibility is being solved.
 
 These directories carry everything a FiFO plan-recognition instance needs:
 the lines of `hyps.dat` become a disjunctive goal whose disjuncts carry prior
-probabilities, `obs.dat` becomes evidence (`--pddl-evidence` `at` forms pin
-each observation to its slice under full observability), and the posterior
-over the candidate goals is read off with `--marginals`. See FAQ.md
-("Mixing Probabilities and Utilities") for how to keep goal priors and action
-weights in one coherent probability model.
+probabilities, `obs.dat` becomes evidence, and the posterior over the
+candidate goals is read off with `--marginals`. Under full observability,
+`--pddl-evidence` `at` forms pin each observation to its slice; under partial
+observability — order known, times unknown — one `occur-in-order` form
+asserts the observed subsequence. `BlockWords/evidence-partial.txt` is the
+50%-observability version of its `obs.dat` (every other action):
+
+```sh
+bin/planner.sh SatPlan/Examples/Plan_Recognition/BlockWords/pb1.pddl \
+    --domain SatPlan/Examples/Plan_Recognition/BlockWords/block-words.pddl \
+    --minslices 9 --maxslices 12 \
+    --pddl-evidence-file SatPlan/Examples/Plan_Recognition/BlockWords/evidence-partial.txt
+```
+
+The plan found embeds the five observed actions at strictly increasing slices
+(see `tests/run-test-evidence.sh`, which regression-tests exactly this). See
+FAQ.md ("Mixing Probabilities and Utilities") for how to keep goal priors and
+action weights in one coherent probability model.
 
 ## References
 

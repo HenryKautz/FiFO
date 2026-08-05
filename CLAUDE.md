@@ -6,7 +6,7 @@ FiFO is a finite-domain first-order logic language that compiles to propositiona
 
 - `lisp/` — All Lisp sources and the SatPlan axioms (the installable library):
   - `lisp/FiFO.lisp` — Main interpreter: parser, CNF generation, SAT integration, answer extraction
-  - `lisp/pddl2fifo.lisp` — PDDL → FiFO wff translator (SatPlan); supports the PDDL 3.0 con-GD grammar in `:constraints` (`and`/`forall` over the modals; full goal descriptions incl. `forall`/`exists` inside modals, the problem `:goal`, and preference bodies — static-predicate atoms in formulas stay bare literals resolved at instantiation); `:pddl-evidence` translates PDDL modal evidence forms (`translate-evidence-form`: always/at-end/hold-during/occur-sometime/never/at, combined with and/forall) to FiFO and returns them (3rd value) for the planner's separate evidence scnf
+  - `lisp/pddl2fifo.lisp` — PDDL → FiFO wff translator (SatPlan); supports the PDDL 3.0 con-GD grammar in `:constraints` (`and`/`forall` over the modals; full goal descriptions incl. `forall`/`exists` inside modals, the problem `:goal`, and preference bodies — static-predicate atoms in formulas stay bare literals resolved at instantiation); `:pddl-evidence` translates PDDL modal evidence forms (`translate-evidence-form`: always/at-end/hold-during/occur-sometime/never/at, combined with and/forall, plus the ground-only `occur-in-order` — ordered action observations compiled to determined ObsDone monitor atoms via biconditional progression axioms, count-neutral under WMC) to FiFO and returns them (3rd value) for the planner's separate evidence scnf
   - `lisp/planner.lisp` — smallest-horizon planning driver; also tier-3 conditioning (`--evidence`/`--evidence-file` FiFO forms, or `--pddl-evidence`/`--pddl-evidence-file` PDDL modal forms translated via pddl2fifo, instantiated via `parse-same-env` into a separate `<root>-evidence.scnf`) and `--marginals` (weighted model counting via `--counter maxent|<addmc>`)
   - `lisp/reweight.lisp`, `lisp/maxent.lisp` — weight-learning pipeline; `maxent.lisp` also has `(marginals ...)` (exact marginal inference by enumeration)
   - `lisp/plearn.lisp` — PDDL weight-learning orchestrator (`learn-pddl`)
@@ -62,7 +62,9 @@ bash run-test-solve.sh <testname>         # e.g. bash run-test-solve.sh test_sim
 
 `run-test-solve.sh` runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname>.answer`, and cats the output.
 
-`tests/run-test-pddl.sh` (runnable from anywhere) is the PDDL-translator regression suite: for every example problem with a checked-in translation under `SatPlan/Examples/` (LogisticsCosts pb1–pb7, TruckLog, Switch, LogisticsPrefs), it runs `pddl2fifo` on a temp copy and diffs the wff byte-for-byte against the checked-in one (the `(include ...)` satplan path is normalized). Update the checked-in wffs whenever emitter output legitimately changes.
+`tests/run-test-pddl.sh` (runnable from anywhere) is the PDDL-translator regression suite: for every example problem with a checked-in translation under `SatPlan/Examples/` (LogisticsCosts pb1–pb7, TruckLog, Switch, LogisticsPrefs, Plan_Recognition), it runs `pddl2fifo` on a temp copy and diffs the wff byte-for-byte against the checked-in one (the `(include ...)` satplan path is normalized). Update the checked-in wffs whenever emitter output legitimately changes.
+
+`tests/run-test-evidence.sh` (runnable from anywhere) is the `--pddl-evidence` regression suite, chiefly for `occur-in-order`: behavioral checks (plan embeds the observed sequence at strictly increasing slices; bad evidence raises its contextual error), not gold diffs — evidence clauses can contain session-varying gensyms.
 
 The full suite runs from the repo root with `bash bin/run_regression_tests.sh` (it tests `lisp/` by default; set `FIFO_LISP` to test an installed copy).
 

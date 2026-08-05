@@ -39,8 +39,10 @@ usage() {
   echo "               separate <root>-evidence.scnf and conjoined.  Repeatable." >&2
   echo "  --evidence-file <f>   a file of such formulas, conjoined with any --evidence." >&2
   echo "  --pddl-evidence <form>  evidence in the PDDL modal language (always | at-end |" >&2
-  echo "               hold-during | occur-sometime | never | at, over PDDL predicate/action" >&2
-  echo "               names), translated to FiFO by pddl2fifo.  Repeatable.  PDDL only." >&2
+  echo "               hold-during | occur-sometime | never | at | occur-in-order, over PDDL" >&2
+  echo "               predicate/action names), translated to FiFO by pddl2fifo.  Repeatable." >&2
+  echo "               PDDL only.  (occur-in-order <action>+) asserts the ground actions" >&2
+  echo "               occur in that order at strictly increasing, unspecified slices." >&2
   echo "  --pddl-evidence-file <f>  a file of such PDDL modal forms." >&2
   echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
   echo "               at the working horizon (no plan search)." >&2
