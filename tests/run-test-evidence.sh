@@ -208,6 +208,27 @@ else
   fail "derived-predicate marginals failed"; tail -5 log | sed 's/^/      | /'
 fi
 
+# All-derived (or all-static) general goal: GOAL-FLUENTS is empty while the goal
+# still takes the general-formula path.  Guards the fix for the emitter's
+# goal-fluents domain cycle (an empty goal-fluents must not be folded into, nor
+# emitted in terms of, the fluents domain).
+printf '  %-52s ... ' "all-derived disjunctive goal instantiates"
+work="$TMP/case-$((PASS+FAIL))"; mkdir -p "$work"; cd "$work"
+dp_domain
+cat > pm2.pddl <<'PDDL'
+(define (problem dpp) (:domain dp)
+  (:objects a b - block)
+  (:init (handempty) (ontable a) (ontable b) (clear a) (clear b))
+  (:goal (or (spells-ab))))
+PDDL
+if bash "$PLANNER" pm2.pddl --domain dp.pddl --numslices 3 --marginals >log 2>&1 \
+   && grep -q '(MARGINAL (HOLDS (SPELLS-AB) 3)' log; then
+  pass
+else
+  fail "all-derived goal failed to instantiate/marginalize (goal-fluents cycle?)"
+  tail -5 log | sed 's/^/      | /'
+fi
+
 # Negative tests: each malformed derived use must raise its contextual error.
 dp_neg() {
   local label="$1" mutate="$2" expect="$3"

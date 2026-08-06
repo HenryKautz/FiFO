@@ -10,8 +10,9 @@
 - $\color{red}{\textbf{benchmarks.md}}$ — measured results: horizons, CNF sizes, and compilation costs.
 
 This file collects the measured results referenced throughout the documentation:
-planning horizons and CNF sizes for the example problems, and the cost of
-compiling them to d-DNNF circuits for exact inference.
+planning horizons and CNF sizes for the example problems, the cost of compiling
+them to d-DNNF circuits for exact inference, and MAP inference on the plan-
+recognition benchmarks.
 
 ## SatPlan: smallest horizons for the LogisticsCosts problems
 
@@ -54,3 +55,48 @@ None came close to the cap — every instance compiled in seconds to a circuit o
 | `pb3` | 4 428 / 976 103 / — (timeout)     | 3 s / 13 s / **> 600 s** |
 
 One extra slice already grows the d-DNNF by one to three orders of magnitude (pb3: 4 428 → 976 103 nodes-plus-arcs); a second slice reaches tens of millions (pb1 at +2: 23.5 M) and, for `pb3` at horizon 12, blows past the 10-minute cap. Compile time follows the same curve — seconds at the minimum, but 271 s for `pb1` at +2 and a timeout for `pb3`. This is the concrete reason to plan at the smallest feasible horizon (and why the home-grown compiler carries a node cap): the slack slices multiply logically-equivalent plans, and the circuit — which must represent *all* of them — grows accordingly.
+
+## MAP inference on the plan-recognition benchmarks
+
+### Provenance and adaptation
+
+Two problems from the Ramírez & Geffner plan-recognition benchmarks (AAAI-10), via the PUCRS goal-plan-recognition dataset (see [`SatPlan/Examples/Plan_Recognition/`](SatPlan/Examples/Plan_Recognition/)):
+
+- **BlockWords** (`block-words-aaai_p01`) — eight letter-labeled blocks; 21 candidate goals, each a tower spelling an English word. The hidden goal spells **CORE** (`hyp16` in generation order; `hyp0` is a different word, DRAW).
+- **IntrusionDetection** (`intrusion-detection-aaai_p10`) — an attacker over ten hosts; 10 candidate goals naming attacker objectives over subsets of hosts. The hidden goal is *information-gathered on all ten hosts* (`hyp0`).
+
+Each is adapted to a FiFO/SatPlan recognition instance by `make-recognition-instance.lisp`:
+
+- **Costs.** Every action gets a uniform `(increase (total-cost) 1)`, so plan cost = plan length and the distribution over trajectories is the Boltzmann model `exp(−β · length)`, `β = cost / scale` — the model Ramírez & Geffner assume. (BlockWords additionally has the original `(not (= ?x ?y))` guards dropped, since FiFO has no `=`; harmless in the 4-operator blocks world.)
+- **Disjunctive goal over derived predicates.** Each hypothesis becomes a nullary derived predicate `hypI` equal to the conjunction of its goal literals, so the goal is `(or (hyp0) … (hypN))` and each hypothesis is a single atom `(HOLDS (hypI) numslices)` — one readable handle per hypothesis.
+- **Ordered evidence.** The dataset's `obs.dat` (the true agent's plan) is turned into `occur-in-order` forms; `evidence-K.txt` is the first *K* observations — partial observability, order known, times unknown.
+- **Horizon.** So the horizon never eliminates a hypothesis, the *minimum feasible horizon of each single-hypothesis goal* is found with the non-probabilistic planner, and the shared horizon `H` is the **maximum** over hypotheses: **Intrusion H = 6**, **BlockWords H = 15** (one word, `hyp15`, needs 15 slices).
+
+### MAP results
+
+For three evidence prefixes per domain, the **MAP / max-optimal plan** — the single lowest-cost plan that embeds the observations (in order) and satisfies some hypothesis, found by weighted MaxSAT at the fixed horizon `H`. *Recognized* is the hypothesis that holds at the final slice of that plan; *cost* is the number of actions.
+
+| Domain | Observations | Horizon | Vars | Clauses | Time | MAP cost | Recognized | True |
+|---|--:|--:|--:|--:|--:|--:|:--:|:--:|
+| IntrusionDetection | 1 | 6  | 1 056 | 2 240   | 3.3 s | 14 | hyp3  | hyp0  |
+| IntrusionDetection | 3 | 6  | 1 068 | 2 282   | 3.9 s | 16 | hyp3  | hyp0  |
+| IntrusionDetection | 5 | 6  | 1 080 | 2 324   | 2.2 s | 18 | hyp2  | hyp0  |
+| BlockWords         | 1 | 15 | 3 681 | 240 552 | 8.4 s | 4  | hyp5  | hyp16 |
+| BlockWords         | 3 | 15 | 3 711 | 240 666 | 9.1 s | 7  | hyp5  | hyp16 |
+| BlockWords         | 5 | 15 | 3 741 | 240 780 | 9.7 s | 10 | **hyp16** | hyp16 |
+
+(Intermediate results are kept under each instance's `runs/` subdirectory — `runs/horizons/` for the per-hypothesis horizon sweep, `runs/map/` for these runs.)
+
+### Reading the results: MAP is the cheapest explanation, not the most likely one
+
+The recognized hypothesis is *wrong* (≠ the true hidden goal) in five of the six rows, and that is expected — it is the cost bias of MAP, not a defect of the encoding (the machinery is provably sound: BlockWords recovers the true `hyp16` once the evidence is rich enough). MAP returns the single **cheapest** plan consistent with the observations, so it recognizes the hypothesis that is cheapest to reach, regardless of whether the observations actually single it out:
+
+- **BlockWords** flips to the true `hyp16` at 5 observations. With 1–3 observations the prefix (`unstack R P`, …) lies on the optimal path of many words, so it fails to discriminate and the cheaper decoy `hyp5` (the word CROW, cost 4) wins over the pricier true CORE (cost 10). By 5 observations the prefix contains `stack R E` — putting R on E, a CORE move but not a CROW move — so the evidence finally discriminates and the cheap decoy is ruled out.
+- **IntrusionDetection** never recovers the true `hyp0`, because the observed recons are the common first step of *every* attack (non-discriminative) and the true goal — reconnaissance on all ten hosts — is the *most expensive* hypothesis in the set. The cheapest plan embedding the recons always lands on a smaller, cheaper targeted attack.
+
+Two points worth drawing out. First, **switching to marginals would not fix this and would make it worse**: at a fixed horizon the cheap goal has *more* compatible trajectories (more slack to pad) *and* cheaper ones (weighted up by `exp(−cost)`), so the raw marginal `P(hyp | O) ∝ Z_{hyp,O}` favors the cheap decoy even more strongly — the Z_G bias of [FAQ.md](FAQ.md#goal-posteriors-and-the-per-goal-normalization-z_g-issue). Calibrated recognition needs the normalized likelihood `Z_{hyp,O} / Z_hyp`, which divides out each goal's intrinsic cheapness, *plus* discriminating evidence. Second, **exact marginals were intractable here anyway**: at these horizons (H = 6 and 15) every weighted-model-counting run timed out (ADDMC, 240 s cap), while MAP finished in seconds — the same tractability gap between optimization (MaxSAT) and counting (WMC) seen in the cost-of-slack table above. MAP is the tractable-but-biased option; the exact posterior is the calibrated-but-expensive one.
+
+### References
+
+- M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, 1121–1126. (The Boltzmann plan model and the `c(G,O) − c(G,¬O)` baseline that removes each goal's intrinsic reachability.)
+- R. F. Pereira, N. Oren & F. Meneguzzi (2017). Landmark-based heuristics for goal recognition. *AAAI-17*. (The curated dataset these instances come from.)

@@ -1,0 +1,4 @@
+evidence_obs	horizon	vars	clauses	seconds	map_cost	recognized_hyp
+1	6	1056	2240	3.3	14	HYP3
+3	6	1068	2282	3.9	16	HYP3
+5	6	1080	2324	2.2	18	HYP2

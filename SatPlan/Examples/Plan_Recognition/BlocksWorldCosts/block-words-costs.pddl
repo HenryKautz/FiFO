@@ -2,7 +2,8 @@
 ;; uniform action cost 1 (Boltzmann model: each action
 ;; multiplies a trajectory's probability by exp(-1/scale)).
 (define (domain blocks)
- (:requirements :strips :typing :action-costs :disjunctive-preconditions)
+ (:requirements :strips :typing :action-costs :disjunctive-preconditions
+  :derived-predicates)
  (:functions (total-cost)) (:types block)
  (:predicates (on ?x ?y - block) (ontable ?x - block) (clear ?x - block)
   (handempty) (holding ?x - block))
@@ -21,4 +22,27 @@
  (:action unstack :parameters (?x ?y - block) :precondition
   (and (on ?x ?y) (clear ?x) (handempty)) :effect
   (and (holding ?x) (clear ?y) (not (clear ?x)) (not (handempty))
-       (not (on ?x ?y)) (increase (total-cost) 1))))
+       (not (on ?x ?y)) (increase (total-cost) 1)))
+ (:derived (hyp0) (and (clear d) (ontable w) (on d r) (on r a) (on a w)))
+ (:derived (hyp1) (and (clear w) (ontable r) (on w a) (on a r)))
+ (:derived (hyp2) (and (clear r) (ontable w) (on r a) (on a w)))
+ (:derived (hyp3) (and (clear w) (ontable d) (on w a) (on a d)))
+ (:derived (hyp4) (and (clear c) (ontable w) (on c r) (on r o) (on o w)))
+ (:derived (hyp5) (and (clear r) (ontable w) (on r o) (on o w)))
+ (:derived (hyp6) (and (clear w) (ontable r) (on w e) (on e a) (on a r)))
+ (:derived (hyp7) (and (clear e) (ontable r) (on e a) (on a r)))
+ (:derived (hyp8) (and (clear p) (ontable r) (on p e) (on e a) (on a r)))
+ (:derived (hyp9) (and (clear r) (ontable e) (on r o) (on o p) (on p e)))
+ (:derived (hyp10) (and (clear d) (ontable e) (on d o) (on o p) (on p e)))
+ (:derived (hyp11) (and (clear d) (ontable r) (on d e) (on e a) (on a r)))
+ (:derived (hyp12) (and (clear w) (ontable e) (on w o) (on o r) (on r e)))
+ (:derived (hyp13)
+  (and (clear p) (ontable r) (on p o) (on o w) (on w e) (on e r)))
+ (:derived (hyp14) (and (clear r) (ontable p) (on r e) (on e a) (on a p)))
+ (:derived (hyp15)
+  (and (clear c) (ontable r) (on c o) (on o w) (on w e) (on e r)))
+ (:derived (hyp16) (and (clear c) (ontable e) (on c o) (on o r) (on r e)))
+ (:derived (hyp17) (and (clear p) (ontable e) (on p o) (on o r) (on r e)))
+ (:derived (hyp18) (and (clear w) (ontable e) (on w a) (on a d) (on d e)))
+ (:derived (hyp19) (and (clear p) (ontable w) (on p a) (on a w)))
+ (:derived (hyp20) (and (clear r) (ontable e) (on r a) (on a p) (on p e))))

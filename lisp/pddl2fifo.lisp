@@ -1533,11 +1533,13 @@ none)."
               ;; For a disjunctive/nested goal, gather its fluents so they get
               ;; Holds variables and frame axioms; the goal itself is asserted as
               ;; a direct formula below (and goal-state is left empty).
-              (when general-goal
-                (write-form out
-                  (if goal-fluents
-                      `(domain goal-fluents (set ,@goal-fluents))
-                      '(domain goal-fluents (set-difference fluents fluents)))))
+              ;; Only when the goal actually contributes fluents.  A general goal
+              ;; over only static/derived atoms yields an empty GOAL-FLUENTS; the
+              ;; old empty-domain idiom (set-difference fluents fluents) would make
+              ;; goal-fluents refer to fluents while fluents refers to goal-fluents
+              ;; -- a cycle -- so emit (and union in, below) only when non-empty.
+              (when goal-fluents
+                (write-form out `(domain goal-fluents (set ,@goal-fluents))))
               ;; Fluents named only by trajectory constraints (always/at-end/
               ;; hold-during).  occur-sometime contributes no fluents.
               (when constraint-fluents
@@ -1572,7 +1574,7 @@ none)."
                               (when dynamic-init '(initial-state))
                               (when goal+ '(goal-state))
                               (when goal- '(negative-goal-state))
-                              (when general-goal '(goal-fluents))
+                              (when goal-fluents '(goal-fluents))
                               (when constraint-fluents '(constraint-fluents))
                               (when pref-fluents '(pref-fluents))
                               (when fluentcost-fluents '(fluentcost-fluents))
