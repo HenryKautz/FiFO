@@ -278,6 +278,20 @@ Standard PDDL attaches costs to actions, never to states. The FiFO-specific `(:f
 
 Each compiles to a per-slice weight — the same pattern satplan.wff uses for action costs — `(all s slices true (weight (holds <literal> s) <cost>))` (with `(not (holds ...))` for a negated literal), so the total contribution is `<cost>` times the number of slices the literal holds. This lets you express things PDDL cannot: fuel/time burned while a condition persists, occupancy costs, "minimize time spent in a bad state," and (by negating the literal) a per-slice *reward* for keeping something true. The literal must name a dynamic fluent. Like preferences, fluent costs make the problem a weighted-MaxSAT instance and add to the same `*objective*`; because cost accrues per slice, a fluent cost is sensitive to the horizon (a longer plan can accrue more). Costs are non-negative.
 
+#### Derived predicates
+
+A `(:derived (P ?args) <goal-description>)` rule (PDDL's `:derived-predicates`) declares a **derived predicate**: a predicate whose per-slice truth is a *defined function* of the basic state — `P` holds exactly when its body holds — rather than something an action sets. `pddl2fifo` supports the **non-recursive** case: the dependency graph among derived predicates must be acyclic (a recursive definition is rejected). Bodies are full goal descriptions — `and`/`or`/`not`/`imply`/`forall`/`exists` over basic fluents, static predicates, and *lower* derived predicates.
+
+```lisp
+(:requirements :strips :typing :derived-predicates)
+(:derived (clear-block ?x) (forall (?y - block) (not (on ?y ?x))))   ; parameterized, quantified body
+(:derived (tower-core) (and (on c o) (on o r) (on r e) (clear-block c)))  ; nullary; references another derived
+```
+
+Each rule compiles to one per-slice biconditional, `(all s slices true (equiv (holds (P args) s) <body at s>))`, so `(holds (P args) s)` is pinned entirely by the body. Crucially, the derived functor is **not** a member of the `fluents` domain, so it gets *no* frame axioms and no closed-world initial default — its value is recomputed at every slice from its body, exactly as PDDL's axiom semantics require. Because the body is over already-determined basic fluents, the reified atom is fully determined and therefore **count-neutral** under weighted model counting, so a derived predicate can be used freely in planning, conditioning, and `--marginals`.
+
+Derived predicates may appear in the problem `:goal`, `:constraints`, preference bodies, `--pddl-evidence`, and other derived bodies — but **not** in action preconditions or effects, nor asserted in `:init` (each is rejected with an explanatory error). One practical payoff: a derived predicate equal to a conjunction, used as a disjunct of a disjunctive goal, gives you a single atom whose marginal `(MARGINAL (HOLDS (P …) numslices) p)` is the probability that disjunct's condition holds — a compact, directly-readable handle for the disjunct.
+
 #### The `:metric` is optional
 
 `:metric` is now an *override*, not a requirement. Action costs (whether written as `:cost` slots or `(increase (total-cost) …)` effects), inline preference weights, and `:fluent-cost` forms all declare their own weights, and the objective is implicitly "minimize the sum of all of them." So a problem can omit `:metric` entirely and still be optimized. Supply `:metric minimize …` only when you want to (a) give preference weights without writing them inline (via `(is-violated <name>)` terms) or (b) scale the action-cost total with a coefficient on `(total-cost)`. An inline preference weight overrides the corresponding metric term, and `:fluent-cost` weights are independent of the metric.

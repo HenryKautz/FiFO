@@ -154,6 +154,89 @@ else
   tail -5 log | sed 's/^/      | /'
 fi
 
+# --- Derived predicates (:derived) ---------------------------------------------
+# A nullary derived predicate equal to a conjunction, used as one disjunct of a
+# disjunctive goal, plus a parameterized derived predicate with a quantified body
+# that it references.  The derived atoms must be reified (holds ...) with NO frame
+# axioms, and their marginals must be determined by their bodies (count-neutral).
+dp_domain() {
+  cat > dp.pddl <<'PDDL'
+(define (domain dp)
+  (:requirements :strips :typing :derived-predicates :disjunctive-preconditions)
+  (:predicates (on ?x ?y - block) (ontable ?x - block) (clear ?x - block)
+               (handempty) (holding ?x - block))
+  (:derived (clear-d ?x - block) (forall (?y - block) (not (on ?y ?x))))
+  (:derived (spells-ab) (and (on a b) (ontable b) (clear-d a)))
+  (:action pick-up :parameters (?x - block)
+     :precondition (and (clear ?x) (ontable ?x) (handempty))
+     :effect (and (not (ontable ?x)) (not (clear ?x)) (not (handempty)) (holding ?x)))
+  (:action put-down :parameters (?x - block)
+     :precondition (holding ?x)
+     :effect (and (not (holding ?x)) (clear ?x) (handempty) (ontable ?x)))
+  (:action stack :parameters (?x ?y - block)
+     :precondition (and (holding ?x) (clear ?y))
+     :effect (and (not (holding ?x)) (not (clear ?y)) (clear ?x) (handempty) (on ?x ?y)))
+  (:action unstack :parameters (?x ?y - block)
+     :precondition (and (on ?x ?y) (clear ?x) (handempty))
+     :effect (and (holding ?x) (clear ?y) (not (clear ?x)) (not (handempty)) (not (on ?x ?y)))))
+PDDL
+}
+
+printf '  %-52s ... ' "derived predicate: frame-axiom exclusion + marginal"
+work="$TMP/case-$((PASS+FAIL))"; mkdir -p "$work"; cd "$work"
+dp_domain
+cat > dp.prob <<'PDDL'
+(define (problem dpp) (:domain dp)
+  (:objects a b - block)
+  (:init (handempty) (ontable a) (ontable b) (clear a) (clear b))
+  (:goal (or (spells-ab) (on b a))))
+PDDL
+mv dp.prob pm2.pddl
+if bash "$PLANNER" pm2.pddl --domain dp.pddl --numslices 3 --marginals >log 2>&1; then
+  # SPELLS-AB / CLEAR-D must be defined by biconditionals but never framed:
+  # no OCCURS/ADD/DEL clause may mention them (grep the instantiated scnf).
+  scnf=$(ls *-combined.scnf pm2.scnf 2>/dev/null | head -1)
+  sab=$(sed -n 's/.*(MARGINAL (HOLDS (SPELLS-AB) 3) \([0-9.]*\)).*/\1/p' log)
+  if [[ -z "$sab" ]]; then
+    fail "no SPELLS-AB marginal reported"; tail -5 log | sed 's/^/      | /'
+  elif grep -qiE '(add|del|occurs).*(spells-ab|clear-d)' "$scnf"; then
+    fail "derived atom appears in a frame/effect clause (should be definition-only)"
+  else
+    pass
+  fi
+else
+  fail "derived-predicate marginals failed"; tail -5 log | sed 's/^/      | /'
+fi
+
+# Negative tests: each malformed derived use must raise its contextual error.
+dp_neg() {
+  local label="$1" mutate="$2" expect="$3"
+  printf '  %-52s ... ' "$label"
+  work="$TMP/case-$((PASS+FAIL))"; mkdir -p "$work"; cd "$work"
+  dp_domain
+  eval "$mutate"
+  cat > pm2.pddl <<'PDDL'
+(define (problem dpp) (:domain dp)
+  (:objects a b - block)
+  (:init (handempty) (ontable a) (ontable b) (clear a) (clear b))
+  (:goal (or (spells-ab) (on b a))))
+PDDL
+  if bash "$PLANNER" pm2.pddl --domain dp.pddl --stop-after wff >log 2>&1; then
+    fail "expected an error, but translation succeeded"
+  elif grep -qi "$expect" log; then pass
+  else fail "wrong error (expected: $expect)"; tail -4 log | sed 's/^/      | /'; fi
+}
+
+dp_neg "derived: recursion rejected" \
+  "sed -i.bak 's|(:derived (spells-ab)|(:derived (loopy) (or (loopy) (handempty))) (:derived (spells-ab)|' dp.pddl" \
+  "recursive"
+dp_neg "derived: in action effect rejected" \
+  "sed -i.bak 's|(holding ?x)))\$|(holding ?x) (spells-ab)))|' dp.pddl" \
+  "action effect"
+dp_neg "derived: in action precondition rejected" \
+  "sed -i.bak 's|:precondition (holding ?x)|:precondition (and (holding ?x) (spells-ab))|' dp.pddl" \
+  "precondition on derived"
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]

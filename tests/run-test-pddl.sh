@@ -63,6 +63,7 @@ run_one Switch switchprob.pddl switches.pddl switchprob.wff
 run_one LogisticsPrefs pbq1.pddl logistics-prefs.pddl intermediates/pbq1.wff
 run_one Plan_Recognition/BlockWords pb1.pddl block-words.pddl intermediates/pb1.wff
 run_one Plan_Recognition/IntrusionDetection pb1.pddl intrusion-detection.pddl intermediates/pb1.wff
+run_one DerivedPreds pb1.pddl blocks-derived.pddl intermediates/pb1.wff
 
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="

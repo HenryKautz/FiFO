@@ -16,6 +16,13 @@
 ;;;;                            descriptions (and/or/not/imply/forall/exists)
 ;;;;   :action-costs            simple static costs only, i.e. effects of the
 ;;;;                            form (increase (total-cost) <number>)
+;;;;   :derived-predicates      NON-RECURSIVE derived predicates (axioms):
+;;;;                            (:derived (P ?args) <goal-description>), reified
+;;;;                            as a per-slice biconditional
+;;;;                            (holds (P args) s) <=> body; usable in goals,
+;;;;                            constraints, preference bodies, PDDL evidence,
+;;;;                            and other derived bodies, but not in action
+;;;;                            preconditions/effects or the initial state
 ;;;;
 ;;;; Usage from the shell:
 ;;;;   sbcl --script pddl2fifo.lisp <problem.pddl> [<domain.pddl>]
@@ -40,7 +47,7 @@
 (defparameter *supported-requirements*
   '(:strips :typing :negative-preconditions :disjunctive-preconditions
     :universal-preconditions :existential-preconditions :quantified-preconditions
-    :constraints :preferences :action-costs))
+    :constraints :preferences :action-costs :derived-predicates))
 
 (defparameter *reserved-domain-names*
   '("OBJECTS" "ACTIONS" "FLUENTS" "COSTS" "SLICES" "ACTSLICES"
@@ -61,6 +68,15 @@ facts, such a dummy fact generates no clauses.")
 (defvar *evidence-sequence-counter* 0
   "Chain index distinguishing the monitor fluents of multiple (occur-in-order
 ...) evidence forms in one translation; rebound to 0 per pddl2fifo call.")
+
+(defvar *derived-definitions* nil
+  "Alist mapping each derived predicate NAME to (name param-pairs body), one
+entry per (:derived (P ?args) body) domain section; bound per pddl2fifo call.
+Derived predicates are a THIRD predicate class, distinct from effect predicates
+(fluents changed by actions) and statics: their per-slice truth is a defined
+function of the basic state, emitted as a biconditional over (holds (P ...) s),
+and their functor is deliberately kept OUT of the fluents domain so it gets no
+frame axioms and no closed-world slice-1 default.")
 
 ;;; PDDL reading and access helpers
 
@@ -294,7 +310,8 @@ action precondition."
       (when (and (consp s) (eq (first s) :action))
         (dolist (p (conjuncts (getf (cddr s) :precondition)))
           (let ((atom (if (negation-p p) (second p) p)))
-            (when (and (consp atom) (static-predicate-p (first atom) effect-preds))
+            (when (and (consp atom) (static-predicate-p (first atom) effect-preds)
+                       (not (derived-predicate-p (first atom))))
               (unless (assoc (first atom) arities :test #'sym-name=)
                 (push (cons (first atom) (length (rest atom))) arities)))))))))
 
@@ -324,11 +341,117 @@ resolve them at instantiation time."
                               '("OCCUR-SOMETIME" "NEVER" "AT" "PREFERENCE")
                               :test #'string-equal)
                       nil)
-                     ((static-predicate-p (first f) effect-preds)
+                     ((and (static-predicate-p (first f) effect-preds)
+                           (not (derived-predicate-p (first f))))
                       (unless (assoc (first f) arities :test #'sym-name=)
                         (push (cons (first f) (length (rest f))) arities))))))
       (walk form))
     arities))
+
+;;; Derived predicates (:derived)
+;;;
+;;; A (:derived (P ?args) <goal-description>) rule defines P's per-slice truth as
+;;; a function of the basic state, rather than by action effects.  pddl2fifo
+;;; supports only NON-RECURSIVE derived predicates (the dependency graph among
+;;; them is acyclic): each is reified as (holds (P args) s) and defined by the
+;;; biconditional (equiv (holds (P args) s) <body at s>), which -- because the
+;;; body is over already-determined basic fluents -- fully determines the atom
+;;; and stays count-neutral under weighted model counting.  A recursive rule
+;;; would need least-fixpoint semantics (a plain biconditional admits spurious
+;;; circular models), so recursion is rejected.  Derived predicates may appear in
+;;; goals, constraints, preference bodies, PDDL evidence, and other (lower)
+;;; derived bodies -- NOT in action preconditions/effects or the initial state.
+
+(defun derived-predicate-p (name)
+  "True if NAME is a declared derived predicate (consults *derived-definitions*)."
+  (and (assoc name *derived-definitions* :test #'sym-name=) t))
+
+(defun collect-derived-definitions (domain-def)
+  "Alist of (name param-pairs body), one entry per (:derived (P ?args) body)
+section of DOMAIN-DEF.  Errors on a malformed or duplicated definition."
+  (let ((defs '()))
+    (dolist (s (define-sections domain-def) (nreverse defs))
+      (when (and (consp s) (eq (first s) :derived))
+        (unless (= (length s) 3)
+          (error "Malformed :derived ~s (expected (:derived (P ?args...) <body>))" s))
+        (let ((head (second s)) (body (third s)))
+          (unless (and (consp head) (symbolp (first head)) (not (pddl-variable-p (first head))))
+            (error "Malformed :derived head ~s (expected (predicate ?args...))" head))
+          (let ((name (first head))
+                (params (parse-typed-list (rest head)
+                          (format nil "parameters of derived predicate ~a" (first head)))))
+            (dolist (p params)
+              (unless (pddl-variable-p (car p))
+                (error "Parameter ~s of derived predicate ~a is not a ?variable" (car p) name)))
+            (when (assoc name defs :test #'sym-name=)
+              (error "Derived predicate ~a is defined more than once" name))
+            (push (list name params body) defs)))))))
+
+(defun derived-body-referenced-predicates (body)
+  "Predicate names appearing as atoms anywhere in a derived-predicate BODY."
+  (let ((names '()))
+    (labels ((walk (f)
+               (cond ((not (consp f)) nil)
+                     ((negation-p f) (walk (second f)))
+                     ((member (symbol-name (first f)) '("AND" "OR" "IMPLY")
+                              :test #'string-equal)
+                      (mapc #'walk (rest f)))
+                     ((member (symbol-name (first f)) '("FORALL" "EXISTS")
+                              :test #'string-equal)
+                      (walk (third f)))
+                     (t (pushnew (first f) names :test #'sym-name=)))))
+      (walk body))
+    names))
+
+(defun check-derived-acyclic (defs)
+  "Error if the dependency graph among the derived predicates DEFS has a cycle;
+pddl2fifo supports only non-recursive derived predicates."
+  (labels ((visit (name path)
+             (when (member name path :test #'sym-name=)
+               (error "Derived predicate ~a is recursive (~{~a~^ -> ~}); pddl2fifo ~
+                       supports only non-recursive derived predicates"
+                      name (reverse (cons name path))))
+             (let ((entry (assoc name defs :test #'sym-name=)))
+               (when entry
+                 (dolist (ref (derived-body-referenced-predicates (third entry)))
+                   (when (assoc ref defs :test #'sym-name=)
+                     (visit ref (cons name path))))))))
+    (dolist (d defs) (visit (first d) '()))))
+
+(defun goal-mentions-derived-p (g)
+  "True if goal description G references any derived predicate (so it must take
+the general-formula path rather than the simple goal-state domain)."
+  (cond ((not (consp g)) nil)
+        ((negation-p g) (goal-mentions-derived-p (second g)))
+        ((member (symbol-name (first g)) '("AND" "OR" "IMPLY") :test #'string-equal)
+         (some #'goal-mentions-derived-p (rest g)))
+        ((member (symbol-name (first g)) '("FORALL" "EXISTS") :test #'string-equal)
+         (goal-mentions-derived-p (third g)))
+        (t (derived-predicate-p (first g)))))
+
+(defun expand-derived-atoms (formula defs)
+  "Replace each derived-predicate atom in FORMULA by its definition body with the
+head parameters substituted by the atom's arguments, recursively (terminates by
+acyclicity).  Used only for relaxed reachability, so basic/static atoms and the
+connective/quantifier structure are left intact."
+  (labels ((expand (f)
+             (cond ((not (consp f)) f)
+                   ((negation-p f) (list 'not (expand (second f))))
+                   ((member (symbol-name (first f)) '("AND" "OR" "IMPLY")
+                            :test #'string-equal)
+                    (cons (first f) (mapcar #'expand (rest f))))
+                   ((member (symbol-name (first f)) '("FORALL" "EXISTS")
+                            :test #'string-equal)
+                    (list (first f) (second f) (expand (third f))))
+                   (t (let ((entry (assoc (first f) defs :test #'sym-name=)))
+                        (if entry
+                            (destructuring-bind (name params body) entry
+                              (declare (ignore name))
+                              (let ((binding (mapcar (lambda (p a) (cons (car p) a))
+                                                     params (rest f))))
+                                (expand (reachability-ground-substitute body binding))))
+                            f))))))
+    (expand formula)))
 
 ;;; Reachability analysis
 ;;;
@@ -511,7 +634,10 @@ enclosing construct for error messages."
                   g context))
           ((consp g)
            (let ((subst (substitute-terms g bindings context)))
-             (if (static-predicate-p (first g) effect-preds)
+             ;; A derived predicate is NOT static: it reifies to a (holds ...)
+             ;; atom defined by its biconditional, like a fluent.
+             (if (and (static-predicate-p (first g) effect-preds)
+                      (not (derived-predicate-p (first g))))
                  subst
                  (list 'holds subst slice))))
           (t (error "Cannot translate state formula ~s in ~a" g context)))))
@@ -926,7 +1052,12 @@ satisfiable earlier lowers the bound).  Returns an integer >= 2, or :unreachable
 if the goal is unreachable even in the relaxation (so the problem is unsolvable)."
   (let ((actions (relaxed-ground-actions domain-def object-pairs type-table))
         (reachable (make-hash-table :test #'equal))
-        (goal (ground-goal-quantifiers goal object-pairs type-table))
+        ;; Expand derived-predicate atoms into their (non-recursive) bodies so the
+        ;; relaxed check sees only basic/static atoms; otherwise a derived atom in
+        ;; the goal is never in REACHABLE and the goal reads as :unreachable.
+        (goal (ground-goal-quantifiers
+                (expand-derived-atoms goal (collect-derived-definitions domain-def))
+                object-pairs type-table))
         (level 0))
     (dolist (f init) (setf (gethash f reachable) t))
     (loop
@@ -995,6 +1126,12 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                        pddl2fifo supports disjunctions and quantifiers in the ~
                        problem :goal and :constraints, not in action preconditions."
                       name p))
+              ((let ((atom (if (negation-p p) (second p) p)))
+                 (and (consp atom) (derived-predicate-p (first atom))))
+               (error "Action ~a has a precondition on derived predicate ~a.~@
+                       pddl2fifo supports derived predicates in goals, constraints, ~
+                       and derived bodies, not in action preconditions."
+                      name (first (if (negation-p p) (second p) p))))
               ((negation-p p)
                (let ((atom (second p)))
                  (unless (consp atom)
@@ -1017,6 +1154,11 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
                (when cost
                  (error "Action ~a has more than one cost effect" name))
                (setq cost (third e)))
+              ((let ((atom (if (negation-p e) (second e) e)))
+                 (and (consp atom) (derived-predicate-p (first atom))))
+               (error "Action ~a has derived predicate ~a in its effect; a derived ~
+                       predicate is defined by (:derived ...), not set by actions."
+                      name (first (if (negation-p e) (second e) e))))
               ((negation-p e)
                (push (substitute-terms (second e) bindings action-context) dels))
               ((consp e)
@@ -1161,11 +1303,13 @@ none)."
                                                :type "pddl")
                                 problem-path)))
              (domain-def (find-define (read-pddl-file domain-path) "DOMAIN" domain-path))
+             (*derived-definitions* (collect-derived-definitions domain-def))
              (constant-pairs (parse-typed-list (rest (get-section domain-def :constants))
                                                ":constants"))
              (type-table (parse-types domain-def))
              (out-path (merge-pathnames (make-pathname :type "wff") problem-path)))
         (check-requirements domain-def)
+        (check-derived-acyclic *derived-definitions*)
         (when (and domain-name
                    (not (sym-name= (define-name domain-def) (symbol-name domain-name))))
           (warn "Problem requires domain ~a but ~a defines domain ~a"
@@ -1176,29 +1320,44 @@ none)."
                                   (mapcar #'car type-table)
                                   *reserved-domain-names*
                                   *reserved-formula-variables*))
-               (effect-preds (collect-effect-predicates domain-def))
-               ;; A goal using or/imply/quantifiers (or nesting) is emitted as a
-               ;; direct formula rather than the goal-state/negative-goal-state
-               ;; domains.
-               (general-goal (not (simple-goal-p goal)))
+               (effect-preds (let ((ep (collect-effect-predicates domain-def)))
+                               ;; A predicate cannot be both derived and set by actions.
+                               (dolist (d *derived-definitions* ep)
+                                 (when (member (first d) ep :test #'sym-name=)
+                                   (error "Derived predicate ~a also appears in an ~
+                                           action effect; a predicate cannot be both ~
+                                           derived and set by actions" (first d))))))
+               ;; A goal using or/imply/quantifiers (or nesting), OR one naming a
+               ;; derived predicate, is emitted as a direct formula rather than the
+               ;; goal-state/negative-goal-state domains (which don't reify derived
+               ;; atoms as (holds ...)).
+               (general-goal (or (not (simple-goal-p goal))
+                                 (goal-mentions-derived-p goal)))
                ;; Static predicates named in action preconditions, plus any named
-               ;; only inside goal/constraint/preference/evidence formulas --
-               ;; those are emitted as bare literals, so they must be registered
+               ;; only inside goal/constraint/preference/evidence/derived formulas
+               ;; -- those are emitted as bare literals, so they must be registered
                ;; in the (static ...) section for FiFO to resolve them.
                (static-arities
                  (let ((arities (collect-static-predicate-arities domain-def effect-preds)))
                    (dolist (form (append (when general-goal (list goal))
                                          constraints
                                          (mapcar #'second preferences)
-                                         pddl-evidence)
+                                         pddl-evidence
+                                         (mapcar #'third *derived-definitions*))
                                  arities)
                      (dolist (pa (collect-formula-static-arities form effect-preds))
                        (unless (assoc (car pa) arities :test #'sym-name=)
                          (push pa arities))))))
                ;; Split the initial state: static-predicate facts become
                ;; static facts; the rest are time-indexed fluents (initial-state).
-               (static-init (remove-if-not
-                              (lambda (f) (static-predicate-p (first f) effect-preds)) init))
+               ;; Derived predicates belong to neither -- reject them here.
+               (static-init (progn
+                              (dolist (f init)
+                                (when (derived-predicate-p (first f))
+                                  (error "Derived predicate ~a may not be asserted in ~
+                                          the initial state" (first f))))
+                              (remove-if-not
+                                (lambda (f) (static-predicate-p (first f) effect-preds)) init)))
                (dynamic-init (remove-if
                                (lambda (f) (static-predicate-p (first f) effect-preds)) init))
                (goal-fluents (when general-goal
@@ -1434,6 +1593,23 @@ none)."
                 (terpri out)
                 (format out ";; Goal (disjunctive/nested) asserted directly at the final slice~%")
                 (write-form out (translate-goal-formula goal forbidden effect-preds)))
+              ;; Derived predicate definitions: (holds (P args) s) <=> body at s,
+              ;; for every slice.  The functor P is deliberately NOT in the fluents
+              ;; domain, so it gets no frame axioms -- its value is fixed only here.
+              (when *derived-definitions*
+                (terpri out)
+                (format out ";; Derived predicate definitions (:derived)~%")
+                (dolist (d *derived-definitions*)
+                  (destructuring-bind (name params body) d
+                    (let ((ctx (format nil "derived predicate ~a" name))
+                          (head (cons name (mapcar #'car params))))
+                      (write-form out
+                        `(all s slices true
+                           ,(translate-quantified 'all params '() forbidden
+                              (lambda (bindings fbd)
+                                `(equiv (holds ,(substitute-terms head bindings ctx) s)
+                                        ,(translate-state-formula body 's bindings fbd
+                                                                  effect-preds ctx))))))))))
               (when constraints
                 (terpri out)
                 (format out ";; Trajectory constraints (:constraints)~%")
