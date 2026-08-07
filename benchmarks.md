@@ -109,14 +109,14 @@ The MAP table above shows the cost bias: the single cheapest plan recognizes the
 
 with uniform priors `π` and `β = 1` here. It costs `2n` MaxSAT runs per evidence set (≈ 1 m 53 s for Intrusion's 10 hypotheses at H=6, ≈ 6.7 min for BlockWords' 21 at H=15; see the Wall-clock column). For each evidence prefix, the recognized (argmax) hypothesis and the posterior mass on the **true** hidden goal (Intrusion `hyp0`, BlockWords `hyp16`):
 
-| Domain | Observations | Horizon | 2n MaxSAT runs | Wall-clock | Recognized (posterior) | True-goal posterior | vs. MAP |
-|---|--:|--:|--:|--:|:--|--:|:--|
-| IntrusionDetection | 1 | 6  | 20 | ≈ 1 m 53 s | hyp0 — 5-way tie (0.16) | 0.16 (tied 1st) | MAP → hyp3 (wrong) |
-| IntrusionDetection | 3 | 6  | 20 | 1 m 53 s     | **hyp0** (0.37) | 0.37 (1st) | MAP → hyp3 (wrong) |
-| IntrusionDetection | 5 | 6  | 20 | ≈ 1 m 53 s | **hyp0** (0.67) | 0.67 (1st) | MAP → hyp2 (wrong) |
-| BlockWords | 1 | 15 | 42 | ≈ 6.7 min | (large tie, 0.05) | 0.05 (tied) | MAP → hyp5 (wrong) |
-| BlockWords | 3 | 15 | 42 | ≈ 6.7 min | hyp10 (0.21) | 0.12 (2nd) | MAP → hyp5 (wrong) |
-| BlockWords | 5 | 15 | 42 | ≈ 6.7 min | **hyp16** — tie w/ hyp15 (0.31) | 0.31 (tied 1st) | MAP → hyp16 (right) |
+| Domain | Observations | Horizon | 2n MaxSAT runs | Wall-clock | Recognized (posterior) | True-goal posterior |
+|---|--:|--:|--:|--:|:--|--:|
+| IntrusionDetection | 1 | 6  | 20 | ≈ 1 m 53 s | hyp0 — 5-way tie (0.16) | 0.16 (tied 1st) |
+| IntrusionDetection | 3 | 6  | 20 | 1 m 53 s     | **hyp0** (0.37) | 0.37 (1st) |
+| IntrusionDetection | 5 | 6  | 20 | ≈ 1 m 53 s | **hyp0** (0.67) | 0.67 (1st) |
+| BlockWords | 1 | 15 | 42 | ≈ 6.7 min | (large tie, 0.05) | 0.05 (tied) |
+| BlockWords | 3 | 15 | 42 | ≈ 6.7 min | hyp10 (0.21) | 0.12 (2nd) |
+| BlockWords | 5 | 15 | 42 | ≈ 6.7 min | **hyp16** — tie w/ hyp15 (0.31) | 0.31 (tied 1st) |
 
 The wall-clock is the `2n` MaxSAT runs for that evidence set. It is essentially constant across the observation prefixes within a domain — the horizon and CNF size are fixed and the evidence adds only a few clauses — so it is measured/estimated once per domain rather than per row: IntrusionDetection evidence-3 timed directly at 1 m 53 s (20 runs at H = 6, ≈ 5.7 s/run); BlockWords from its ≈ 19 s per-hypothesis pair at H = 15 (≈ 9.5 s/run × 42). MaxSAT is what makes this affordable at all — the exact weighted model counting these approximate timed out at a 240 s-per-call cap.
 
