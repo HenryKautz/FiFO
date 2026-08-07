@@ -796,10 +796,14 @@ checks.)"
                             executable: its static precondition ~s fails"
                            a (if neg (list 'not ground) ground))))))))))))
 
-(defun translate-occur-in-order (actions env effect-preds)
+(defun translate-occur-in-order (actions env effect-preds &key negate)
   "Translate (occur-in-order a1 ... ak) into the monitor-fluent FiFO formula
 described in the section comment above.  Observation indices are unrolled to
-literal integers; only the slice variable s stays symbolic."
+literal integers; only the slice variable s stays symbolic.  With NEGATE, the
+final assertion is flipped -- (not (ObsDone c k numslices)) -- expressing
+(not (occur-in-order ...)): the ordered observation sequence is NOT embedded in
+the trace (does-not-comply, R&G's c(G,not-O) case).  The monitor biconditionals
+are identical either way, so ObsDone stays fully determined and count-neutral."
   (unless actions
     (error "occur-in-order evidence requires at least one action"))
   (dolist (a actions) (check-observed-action a env effect-preds))
@@ -819,15 +823,20 @@ literal integers; only the slice variable s stays symbolic."
                                           `(occurs ,a s)
                                           `(and (ObsDone ,chain ,(1- i) s)
                                                 (occurs ,a s)))))))
-       ;; The evidence itself: all k observations explained by the final slice.
-       (ObsDone ,chain ,k numslices))))
+       ;; The evidence itself: all k observations explained by the final slice
+       ;; (or, negated, NOT all explained -- the sequence is not embedded).
+       ,(if negate
+            `(not (ObsDone ,chain ,k numslices))
+            `(ObsDone ,chain ,k numslices)))))
 
 (defun translate-evidence-form (c bindings forbidden effect-preds env)
   "Translate one PDDL-style evidence form C into a horizon-independent FiFO
 formula over the slice timeline.  Supports the trajectory operators always,
 at-end, hold-during, occur-sometime -- combined with (and ...) and (forall ...)
--- plus (never <action>), (at <slice> <action>), and the ground-only
-(occur-in-order <action>+).  Quantifiers ground over slices/actslices when the
+-- plus (never <action>), (at <slice> <action>), the ground-only
+(occur-in-order <action>+), and its negation (not (occur-in-order <action>+)),
+which asserts the sequence is NOT embedded in order (R&G's does-not-comply
+case).  Quantifiers ground over slices/actslices when the
 planner re-instantiates at each horizon.  ENV carries the problem context
 (:domain-def :object-pairs :type-table :static-init) for validating observed
 actions."
@@ -844,6 +853,15 @@ actions."
                  forall: it takes ground actions only, got ~s under bindings ~s"
                 c (mapcar #'car bindings)))
        (translate-occur-in-order (rest c) env effect-preds))
+      ;; (not (occur-in-order ...)) -- the observations are NOT embedded in order
+      ;; (R&G's c(G,not-O) / does-not-comply case).
+      ((and (consp c) (sym-name= (first c) "NOT")
+            (consp (second c)) (sym-name= (first (second c)) "OCCUR-IN-ORDER"))
+       (when bindings
+         (error "occur-in-order evidence must be at the top level, not under ~
+                 forall: it takes ground actions only, got ~s under bindings ~s"
+                c (mapcar #'car bindings)))
+       (translate-occur-in-order (rest (second c)) env effect-preds :negate t))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all
          (parse-quantifier-pairs (second c) context)
@@ -1333,6 +1351,13 @@ none)."
                ;; atoms as (holds ...)).
                (general-goal (or (not (simple-goal-p goal))
                                  (goal-mentions-derived-p goal)))
+               ;; When the goal is emitted as a formula (general-goal), the simple
+               ;; goal+/goal- decomposition must be empty -- otherwise a single-atom
+               ;; goal (e.g. a lone derived predicate (hyp0)) still flows through the
+               ;; goal-state domain into fluents, wrongly acquiring frame axioms and a
+               ;; closed-world slice-1 default that contradict its definition.
+               (goal+ (if general-goal '() goal+))
+               (goal- (if general-goal '() goal-))
                ;; Static predicates named in action preconditions, plus any named
                ;; only inside goal/constraint/preference/evidence/derived formulas
                ;; -- those are emitted as bare literals, so they must be registered

@@ -81,6 +81,22 @@ else
   tail -5 log | sed 's/^/      | /'
 fi
 
+# Negated occur-in-order (R&G's does-not-comply case): forbidding an observation
+# that the goal makes necessary must render the problem unsatisfiable.  pb1's
+# goal needs (information-gathered perseus), which requires (recon perseus), so
+# (not (occur-in-order (recon perseus))) -- recon perseus never occurs -- is
+# unsatisfiable at every horizon.
+printf '  %-52s ... ' "not-occur-in-order forbids a necessary observation"
+stage Plan_Recognition/IntrusionDetection pb1.pddl intrusion-detection.pddl
+bash "$PLANNER" pb1.pddl --domain intrusion-detection.pddl \
+     --pddl-evidence '(not (occur-in-order (recon perseus)))' >log 2>&1
+if grep -qiE "unsatisfiable|no plan exists" log && ! grep -q "^SOLVED" log; then
+  pass
+else
+  fail "expected UNSAT (recon perseus is necessary), but a plan was found"
+  tail -5 log | sed 's/^/      | /'
+fi
+
 # Negative tests: each bad evidence form must fail with its contextual error.
 neg_test() {
   local label="$1" evidence="$2" expect="$3"
@@ -226,6 +242,28 @@ if bash "$PLANNER" pm2.pddl --domain dp.pddl --numslices 3 --marginals >log 2>&1
   pass
 else
   fail "all-derived goal failed to instantiate/marginalize (goal-fluents cycle?)"
+  tail -5 log | sed 's/^/      | /'
+fi
+
+# Bare single derived-atom goal (:goal (spells-ab)) -- simple by structure but a
+# general goal because it names a derived predicate.  Guards the fix that empties
+# goal+/goal- for general goals: otherwise the lone atom flows through goal-state
+# into fluents and wrongly acquires frame axioms + a slice-1 default, going UNSAT.
+# (This is the single-goal shape bin/recognize.sh builds per hypothesis.)
+printf '  %-52s ... ' "bare single derived-atom goal solves"
+work="$TMP/case-$((PASS+FAIL))"; mkdir -p "$work"; cd "$work"
+dp_domain
+cat > pm2.pddl <<'PDDL'
+(define (problem dpp) (:domain dp)
+  (:objects a b - block)
+  (:init (handempty) (ontable a) (ontable b) (clear a) (clear b))
+  (:goal (spells-ab)))
+PDDL
+if bash "$PLANNER" pm2.pddl --domain dp.pddl --minslices 3 --maxslices 5 >log 2>&1 \
+   && grep -q "^SOLVED" log; then
+  pass
+else
+  fail "bare derived-atom goal went UNSAT (goal+ leaked into goal-state/fluents?)"
   tail -5 log | sed 's/^/      | /'
 fi
 

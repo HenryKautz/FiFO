@@ -127,6 +127,27 @@ Note the horizon caveat: a k-observation sequence needs at least k+1 slices, and
 a disjunctive goal does not raise the reachability lower bound, so set
 `--numslices`/`--minslices` high enough to fit the observations.
 
+**Calibrated posterior via Ramírez & Geffner** (`bin/recognize.sh`) — when exact
+marginals are intractable (they time out at these horizons), the R&G
+`c(G,O) − c(G,¬O)` method gives the calibrated posterior using only MaxSAT.
+For each hypothesis it runs the planner twice — cheapest plan that complies with
+the observations vs. cheapest that does not — and forms
+`P(hypI | O) = σ(β·Δ_I)·π_I / Σ …`:
+
+```sh
+bin/recognize.sh \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/intrusion-detection-costs.pddl \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/problem.pddl \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt --horizon 6
+```
+
+Unlike the MAP plan (which recognizes the *cheapest* hypothesis), this recovers
+the true broad-espionage `hyp0` and sharpens it as observations accrue. Omit
+`--horizon` to have it compute the max per-hypothesis feasible horizon; `--beta`
+sets the temperature (default 1), `--priors FILE` the priors (default uniform).
+Results and the comparison to MAP are tabulated in
+[benchmarks.md](../../../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+
 ## References
 
 - M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using

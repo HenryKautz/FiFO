@@ -100,3 +100,24 @@ Two points worth drawing out. First, **switching to marginals would not fix this
 
 - M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, 1121–1126. (The Boltzmann plan model and the `c(G,O) − c(G,¬O)` baseline that removes each goal's intrinsic reachability.)
 - R. F. Pereira, N. Oren & F. Meneguzzi (2017). Landmark-based heuristics for goal recognition. *AAAI-17*. (The curated dataset these instances come from.)
+
+## Ramírez and Geffner recognition on the plan-recognition benchmarks
+
+The MAP table above shows the cost bias: the single cheapest plan recognizes the cheapest-to-reach hypothesis, not the most likely one. The calibrated fix is the posterior `P(G | O) ∝ π_G · Z_{G,O}/Z_G`, but exact `Z` (weighted model counting) is intractable at these horizons. **Ramírez & Geffner's `c(G,O) − c(G,¬O)` method is the tractable approximation** — it replaces each partition function by its dominant (min-cost) term, so counting becomes MaxSAT optimization. `bin/recognize.sh` implements it: for each hypothesis `hypI` it runs `planner.sh` twice at the fixed horizon `H` (same `H` as the MAP table), computing the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`), then
+
+`Δ_I = c(¬O) − c(O)`, `P(O | hypI) = σ(β·Δ_I)`, `P(hypI | O) = π_I·P(O|hypI) / Σ_J π_J·P(O|hypJ)`
+
+with uniform priors `π` and `β = 1` here. `2n` MaxSAT runs (≈2 min for Intrusion's 10 hypotheses at H=6; ≈6 min for BlockWords' 21 at H=15). For each evidence prefix, the recognized (argmax) hypothesis and the posterior mass on the **true** hidden goal (Intrusion `hyp0`, BlockWords `hyp16`):
+
+| Domain | Observations | Recognized (posterior) | True-goal posterior | vs. MAP |
+|---|--:|:--|--:|:--|
+| IntrusionDetection | 1 | hyp0 — 5-way tie (0.16) | 0.16 (tied 1st) | MAP → hyp3 (wrong) |
+| IntrusionDetection | 3 | **hyp0** (0.37) | 0.37 (1st) | MAP → hyp3 (wrong) |
+| IntrusionDetection | 5 | **hyp0** (0.67) | 0.67 (1st) | MAP → hyp2 (wrong) |
+| BlockWords | 1 | (large tie, 0.05) | 0.05 (tied) | MAP → hyp5 (wrong) |
+| BlockWords | 3 | hyp10 (0.21) | 0.12 (2nd) | MAP → hyp5 (wrong) |
+| BlockWords | 5 | **hyp16** — tie w/ hyp15 (0.31) | 0.31 (tied 1st) | MAP → hyp16 (right) |
+
+The normalization does exactly what it should. On **IntrusionDetection**, where raw MAP never recovered the true broad-espionage goal, R&G puts `hyp0` at or above every rival and sharpens it from a 5-way tie (0.16) to a decisive 0.67 as observations accrue — because reconning taurus/leo/… is *on the optimal path* for the all-hosts goal (`Δ = 0`, complying is free) but *wasteful* for a targeted attack (`Δ < 0`). The evidence-1 structure is itself informative: the five hypotheses that require reconning taurus get `c(¬O) = ∞` (that observation is *necessary*, likelihood 1) and tie at the top, while the five that don't are ranked down. On **BlockWords** the true `hyp16` climbs from a large tie (1 obs) to 2nd (3 obs, behind `hyp10`, whose plan the observed prefix makes strictly cheaper, `Δ = +2`) to tied-first with `hyp15` (5 obs) — the two words that share the observed prefix.
+
+The one-line takeaway: the same `2n` cheapest-plan computations that MAP already does per hypothesis, differenced against a *not-complying* baseline, recover the calibrated recognition posterior that exact model counting could not afford — the practical realization of the `Z_G` normalization discussed in [FAQ.md](FAQ.md#goal-posteriors-and-the-per-goal-normalization-z_g-issue). Per-hypothesis costs and posteriors for each evidence set are under each instance's `runs/recognize/`.
