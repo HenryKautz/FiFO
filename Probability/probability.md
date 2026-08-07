@@ -224,6 +224,25 @@ If `E` contradicts the theory, `WMC(theory ∧ E) = 0` (the evidence is impossib
 
 For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.sh … --marginals --counter addmc --pddl-evidence '<modal form>'` conditions on evidence that may be quantified over the time slices, instantiates the problem conjoined with it, and reports `P(atom | evidence)` at the working horizon. A complete end-to-end walkthrough on the Switch domain — plain plan, evidence reshaping the plan, the separate evidence scnf, and conditional marginals — is in [../SatPlan/satplan.md](../SatPlan/satplan.md#worked-example-the-switch-domain-end-to-end).
 
+### Plan recognition posteriors (recognize.sh)
+
+The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
+
+The instance is a costed domain whose hypotheses are nullary derived predicates `hyp0 … hypN` (as produced by `make-recognition-instance.lisp`, so the goal is `(or (hyp0) … (hypN))`), plus an observation sequence as an `(occur-in-order …)` evidence file. For each hypothesis `hypI` the script calls `planner.sh` twice at a fixed horizon `H` — the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`, cost $c(\text{O})$) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`, cost $c(\lnot\text{O})$) — and forms
+
+$`P(\text{hypI} \mid O) \;=\; \frac{\pi_I\,\sigma\!\big(\beta\,(c(\lnot\text{O}) - c(\text{O}))\big)}{\sum_J \pi_J\,\sigma\!\big(\beta\,(c_J(\lnot\text{O}) - c_J(\text{O}))\big)}`$
+
+with priors $\pi$ (uniform by default) and $\beta$ the temperature (`--beta`, default 1). Because the difference $c(\lnot\text{O}) - c(\text{O})$ is taken *within* each hypothesis, the goal's intrinsic reachability cancels — this is the `Z_G` normalization that the raw disjunctive marginal omits, so a hypothesis wins for making the observations *purposeful*, not for being cheap to reach.
+
+```sh
+bin/recognize.sh \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/intrusion-detection-costs.pddl \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/problem.pddl \
+    SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt --horizon 6
+```
+
+It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+
 ------
 
 ## From inference to learning

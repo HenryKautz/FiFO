@@ -14,8 +14,10 @@ i.e. the costs attached to weighted literals — across the full range of data
 regimes, from complete optimal demonstrations down to nothing but prior beliefs
 about marginal probabilities. Sections 12–13 cover the parts of the
 marginal-*inference* design space that are not yet implemented (sampling-based
-methods and projected inference); the implemented back ends of both directions
-are documented in [probability.md](probability.md).
+methods and projected inference); section 14 covers the maximum-term
+approximation, which the plan-recognition pipeline (`recognize.sh`) *does*
+implement. The implemented back ends of both directions are documented in
+[probability.md](probability.md).
 
 ---
 
@@ -324,7 +326,61 @@ This suggests a **projected inference** approach: sample over action variable as
 
 ---
 
-## 14. Provenance / related work
+## 14. Maximum-term approximation of the partition function
+
+The inference back ends above compute a partition function
+$`Z_S = \sum_{x \in S} e^{-\beta\, \mathrm{cost}(x)}`$ — a weighted sum over a
+(possibly exponentially large) set $S$ of feasible models, with
+$`\beta = 1/\text{scale}`$. Exact evaluation is #P-hard (weighted model
+counting). The **maximum-term approximation** — also called the *Viterbi*,
+*zero-temperature*, or *ground-state* approximation — replaces the sum by its
+single largest term, i.e. the cheapest model in $S$:
+
+$`Z_S \;=\; e^{-\beta\, c_{\min}(S)} \cdot \Omega_S(\beta), \qquad
+   \Omega_S(\beta) = \sum_{x\in S} e^{-\beta\,(\mathrm{cost}(x) - c_{\min}(S))} \;\ge\; 1,
+   \qquad c_{\min}(S) = \min_{x\in S}\mathrm{cost}(x),`$
+
+and drops the **degeneracy factor** $`\Omega_S`$ (the entropy of near-optimal
+models), keeping only $`Z_S \approx e^{-\beta\, c_{\min}(S)}`$, i.e.
+$`\log Z_S \approx -\beta\, c_{\min}(S)`$ — the free energy approximated by the
+ground-state energy. The point of the swap is computational: $`c_{\min}(S)`$ is
+a **MaxSAT** optimization (tractable with core-guided solvers), where $`Z_S`$ is
+counting. It is the same move MAP makes for a whole distribution — the single
+most-probable assignment — applied here to a restricted set $S$.
+
+**Accuracy.** The approximation is exact when $`\Omega_S = 1`$ (a unique optimum,
+everything else far costlier) and sharpens as $`\beta \to \infty`$ (low
+temperature: the dominant term swamps the rest). Its error in any *ratio* of
+partition functions is the log-ratio of the dropped degeneracies. Concretely,
+for the conditional $`P(A\mid B) = Z_{A\cap B}/Z_B`$ with $`Z_B = Z_{A\cap B} + Z_{\lnot A\cap B}`$,
+
+$`P(A\mid B) \;=\; \sigma\!\big(\beta\,\Delta + \log(\Omega_{A\cap B}/\Omega_{\lnot A\cap B})\big),
+   \qquad \Delta = c_{\min}(\lnot A\cap B) - c_{\min}(A\cap B),`$
+
+and the max-term approximation keeps only $`\sigma(\beta\,\Delta)`$, dropping the
+degeneracy log-ratio. So a conditional is well approximated by two MaxSAT costs
+*differenced*, and the two goals' baselines (and much of their degeneracy)
+cancel — only the *asymmetry* in near-optimal multiplicity between the two sides
+is lost.
+
+**Plan recognition is the application FiFO implements.** For a hypothesis $G$
+and observations $O$, the likelihood is
+$`P(O\mid G) = Z_{G,O}/Z_G = Z_{G,O}/(Z_{G,O}+Z_{G,\lnot O})`$; the max-term
+approximation gives Ramírez & Geffner's recognizer,
+$`P(O\mid G) \approx \sigma\big(\beta\,(c(G,\lnot O) - c(G,O))\big)`$, where
+$`c(G,O)`$ / $`c(G,\lnot O)`$ are the cheapest plans for $G$ that do / do not
+comply with the observations. This is exactly the `Z_G`-normalized recognition
+posterior (§ [Case 4](#8-case-4--beliefs-about-marginals-little-or-no-data)-style
+normalization applied to goals) with **counting replaced by optimization** — the
+tractable stand-in for the exact weighted model count, which is intractable at
+useful planning horizons. It is realized by `bin/recognize.sh`
+([probability.md](probability.md#plan-recognition-posteriors-recognizesh)); the
+worked results are in
+[benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+
+---
+
+## 15. Provenance / related work
 
 Essentially all of the above is established, mostly within Markov Logic or its direct
 foundations:
@@ -357,7 +413,7 @@ exhaustive literature search of the exact combination.)
 
 ---
 
-## 15. Summary table
+## 16. Summary table
 
 | Data regime | Hidden vars | Objective | Convex? | Oracle / inference |
 |---|---|---|---|---|
@@ -383,7 +439,11 @@ For §12 (sampling-based inference):
 - W. Wei, J. Erenrich & B. Selman (2004). Towards efficient sampling: Exploiting random walk strategies. *AAAI-04*, pp. 670–676. (SampleSAT.)
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2015). On parallel scalable uniform SAT witness generation. *TACAS 2015*, LNCS 9035, pp. 304–319. (UniGen.)
 
-Full citations for the works named in §14 (Provenance / related work):
+For §14 (maximum-term approximation):
+
+- M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, pp. 1121–1126. (The `σ(β·(c(G,¬O) − c(G,O)))` recognizer — the max-term approximation to `Z_{G,O}/Z_G`.)
+
+Full citations for the works named in §15 (Provenance / related work):
 
 - M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
 - J. Besag (1975). Statistical analysis of non-lattice data. *The Statistician* 24(3):179–195. (Pseudo-likelihood.)
