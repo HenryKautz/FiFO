@@ -143,6 +143,9 @@ for i in "${!HYPS[@]}"; do
   run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" --pddl-evidence-file "$NEG_EV"   "${SOLVER_ARG[@]}"
   CO[$i]=$(cost_of "$OUT/$hyp-comply.log")
   CN[$i]=$(cost_of "$OUT/$hyp-notcomply.log")
+  # drop this hypothesis's heavy intermediates once its costs are read
+  rm -f "$OUT/sg-$hyp".{pddl,wff,scnf,cnf,wcnf,map,satout,soln,answer} \
+        "$OUT/sg-$hyp"-*.scnf "$OUT/$hyp-comply.log" "$OUT/$hyp-notcomply.log" 2>/dev/null
   echo "  $hyp: c(O)=${CO[$i]}  c(~O)=${CN[$i]}" >&2
 done
 
@@ -171,6 +174,9 @@ if [[ -n "$PRIORS" ]]; then mapfile -t PRIOR_ARR < <(grep -vE '^[[:space:]]*$' "
       printf "%s\t%s\t%s\t%s\t%.4f\t%.4f\t%.4f\n", hyp[i],co[i],cn[i],dd,lik[i],pr[i],post
     }
   }' >> "$SUM"
+
+# --- clean remaining intermediates; keep summary.tsv (+ the negated evidence) --
+rm -f "$OUT"/sg-*.* "$OUT"/horizon-*.log 2>/dev/null
 
 # --- report ------------------------------------------------------------------
 echo
