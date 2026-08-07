@@ -6,8 +6,8 @@
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - [Probability/probability.md](probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - $\color{red}{\textbf{Probability/probability-background.md}}$ — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
-- [FAQ.md](../FAQ.md) — frequently asked questions about modeling with FiFO.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
+- [discussion.md](../discussion.md) — discussion and open issues.
 
 A working summary of how to learn the weights in a FiFO weighted-MaxSAT theory —
 i.e. the costs attached to weighted literals — across the full range of data

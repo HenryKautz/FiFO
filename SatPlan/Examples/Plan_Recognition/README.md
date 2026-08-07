@@ -70,7 +70,7 @@ needs three changes to the raw dataset problem, all produced by
    distribution over plans becomes the Boltzmann model `P(plan) ∝ exp(−β·length)`
    that Ramírez & Geffner assume — the recognizer then favors goals for which
    the observed behavior is *efficient*, not merely *possible*. The temperature
-   is `β = cost / scale` (the scnf weight scale, default 1). See FAQ.md
+   is `β = cost / scale` (the scnf weight scale, default 1). See discussion.md
    ("Mixing Probabilities and Utilities").
 2. **A disjunctive goal** — the `or` of all the `hyps.dat` candidates — so a
    single theory ranges over every hypothesis at once.

@@ -1,4 +1,4 @@
-# FiFO FAQ
+# FiFO Discussion and Open Issues
 
 ## Table of Contents
 
@@ -6,10 +6,10 @@
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
-- $\color{red}{\textbf{FAQ.md}}$ — frequently asked questions about modeling with FiFO.
 - [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
+- $\color{red}{\textbf{discussion.md}}$ — discussion and open issues.
 
-## FAQ Topics
+## Topics
 
 - [Mixing Probabilities and Utilities](#mixing-probabilities-and-utilities)
 - [Handling Sequential Action Evidence](#handling-sequential-action-evidence)
@@ -227,35 +227,35 @@ requires knowing each goal's `Z_G` — the very per-goal quantity the single cou
 avoids computing. A number chosen a priori cannot do it, because `Z_G` depends
 on the goal's reachability structure and the horizon.
 
-**The real fix, and why a selection variable is needed.** To divide by `Z_G` you
-need the per-goal partition functions, which the single disjunctive count does
-not expose. Two routes:
+**The two ways to fix it.** To divide by `Z_G` you need the per-goal partition
+functions, which the single disjunctive count does not expose. There are two
+routes, one still open and one now implemented:
 
-- *Per-goal counts.* For each hypothesis, count `Z_{G,O}` (with evidence) and
-  `Z_G` (without) and form the ratio — the calibrated likelihood P(O | G). This
-  mirrors R&G's two-calls-per-goal structure. (`occur-in-order` already reifies
-  "the observations happened" into a single atom `ObsDone(k, numslices)`, so
-  P(O | G) can be had as *one* count per goal — the marginal of that atom in G's
-  unconditioned theory — instead of two.)
+- *Exact normalization by weighted model counting.* Count `Z_{G,O}` and `Z_G`
+  per goal and form the ratio — or, with one **goal-selection variable** `sel_i`
+  per hypothesis (an exactly-one constraint over the hypotheses), read all of
+  them from two counts and put explicit priors on `sel_i` rather than through the
+  one-directional preference reification (see the [Mixing Probabilities and
+  Utilities](#mixing-probabilities-and-utilities) entry). The selection variable
+  is the per-hypothesis handle the raw disjunctive goal lacks — several
+  hypotheses can share final-state fluents, so no single fluent marginal is "the
+  probability of hypothesis i." **This route is not implemented, and at useful
+  horizons the counts are intractable** (the `--marginals` runs time out).
 
-- *Selection variables.* Introduce one **goal-selection variable** `sel_i` per
-  hypothesis, each implying its goal conjunction (with an exactly-one
-  constraint), and read `Z_{G_i}` and `Z_{G_i,O}` from the selectors' marginals
-  in two counts total (one with evidence, one without) rather than 2n. This is
-  also where an explicit prior belongs — put the goal weight on `sel_i`, not
-  through the one-directional preference reification (see the previous FAQ
-  entry). A selection variable is *needed* because the raw disjunctive goal
-  gives no per-hypothesis handle: several hypotheses may share final-state
-  fluents, so no single fluent marginal is "the probability of hypothesis i,"
-  and there is nothing to attach a prior weight to. `sel_i` is that handle — it
-  makes each hypothesis a single atom whose marginal is its posterior and whose
-  weight is its prior. (One subtlety: when hypotheses overlap in their final
-  states, the exactly-one selector attributes each trajectory to a single
-  hypothesis, which differs slightly from the per-goal counts that would count a
-  shared trajectory under each goal it satisfies.)
+- *Maximum-term approximation (Ramírez & Geffner).* Replace each partition
+  function by its cheapest-plan term — so counting becomes MaxSAT — giving the
+  recognizer `P(O | G) ≈ σ(β·(c(G,¬O) − c(G,O)))`. **This route is implemented**,
+  in `bin/recognize.sh`, and is the practical way to get the calibrated posterior
+  on these benchmarks. The theory is in
+  [probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function),
+  the tool in
+  [probability.md](Probability/probability.md#plan-recognition-posteriors-recognizesh),
+  and the results in
+  [benchmarks.md](benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
 
-None of this is implemented yet — the current examples use the simple
-single-count approach deliberately, to get preliminary data first.
+So the single-count marginal on the disjunctive instances stays as the cheap,
+biased "preliminary numbers" option; `recognize.sh` is the calibrated
+counterpart; and the exact-WMC normalization remains an open item.
 
 ### References
 

@@ -6,8 +6,8 @@
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - $\color{red}{\textbf{Probability/probability.md}}$ — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
 - [Probability/probability-background.md](probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
-- [FAQ.md](../FAQ.md) — frequently asked questions about modeling with FiFO.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
+- [discussion.md](../discussion.md) — discussion and open issues.
 
 A FiFO theory with weighted literals defines a probability distribution over the
 models of its hard clauses. That single fact supports two directions of
@@ -484,3 +484,4 @@ and emits the learned `(WEIGHT ... <integer>)` lines below them.
 - **Maximum-entropy fitting of log-linear models** (the `--maxent` estimator: convex log Z + θ·τ objective, moment matching at the optimum) — S. Della Pietra, V. Della Pietra & J. Lafferty (1997). Inducing features of random fields. *IEEE Transactions on Pattern Analysis and Machine Intelligence* 19(4):380–393.
 - **Numerical optimization for MaxEnt** (why gradient/Newton updates, as in the damped diagonal-Newton fit, beat iterative scaling) — R. Malouf (2002). A comparison of algorithms for maximum entropy parameter estimation. *CoNLL-2002*, pp. 49–55.
 - **Weighted partial MaxSAT / WCNF** (the downstream solver format the learned integer weights feed) — F. Bacchus, M. Järvisalo & R. Martins (2021). Maximum satisfiability. In *Handbook of Satisfiability*, 2nd ed., IOS Press, ch. 24, pp. 929–991.
+- **Maximum-term approximation for plan recognition** (introducing the `σ(β·(c(G,¬O) − c(G,O)))` recognizer that `recognize.sh` implements — replacing each partition function by its cheapest-plan term) — M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, pp. 1121–1126.
