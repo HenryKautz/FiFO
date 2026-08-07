@@ -107,16 +107,18 @@ The MAP table above shows the cost bias: the single cheapest plan recognizes the
 
 `Δ_I = c(¬O) − c(O)`, `P(O | hypI) = σ(β·Δ_I)`, `P(hypI | O) = π_I·P(O|hypI) / Σ_J π_J·P(O|hypJ)`
 
-with uniform priors `π` and `β = 1` here. `2n` MaxSAT runs (≈2 min for Intrusion's 10 hypotheses at H=6; ≈6 min for BlockWords' 21 at H=15). For each evidence prefix, the recognized (argmax) hypothesis and the posterior mass on the **true** hidden goal (Intrusion `hyp0`, BlockWords `hyp16`):
+with uniform priors `π` and `β = 1` here. It costs `2n` MaxSAT runs per evidence set (≈ 1 m 53 s for Intrusion's 10 hypotheses at H=6, ≈ 6.7 min for BlockWords' 21 at H=15; see the Wall-clock column). For each evidence prefix, the recognized (argmax) hypothesis and the posterior mass on the **true** hidden goal (Intrusion `hyp0`, BlockWords `hyp16`):
 
-| Domain | Observations | Recognized (posterior) | True-goal posterior | vs. MAP |
-|---|--:|:--|--:|:--|
-| IntrusionDetection | 1 | hyp0 — 5-way tie (0.16) | 0.16 (tied 1st) | MAP → hyp3 (wrong) |
-| IntrusionDetection | 3 | **hyp0** (0.37) | 0.37 (1st) | MAP → hyp3 (wrong) |
-| IntrusionDetection | 5 | **hyp0** (0.67) | 0.67 (1st) | MAP → hyp2 (wrong) |
-| BlockWords | 1 | (large tie, 0.05) | 0.05 (tied) | MAP → hyp5 (wrong) |
-| BlockWords | 3 | hyp10 (0.21) | 0.12 (2nd) | MAP → hyp5 (wrong) |
-| BlockWords | 5 | **hyp16** — tie w/ hyp15 (0.31) | 0.31 (tied 1st) | MAP → hyp16 (right) |
+| Domain | Observations | Horizon | 2n MaxSAT runs | Wall-clock | Recognized (posterior) | True-goal posterior | vs. MAP |
+|---|--:|--:|--:|--:|:--|--:|:--|
+| IntrusionDetection | 1 | 6  | 20 | ≈ 1 m 53 s | hyp0 — 5-way tie (0.16) | 0.16 (tied 1st) | MAP → hyp3 (wrong) |
+| IntrusionDetection | 3 | 6  | 20 | 1 m 53 s     | **hyp0** (0.37) | 0.37 (1st) | MAP → hyp3 (wrong) |
+| IntrusionDetection | 5 | 6  | 20 | ≈ 1 m 53 s | **hyp0** (0.67) | 0.67 (1st) | MAP → hyp2 (wrong) |
+| BlockWords | 1 | 15 | 42 | ≈ 6.7 min | (large tie, 0.05) | 0.05 (tied) | MAP → hyp5 (wrong) |
+| BlockWords | 3 | 15 | 42 | ≈ 6.7 min | hyp10 (0.21) | 0.12 (2nd) | MAP → hyp5 (wrong) |
+| BlockWords | 5 | 15 | 42 | ≈ 6.7 min | **hyp16** — tie w/ hyp15 (0.31) | 0.31 (tied 1st) | MAP → hyp16 (right) |
+
+The wall-clock is the `2n` MaxSAT runs for that evidence set. It is essentially constant across the observation prefixes within a domain — the horizon and CNF size are fixed and the evidence adds only a few clauses — so it is measured/estimated once per domain rather than per row: IntrusionDetection evidence-3 timed directly at 1 m 53 s (20 runs at H = 6, ≈ 5.7 s/run); BlockWords from its ≈ 19 s per-hypothesis pair at H = 15 (≈ 9.5 s/run × 42). MaxSAT is what makes this affordable at all — the exact weighted model counting these approximate timed out at a 240 s-per-call cap.
 
 The normalization does exactly what it should. On **IntrusionDetection**, where raw MAP never recovered the true broad-espionage goal, R&G puts `hyp0` at or above every rival and sharpens it from a 5-way tie (0.16) to a decisive 0.67 as observations accrue — because reconning taurus/leo/… is *on the optimal path* for the all-hosts goal (`Δ = 0`, complying is free) but *wasteful* for a targeted attack (`Δ < 0`). The evidence-1 structure is itself informative: the five hypotheses that require reconning taurus get `c(¬O) = ∞` (that observation is *necessary*, likelihood 1) and tie at the top, while the five that don't are ranked down. On **BlockWords** the true `hyp16` climbs from a large tie (1 obs) to 2nd (3 obs, behind `hyp10`, whose plan the observed prefix makes strictly cheaper, `Δ = +2`) to tied-first with `hyp15` (5 obs) — the two words that share the observed prefix.
 
