@@ -1,6 +1,6 @@
 # FiFO Benchmarks
 
-## Table of Contents
+## Documentation
 
 - [README.md](README.md) — the FiFO language reference and user guide.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -8,6 +8,13 @@
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - $\color{red}{\textbf{benchmarks.md}}$ — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](discussion.md) — discussion and open issues.
+
+## Table of Contents
+
+- [SatPlan: smallest horizons for the LogisticsCosts problems](#satplan-smallest-horizons-for-the-logisticscosts-problems)
+- [d-DNNF compilation on the LogisticsCosts benchmarks](#d-dnnf-compilation-on-the-logisticscosts-benchmarks)
+- [MAP inference on the plan-recognition benchmarks](#map-inference-on-the-plan-recognition-benchmarks)
+- [Ramírez and Geffner recognition on the plan-recognition benchmarks](#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)
 
 This file collects the measured results referenced throughout the documentation:
 planning horizons and CNF sizes for the example problems, the cost of compiling

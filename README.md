@@ -1,6 +1,6 @@
 # FiFO 2.0 Users Guide
 
-## Table of Contents
+## Documentation
 
 - $\color{red}{\textbf{README.md}}$ — the FiFO language reference and user guide.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -8,6 +8,26 @@
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](discussion.md) — discussion and open issues.
+
+## Table of Contents
+
+- [Example of FiFO](#example-of-fifo)
+- [Installation](#installation)
+- [Domains](#domains)
+- [Functions and Equality](#functions-and-equality)
+- [Static Predicates](#static-predicates)
+- [Static Quantified Formulas](#static-quantified-formulas)
+- [SAT solvers](#sat-solvers)
+- [Constraint Satisfaction](#constraint-satisfaction)
+- [Answer Extraction for Deduction](#answer-extraction-for-deduction)
+- [Optimization (Weighted MaxSAT)](#optimization-weighted-maxsat)
+- [Common Binary Relationship Patterns](#common-binary-relationship-patterns)
+- [Options](#options)
+- [Running FiFO](#running-fifo)
+- [Testing](#testing)
+- [Implementing SatPlan in FiFO](#implementing-satplan-in-fifo)
+- [Using FiFO with Python](#using-fifo-with-python)
+- [References](#references)
 
 henry.kautz@gmail.com
 ---------------------

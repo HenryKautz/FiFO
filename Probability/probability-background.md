@@ -1,6 +1,6 @@
 # Probabilistic FiFO: Theory and Background
 
-## Table of Contents
+## Documentation
 
 - [README.md](../README.md) — the FiFO language reference and user guide.
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -8,6 +8,26 @@
 - $\color{red}{\textbf{Probability/probability-background.md}}$ — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](../discussion.md) — discussion and open issues.
+
+## Table of Contents
+
+- [1. Setup and notation](#1-setup-and-notation)
+- [2. Parameter tying and the feature space](#2-parameter-tying-and-the-feature-space)
+- [3. The unifying view](#3-the-unifying-view)
+- [4. Case 1 — Complete, optimal data](#4-case-1--complete-optimal-data)
+- [5. Why an oracle is needed even with complete data](#5-why-an-oracle-is-needed-even-with-complete-data)
+- [6. Case 2 — Complete but merely-good data](#6-case-2--complete-but-merely-good-data)
+- [7. Case 3 — Partial data](#7-case-3--partial-data)
+- [8. Case 4 — Beliefs about marginals, little or no data](#8-case-4--beliefs-about-marginals-little-or-no-data)
+- [9. Case 5 — Combining beliefs and data](#9-case-5--combining-beliefs-and-data)
+- [10. Domain-size dependence (a real caveat)](#10-domain-size-dependence-a-real-caveat)
+- [11. Practical recipe for the FiFO / MaxSAT stack](#11-practical-recipe-for-the-fifo--maxsat-stack)
+- [12. Sampling-based marginal inference: MC-SAT](#12-sampling-based-marginal-inference-mc-sat)
+- [13. Projected inference over action variables](#13-projected-inference-over-action-variables)
+- [14. Maximum-term approximation of the partition function](#14-maximum-term-approximation-of-the-partition-function)
+- [15. Provenance / related work](#15-provenance--related-work)
+- [16. Summary table](#16-summary-table)
+- [References](#references)
 
 A working summary of how to learn the weights in a FiFO weighted-MaxSAT theory —
 i.e. the costs attached to weighted literals — across the full range of data

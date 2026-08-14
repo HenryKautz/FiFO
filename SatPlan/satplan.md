@@ -1,6 +1,6 @@
 # Implementing SatPlan in FiFO
 
-### Table of Contents
+### Documentation
 
 - [README.md](../README.md) — the FiFO language reference and user guide.
 - $\color{red}{\textbf{SatPlan/satplan.md}}$ — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -8,6 +8,15 @@
 - [Probability/probability-background.md](../Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](../discussion.md) — discussion and open issues.
+
+### Table of Contents
+
+- [Representation](#representation)
+- [Domain-Independent SatPlan Axioms](#domain-independent-satplan-axioms)
+- [Example: a small logistics problem](#example-a-small-logistics-problem)
+- [Translating PDDL to FiFO with pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo)
+- [Learning and Inference](#learning-and-inference)
+- [References](#references)
 
 Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's static predicates and quantified formulas make the encoding concise and readable.
 

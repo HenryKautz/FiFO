@@ -1,6 +1,6 @@
 # Probabilistic FiFO: Marginal Inference and Weight Learning
 
-## Table of Contents
+## Documentation
 
 - [README.md](../README.md) — the FiFO language reference and user guide.
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -8,6 +8,14 @@
 - [Probability/probability-background.md](probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](../discussion.md) — discussion and open issues.
+
+## Table of Contents
+
+- [The probability model](#the-probability-model)
+- [Marginal inference: weights → probabilities](#marginal-inference-weights--probabilities)
+- [From inference to learning](#from-inference-to-learning)
+- [Weight learning: probabilities → weights](#weight-learning-probabilities--weights)
+- [References](#references)
 
 A FiFO theory with weighted literals defines a probability distribution over the
 models of its hard clauses. That single fact supports two directions of

@@ -1,6 +1,6 @@
 # FiFO Discussion and Open Issues
 
-## Table of Contents
+## Documentation
 
 - [README.md](README.md) — the FiFO language reference and user guide.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
@@ -9,7 +9,7 @@
 - [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - $\color{red}{\textbf{discussion.md}}$ — discussion and open issues.
 
-## Topics
+## Table of Contents
 
 - [Mixing Probabilities and Utilities](#mixing-probabilities-and-utilities)
 - [Handling Sequential Action Evidence](#handling-sequential-action-evidence)
