@@ -45,6 +45,10 @@ MaxEnt-only options (with --method maxent):
                               they are held fixed so the fit accounts for them
   --quiet                     suppress the per-group target-vs-achieved report
 
+  --options <file>            splice the options listed in <file> in at this point
+                              (one logical line, wrappable with a trailing
+                              backslash; if the file has more than one line only
+                              the first is used)
   -h, --help                  show this help
 
 Estimators:
@@ -65,6 +69,12 @@ INPUT=""
 OUT=""; SCALE="100"; WFF=""; WFFOUT=""
 ETA=""; TOL=""; MAXITERS=""; CONSIDER=1; QUIET=0
 MAXENT_OPT_GIVEN=0          # track maxent-only options, to reject under log-odds
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+_fifo_options_die() { die "$1"; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

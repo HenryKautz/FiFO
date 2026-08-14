@@ -34,6 +34,9 @@ Options:
   --problem-out <file>  learned problem path (default: <problem-root>_learned.pddl;
                         written only if the instance has preference/:fluent-cost
                         probabilities)
+  --options <file>      splice the options listed in <file> in at this point (one
+                        logical line, wrappable with a trailing backslash; if the
+                        file has more than one line only the first is used)
   -h, --help            show this help
 
 An action specifies a probability with a :probability <p> slot (0<p<1), the
@@ -49,6 +52,12 @@ EOF
 die() { echo "learn-pddl.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 
 PROBLEM=""; DOMAIN=""; METHOD="log-odds"; SCALE="100"; NUMSLICES="3"; DOMAIN_OUT=""; PROBLEM_OUT=""
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+_fifo_options_die() { die "$1"; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

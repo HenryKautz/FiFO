@@ -48,6 +48,8 @@ usage() {
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
   echo "               enumeration) or an ADDMC binary name/path." >&2
+  echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
+  echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
 }
 
@@ -63,6 +65,12 @@ PDDL_EVFILE=""        # --pddl-evidence-file
 PDDL_EVIDENCE_FORMS=()  # --pddl-evidence (repeatable)
 MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary)
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+_fifo_options_die() { echo "planner.sh: $1" >&2; usage; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

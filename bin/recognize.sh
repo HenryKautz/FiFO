@@ -34,6 +34,9 @@
 #                 Default: uniform.
 #   --out DIR     output directory (default: <problem-dir>/runs/recognize).
 #   --solver NAME override the SAT feasibility solver passed to planner.sh.
+#   --options F   splice the options listed in file F in at this point (one logical
+#                 line, wrappable with a trailing backslash; if F has more than one
+#                 line only the first is used).
 
 set -uo pipefail
 
@@ -45,6 +48,13 @@ PLANNER="$SELF/planner.sh"
 command -v sbcl >/dev/null || { echo "sbcl not found on PATH" >&2; exit 2; }
 
 usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$SELF/fifo-options.sh"
+_fifo_options_die() { echo "recognize.sh: $1" >&2; usage; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
+
 [[ $# -ge 3 ]] || usage
 
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3

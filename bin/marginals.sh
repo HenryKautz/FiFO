@@ -79,6 +79,9 @@ action atoms).  Exact enumeration -- intended for small instances.
                       it WITHOUT recompiling (give this instead of a .scnf file).
                       Unit-literal --evidence reuses it; non-unit evidence recompiles
                       from the stored clauses.  --scale re-weights it for free.
+  --options <file>    splice the options listed in <file> in at this point (one
+                      logical line, wrappable with a trailing backslash; if the
+                      file has more than one line only the first is used)
   -h, --help          show this help
 
 Each line of output is  (MARGINAL <atom> <probability>).
@@ -105,6 +108,13 @@ EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
 CIRCUIT=""
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+_fifo_options_die() { die "$1"; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;

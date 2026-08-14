@@ -44,6 +44,9 @@ exp(-(sum of the weights of the true literals)).
                       must be ground (over atoms already in the scnf).
   --wcnf <file>    write the intermediate MCC weighted CNF here (and keep it)
   --keep-wcnf      keep the intermediate .wcnf scratch file instead of deleting it
+  --options <file> splice the options listed in <file> in at this point (one
+                   logical line, wrappable with a trailing backslash; if the file
+                   has more than one line only the first is used)
   -h, --help       show this help
 
 The FiFO lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
@@ -64,6 +67,13 @@ EPSILON=""
 EVFILE=""
 EVIDENCE_FORMS=()
 KEEP=0
+
+# Expand any --options FILE into the options it contains (see fifo-options.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+_fifo_options_die() { die "$1"; }
+_fifo_expand_options "$@"
+set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)    print_usage; exit 0 ;;
