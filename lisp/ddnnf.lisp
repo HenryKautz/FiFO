@@ -718,6 +718,10 @@ Returns (values circuit* clamp)."
              (results (sort (loop for v in targets
                                   collect (cons (aref i2a v) (/ (aref ztrue v) z)))
                             #'string-lessp :key (lambda (p) (princ-to-string (car p))))))
+        ;; Suppress internal reification atoms from the default listing; they
+        ;; still show under --weighted-only (P(atom) = P(the reified formula)).
+        (unless weighted-only
+          (setq results (remove-if #'reified-formula-atom-p results :key #'car)))
         (flet ((emit (s) (dolist (r results)
                            (format s "(MARGINAL ~S ~,6F)~%" (car r) (cdr r)))))
           (when verbose (emit *standard-output*))

@@ -1,0 +1,8 @@
+;; weight on a compound FORMULA (not just a literal): each formula reifies to a
+;; fresh determined atom (WEIGHTED-FORMULA n) via the count-neutral biconditional
+;; A <=> phi, and the weight rides on that atom.  The trailing literal case still
+;; emits a bare (WEIGHT <literal> w) line, unchanged.
+(weight (and a b) 3.0)
+(weight (or c d) 2.0)
+(weight (not (and e f)) 1.5)
+(weight (buy banana) 1.25)

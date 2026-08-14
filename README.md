@@ -16,7 +16,7 @@ henry.kautz@gmail.com
 
 FiFO is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The FiFO interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
 
-FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). The main differences are that it restricts weights to literals and provides a richer set of operators for working with static predicates and domains.
+FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). A weight or target probability may be attached to any formula (as in Markov Logic); a compound formula is reified into a fresh atom carrying the weight (see [Optimization](#optimization-weighted-maxsat)). Its main additions over Markov Logic are a richer set of operators for working with static predicates and domains.
 
 The FiFO interpreter is written in Common Lisp, but it is not necessary to know how to program in Lisp in order to use FiFO.
 
@@ -386,10 +386,10 @@ When new propositions are introduced in this manner, the relationship between th
 FiFO supports weighted optimization problems via the **weight** form:
 
 ```
-(weight <literal> <number>)
+(weight <formula> <number>)
 ```
 
-This asserts that if `<literal>` is true in a satisfying assignment, it contributes `<number>` to the objective. A MaxSAT or pseudo-Boolean optimizer can then minimize the total weight of true literals subject to satisfying all clauses.
+This asserts that if `<formula>` is true in a satisfying assignment, it contributes `<number>` to the objective. A MaxSAT or pseudo-Boolean optimizer can then minimize the total weight of true formulas subject to satisfying all clauses. The argument is most often a literal, but may be any formula (see **Formula-valued weights** below).
 
 Unlike clauses, weight assertions are not wrapped in `OR` in the `.scnf` file — they appear as bare `(WEIGHT literal number)` lines after all clause lines.
 
@@ -428,17 +428,35 @@ And conditional weights work too:
 (if (static-predicate arg) (weight (option arg) 2.5))
 ```
 
-`weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses.
+`weight` may **not** appear inside `or`, `not`, `implies`, or `equiv` — those contexts require formulas that produce clauses (a `weight`/`probability` form contributes none of its own). Using one there is an error.
+
+**Formula-valued weights.** The argument may be an arbitrary formula, not just a literal:
+
+```
+(weight (and (buy bread) (buy jam)) 4.0)
+(weight (or (late train) (late bus)) 2.0)
+```
+
+A compound argument is *reified*: FiFO mints a fresh atom `(WEIGHTED-FORMULA n)`, adds the hard biconditional `(WEIGHTED-FORMULA n) ⇔ <formula>`, and puts the weight on that atom. For `(weight (and a b) 4.0)` the `.scnf` is:
+
+```
+(OR (NOT A) (NOT B) (WEIGHTED-FORMULA 1))
+(OR (NOT (WEIGHTED-FORMULA 1)) A)
+(OR (NOT (WEIGHTED-FORMULA 1)) B)
+(WEIGHT (WEIGHTED-FORMULA 1) 4)
+```
+
+Because the biconditional fully determines the fresh atom from the formula's own atoms, it constrains nothing else (it is *count-neutral* under weighted model counting), so the atom is true exactly when the formula is and the cost is charged exactly then. A literal argument is **not** reified — it still emits a bare `(WEIGHT <literal> w)` line, unchanged.
 
 ### Probabilities (target marginals)
 
 Instead of stating a weight directly, you can state a **target marginal probability** with the **probability** form, and let the learning pipeline ([Probability/](Probability/)) compute the weight that realizes it:
 
 ```
-(probability <literal> <p> [<tie-label>])
+(probability <formula> <p> [<tie-label>])
 ```
 
-`<p>` is the desired probability (in `[0,1]`) that `<literal>` is true. `probability` is parsed and placed exactly like `weight` (top level, or in the body of `and`/`all`/`exists`/`if`), and `instantiate` passes it through to the `.scnf` as `(PROBABILITY <literal> <p> <gid>)`.
+`<p>` is the desired probability (in `[0,1]`) that `<formula>` is true. `probability` is parsed and placed exactly like `weight` (top level, or in the body of `and`/`all`/`exists`/`if`), and `instantiate` passes it through to the `.scnf` as `(PROBABILITY <literal> <p> <gid>)`. A compound formula argument is reified the same way as for `weight` — `(probability (and a b) 0.3)` targets `P((and a b)) = 0.3` on the fresh atom `(WEIGHTED-FORMULA n)`, whose marginal equals the formula's probability. (These internal atoms are hidden from the default `marginals` listing but shown under `--weighted-only`, where their marginal is exactly `P(formula)`.)
 
 **Tie groups.** Every ground instance of one source `probability` form shares a **tie-group id** `<gid>`, so the learner fits **one** weight for the whole group (parameter tying — see [Probability/probability-background.md](Probability/probability-background.md)). By default each `probability` form is its own group (an auto-assigned integer); an optional trailing symbol `<tie-label>` overrides this to merge forms into a shared group or split them. For example, `(all x items true (probability (faulty x) 0.05))` gives every `(faulty x)` the same target and the same learned weight.
 
@@ -729,7 +747,7 @@ FiFO includes a SatPlan-style planner built on static predicates and quantified 
 Schema BNF
 ----------
 
-    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <statics> | <weight>
+    <schema> = <option> | <domain declaration> | <alias declaration> | <formula> | <statics> | <weight> | <probability>
     
     <option> = (option <option name> <option value>)
     
@@ -751,7 +769,7 @@ Schema BNF
         (if <test> <body>) |  
         (prove ((<variable> <set expression>)*) <test> <formula>)
     
-    <body> = <formula> | <weight>
+    <body> = <formula> | <weight> | <probability>
     
     <proposition> = <predicate symbol> | true | false | 
         (<predicate symbol> <term>*) |
@@ -789,8 +807,10 @@ Schema BNF
     
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
-    <weight> = (weight <literal> <numeric expression>)
-    
+    <weight> = (weight <formula> <numeric expression>)
+
+    <probability> = (probability <formula> <numeric expression> [<tie-label>])
+
     <literal> = <proposition> | (not <proposition>)
     
     <statics> = (static <static-formula>+)

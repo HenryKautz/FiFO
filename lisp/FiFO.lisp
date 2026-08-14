@@ -41,6 +41,13 @@ exactly where it was."
 ;; populated by assign-probability-gids before parsing so parse-probability can
 ;; stamp each grounding.  See find-probability-forms / assign-probability-gids.
 (defvar *probability-gids* (make-hash-table :test #'eq))
+;; Monotonic counter for the fresh auxiliary atoms (WEIGHTED-FORMULA <n>) minted
+;; when weight/probability is applied to a compound formula rather than a literal
+;; (see reify-formula).  Reset per parse in setup-global-env so numbering is
+;; deterministic within one instantiation.  WEIGHTED-FORMULA is reserved by
+;; convention (like pddl2fifo's pref-violated / ObsDone atoms) -- do NOT add it to
+;; reserved-words, or parse-name would reject the very atoms reify-formula builds.
+(defvar *reified-formula-counter* 0)
 ;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
 ;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
 (defvar *cnf-format* 'CNF)
@@ -616,6 +623,7 @@ or maxent.lisp)."
   (setq Weights nil)
   (setq Probabilities nil)
   (clrhash *probability-gids*)
+  (setq *reified-formula-counter* 0)
   (setf (gethash 'TRUE StaticPredicates) 1)
   (setf (gethash 'TRUE StaticLiterals) 1)
   (setf (gethash 'FALSE StaticPredicates) 1)
@@ -733,11 +741,48 @@ or maxent.lisp)."
         ((eql (car SCHEMA) 'probability) (parse-probability SCHEMA))
         (t (parse-formula SCHEMA))))
 
+(defun weight-or-probability-form-p (F)
+  "True for a (weight ...) or (probability ...) schema form.  Used to reject such
+forms in the or/not/implies/equiv contexts, where they have no non-degenerate
+meaning (a weight/probability form contributes no clause of its own)."
+  (and (consp F) (member (car F) '(weight probability))))
+
+(defun reified-formula-atom-p (atom)
+  "True for a fresh auxiliary atom (WEIGHTED-FORMULA n) minted by reify-formula.
+Marginal reporters use this to suppress these internal atoms from the default
+(all-atoms) listing; they still surface under --weighted-only, since P(that atom)
+is exactly P(the reified formula)."
+  (and (consp atom) (eq (car atom) 'WEIGHTED-FORMULA)))
+
+(defun reify-formula (phi)
+  "Reify the compound formula PHI into a fresh determined atom
+A = (WEIGHTED-FORMULA n) plus the hard clauses of the biconditional A <=> PHI.
+Because A is fully determined by PHI, the biconditional constrains nothing about
+PHI's own atoms (it is count-neutral under weighted model counting), so P(A) =
+P(PHI): attaching a weight or target marginal to A applies it exactly when PHI
+holds.  The biconditional is expanded with *compact-encoding* disabled so it
+introduces no gensym selector atoms -- those would not survive the scnf ~S
+round-trip (each #:XXn reads back as a distinct symbol).  PHI is parsed in the
+current binding environment, so this works per-grounding inside all/exists.
+Returns (values A clauses)."
+  (let* ((n (incf *reified-formula-counter*))
+         (atom (list 'WEIGHTED-FORMULA n))
+         (*compact-encoding* nil))
+    (values atom (parse-equiv (list atom phi)))))
+
 (defun parse-weight (ARGS)
-  (let ((lit (parse-literal (car ARGS)))
+  (let ((arg (car ARGS))
         (num (normalize-numeric (parse-numeric-expression (cadr ARGS)))))
-    (setq Weights (append Weights (list (list 'WEIGHT lit num))))
-    nil))
+    (cond ((is-literal arg)
+           ;; literal argument: attach the weight directly (unchanged behavior)
+           (setq Weights (append Weights (list (list 'WEIGHT (parse-literal arg) num))))
+           nil)
+          (t
+           ;; compound formula: reify to a fresh determined atom and weight that;
+           ;; the biconditional clauses become part of the hard theory
+           (multiple-value-bind (atom clauses) (reify-formula arg)
+             (setq Weights (append Weights (list (list 'WEIGHT atom num))))
+             clauses)))))
 
 (defun find-probability-forms (form)
   "Depth-first list of every (PROBABILITY ...) subform of FORM, in document order.
@@ -772,15 +817,24 @@ labeled forms get their label.  Same traversal the write-back uses, so ids match
 (PROBABILITY <literal> <p> <gid>) entry on the global Probabilities list, stamping
 the tie-group id assigned to this source form by assign-probability-gids."
   (let* ((args (cdr SCHEMA))
-         (lit (parse-literal (car args)))
+         (arg (car args))
          (p (normalize-numeric (parse-numeric-expression (cadr args))))
          (gid (gethash SCHEMA *probability-gids*)))
     (unless (and (realp p) (<= 0 p) (<= p 1))
       (error "PROBABILITY target must be a probability in [0,1]: ~S" SCHEMA))
     (unless gid
       (error "internal: no tie-group id for PROBABILITY form ~S" SCHEMA))
-    (setq Probabilities (append Probabilities (list (list 'PROBABILITY lit p gid))))
-    nil))
+    (cond ((is-literal arg)
+           ;; literal argument: target its marginal directly (unchanged behavior)
+           (setq Probabilities
+                 (append Probabilities (list (list 'PROBABILITY (parse-literal arg) p gid))))
+           nil)
+          (t
+           ;; compound formula: reify to a fresh determined atom whose marginal
+           ;; equals P(formula); target that.  Biconditional clauses join the theory.
+           (multiple-value-bind (atom clauses) (reify-formula arg)
+             (setq Probabilities (append Probabilities (list (list 'PROBABILITY atom p gid))))
+             clauses)))))
 
 (defun resolve-solver-name (NAME)
   (let ((pair (assoc (string-downcase NAME) *solver-abbreviations* :test #'string=)))
@@ -879,7 +933,11 @@ the tie-group id assigned to this source form by assign-probability-gids."
 
 (defun parse-formula (F)
   ;; (format t "entering parse ~S" F)
-  (cond ((and (not static-body-mode) (is-static-literal F)) (parse-static-literal F))
+  (cond ((weight-or-probability-form-p F)
+          (error "weight/probability may not appear inside or/not/implies/equiv: ~S" F))
+        ((and (consp F) (eq (car F) 'not) (weight-or-probability-form-p (cadr F)))
+          (error "weight/probability may not appear inside or/not/implies/equiv: ~S" F))
+        ((and (not static-body-mode) (is-static-literal F)) (parse-static-literal F))
         ((is-literal F) (list (list (parse-literal F))))
         ((eql (car F) 'not) (parse-not (cadr F)))
         ((eql (car F) 'and) (parse-and (cdr F)))
@@ -949,6 +1007,8 @@ the tie-group id assigned to this source form by assign-probability-gids."
 
 (defun parse-or (FL)
   (cond ((null FL) (list nil)) ;; empty OR is the empty clause
+        ((weight-or-probability-form-p (car FL))
+          (error "weight/probability may not appear inside or/not/implies/equiv: ~S" (car FL)))
         (t (multiply-clauses (parse-schema (car FL))
                              (parse-or (cdr FL))))))
 

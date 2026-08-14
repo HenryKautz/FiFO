@@ -1,0 +1,5 @@
+;; probability target on a compound FORMULA: P((and a b)) = 0.3 is expressed as a
+;; target marginal on the reified atom (WEIGHTED-FORMULA n) (whose marginal equals
+;; P(the formula)).  The trailing literal case is unchanged.
+(probability (and a b) 0.3)
+(probability (p x) 0.7)

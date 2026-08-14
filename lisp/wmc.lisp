@@ -253,7 +253,11 @@ per atom (sorted) and, with OUT-FILE, also writes them there.  Returns an alist 
                    (wmc--run-addmc wcnf :addmc addmc :epsilon epsilon)))
             (let* ((target-vars (if weighted-only
                                     (mapcar (lambda (a) (gethash a a2i)) weight-atoms)
-                                    (mapcar (lambda (a) (gethash a a2i)) theory-atoms)))
+                                    ;; hide internal reification atoms from the default
+                                    ;; listing (also skips an ADDMC run each); they show
+                                    ;; under --weighted-only, where P(atom)=P(formula)
+                                    (mapcar (lambda (a) (gethash a a2i))
+                                            (remove-if #'reified-formula-atom-p theory-atoms))))
                    (z (count-with nil)))
               (when (<= z 0.0d0)
                 (unless keep-wcnf (ignore-errors (delete-file wcnf)))

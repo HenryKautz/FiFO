@@ -55,6 +55,18 @@ In FiFO syntax, a `(WEIGHT L w)` line is the cost paid when literal `L` is true
 literal corresponds to the cost-when-true `θ = log((1-p)/p)`, whose sign decides
 which polarity carries the (positive) weight.
 
+**Formula features.** `weight`/`probability` may take a whole formula, not just a
+literal (a Markov-logic *feature*). FiFO reifies the formula φ into a fresh atom
+`(WEIGHTED-FORMULA n)` with the hard biconditional `(WEIGHTED-FORMULA n) ⇔ φ`, and
+attaches the weight/target to that atom. The biconditional fully determines the
+atom, so it is **count-neutral** (adds no constraint on φ's own atoms) and
+`P((WEIGHTED-FORMULA n)) = P(φ)` exactly. Everything above then applies unchanged
+with `L` = the reified atom: maxent fits its weight so that `P(φ) = p`, while the
+independent log-odds estimator gives the usual per-feature approximation (exact
+only when φ is uncorrelated with the rest of the theory). These internal atoms are
+suppressed from the default `marginals.sh` listing and shown under
+`--weighted-only`, where their marginal is `P(φ)`.
+
 ------
 
 ## Marginal inference: weights → probabilities

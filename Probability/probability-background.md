@@ -28,6 +28,12 @@ FiFO compiles a finite-domain FOL theory into hard CNF clauses plus a set of
 feasible assignment. *Learning the weights* is the inverse problem: given
 assignments believed to be (near-)optimal, recover weights that make them so.
 
+(A weight or target marginal on a compound *formula* φ — a Markov-logic feature —
+is handled by reifying φ into a fresh determined atom `A ⇔ φ` and weighting `A`,
+which is count-neutral and gives `P(A) = P(φ)`; the schema $a$ below is then that
+atom, so all of the following applies with no change. See
+[probability.md](probability.md).)
+
 | Symbol | Meaning |
 |---|---|
 | $x \in \{0,1\}^n$ | full assignment to all variables |
