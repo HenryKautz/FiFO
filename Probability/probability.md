@@ -23,9 +23,10 @@ computation, and this guide covers how to run both:
 
 - **Marginal inference (weights → probabilities):** given the weights, compute
   the probability that each atom is true — and, with evidence, conditional
-  probabilities. Four implemented back ends: exact enumeration, the ADDMC
-  weighted model counter, FiFO's own d-DNNF compiler, and the external d4
-  compiler.
+  probabilities. Four *exact* back ends: enumeration, the ADDMC weighted model
+  counter, FiFO's own d-DNNF compiler, and the external d4 compiler. Past their
+  scale limits there is a fifth, *approximate* one: **MC-SAT** sampling, which
+  gets every marginal from a single MCMC run.
 - **Weight learning (probabilities → weights):** given target marginal
   probabilities for the weighted atoms, recover the integer literal weights
   that realize them. Two implemented estimators: independent log-odds and
@@ -33,8 +34,8 @@ computation, and this guide covers how to run both:
 
 The two directions are inverses, and the learner uses inference as its inner
 loop: it adjusts the weights until the model's *actual* marginals match the
-targets. For the theory — the full range of learning data regimes,
-sampling-based inference methods not yet implemented, and provenance — see
+targets. For the theory — the full range of learning data regimes, the
+sampling-based inference design space, and provenance — see
 [probability-background.md](probability-background.md).
 
 For **PDDL planning** problems you usually drive both directions from the
@@ -222,9 +223,132 @@ The d4 compile times and d-DNNF circuit sizes on the LogisticsCosts benchmarks �
 
 ------
 
+### Approximate marginals by MC-SAT sampling
+
+The four back ends above all *count*, so they are bounded by the instance's
+treewidth or the size of its feasible set. **MC-SAT** (Poon & Domingos 2006) does
+not count: it runs a Markov chain whose stationary distribution is exactly the
+Gibbs distribution above, and reports the fraction of samples in which each atom
+was true. One run gives *every* marginal — where `--solver addmc` needs one exact
+count per atom — so it returns in seconds on SatPlan instances the exact back ends
+cannot finish. The price is Monte-Carlo error, and (more importantly) a mixing
+assumption that can fail. For the algorithm and why its inner loop is a SAT solve
+rather than a MaxSAT solve, see
+[probability-background.md §12](probability-background.md#12-sampling-based-marginal-inference-mc-sat).
+
+```sh
+# every marginal from one sampling run; fix the seed for reproducibility
+bin/marginals.sh problem.scnf --solver mc-sat --seed 1 --samples 200000
+
+# large SatPlan instances: unit-propagate before each sample, weighted atoms only
+bin/marginals.sh problem.scnf --solver mc-sat --seed 1 --unitprop --weighted-only
+
+# conditional marginals work exactly as for the exact back ends
+bin/marginals.sh problem.scnf --solver mc-sat --evidence '(not (occurs (turn-on s1) 1))'
+```
+
+**Encoding.** MC-SAT reads a weighted CNF in the MLN convention: clauses are
+either hard (`h`) or carry a **non-negative** weight that *rewards* satisfaction,
+`P(x) ∝ exp(Σ weights of the satisfied soft clauses)`. FiFO's costs have the
+opposite sign and may be negative, so each weighted literal `L` with total
+cost-when-true `θ` becomes a soft **unit** clause on the literal FiFO does *not*
+charge for: `θ > 0` → the clause `¬L` with weight `θ`; `θ < 0` → the clause `L`
+with weight `−θ`. Either way the odds on `L` are `exp(−θ) : 1`, exactly FiFO's
+`W(L true) = exp(−θ)`, `W(L false) = 1`, and no negative weight is ever needed —
+which matters, because MC-SAT's slice step includes a satisfied soft clause with
+probability `1 − e^{−w}` and that is only a probability for `w ≥ 0`. The hard
+`(OR …)` clauses (plus any evidence) are written with the `h` prefix, and the
+header `scale:` is divided out first, as for every other back end.
+
+**Read the efficiency line before the marginals.** Every run prints the sampler's
+diagnostics as `;` comments, the important one being the **effective sample size**
+and its efficiency (mean ESS / samples; 1.0 would mean independent samples):
+
+```
+; ess (batch means, b=447 B=447): mean=122408 min=82185 (var 6) over 4 non-deterministic vars; efficiency=0.612
+```
+
+MC-SAT mixes poorly on **strongly coupled** models: when many weights are large,
+`1 − e^{−w} → 1`, so nearly every satisfied clause enters the constraint set each
+step, SampleSAT can barely move, and the chain freezes in one mode. A very low
+efficiency means the marginals are *unreliable*, not merely noisy — more samples
+will not fix it — and the run says so explicitly rather than letting the numbers
+pass as ordinary Monte-Carlo error. (The extreme case, a chain that never moves at
+all, is caught by the separate mixing line — see below.) This diagnostic was validated on the UAI-2014
+MAR *Grids* benchmarks, where it flagged the (badly wrong) marginals as
+untrustworthy before any ground truth was available. Treat efficiency below ~0.1
+as "use an exact back end, or a smaller instance."
+
+**`--unitprop`.** With this flag the sampler unit-propagates before each sample:
+variables forced in *every* solution of the current constraint set are fixed and
+dropped from the flip candidate set. It is an optimization, not a change of
+distribution (the marginals are unchanged); on SatPlan encodings — whose initial
+state is a wall of unit clauses — it typically fixes 85–90% of the variables and
+runs an order of magnitude faster.
+
+**The initial assignment is seeded from kissat.** MC-SAT has to start from *some*
+model of the hard clauses, and the sampler looks for one with stochastic local
+search — exactly the workload WalkSAT is worst at. On a SatPlan encoding it can
+fail outright where a CDCL solver succeeds instantly, and no budget rescues it:
+LogisticsCosts `pb1` (1888 atoms, 18950 clauses) survived `--init-tries 20
+--init-cutoff 20000000` — 400 M flips, with `--unitprop` on — without finding a
+model of a formula kissat solves in well under a second. So by default FiFO solves
+the hard clauses once with kissat and hands the model to the sampler
+(`--no-sat-seed` turns this off). Two consequences: instances like `pb1` now start
+immediately, and a CDCL **UNSAT** verdict is a *proof*, reported at once instead of
+after a hundred futile restarts.
+
+**But starting is not mixing — watch for a frozen chain.** Getting MC-SAT started
+on a SatPlan encoding does not make it work there. On `pb1` the chain, once
+started, **never moves**: every marginal comes back pinned at 0 or 1, and those
+numbers are simply the kissat plan it started from. Exact d-DNNF compilation of the
+same instance gives *no* atom at 1.0 and 109 fractional marginals — so the sampled
+answer is not noisy, it is wrong.
+
+This failure is invisible in the ESS diagnostic, which is computed only over
+variables whose marginal is strictly between 0 and 1: a frozen chain has none, so
+ESS reports "all marginals are deterministic (nothing to sample)" — which reads as
+*this problem is determined*. The sampler therefore reports mixing separately:
+
+```
+; mixing: mean Hamming distance between consecutive samples = 0.00 of 1888 vars
+; MC-SAT warning: the chain is FROZEN -- it never moved, though 211.7 variables
+;   were free to move each step.  The marginals are the starting assignment ...
+```
+
+A determined problem and a frozen chain both give distance 0; what separates them
+is whether anything was *free* to move, which `--unitprop` measures (with it on,
+the Switch domain — genuinely determined — is correctly reported as deterministic,
+not frozen). **Run `--solver mc-sat` with `--unitprop`** so this check is decisive,
+and treat a FROZEN verdict as "use `--solver addmc` / `--solver d4` instead". The
+practical envelope today: MC-SAT is right for weighted theories with moderate
+coupling, and not for the large SatPlan encodings, which are both strongly coupled
+and nearly determined.
+
+**Accuracy.** Checked against exact enumeration on the weighted test instances:
+agreement to ~0.001–0.006 at 200k samples, including negative costs, hard unit
+clauses, reified `(WEIGHTED-FORMULA n)` formula weights, and `--evidence`
+conditioning (`bash tests/run-test-mcsat.sh`).
+
+**Interface & dependency.** `--solver mc-sat` (Lisp: `marginals-mcsat` in
+`lisp/mcsat.lisp`) shells out to **WalkSAT version 58 or later** (the `-init`
+seeding and the mixing diagnostic described above are v58 features added for this
+integration), whose `-mcsat`
+mode carries the whole sampler — outer slice sampling and inner SampleSAT — in C,
+so FiFO writes one weighted CNF and reads the marginals back from a single
+process. Get it from [gitlab.com/HenryKautz/Walksat](https://gitlab.com/HenryKautz/Walksat)
+(the `Walksat_v58_MC-SAT` directory), and locate it via the `*walksat*` Lisp
+variable, the `WALKSAT` environment variable, or `--walksat-bin <path>`. It is
+optional — only `--solver mc-sat` uses it — and versions 57 and earlier are
+detected and refused rather than silently ignoring `-mcsat`. Sampling parameters
+(`--samples`, `--burnin`, `--seed`, `--walk-prob`, `--temp`,
+`--samplesat-cutoff`) pass straight through; see `marginals.sh --help`.
+
+------
+
 ### Conditioning on evidence
 
-`wmc`, `marginals-addmc`, and the `ddnnf`/`d4` solvers all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver ddnnf`, and `--solver d4`; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles.)
+`wmc`, `marginals-addmc`, the `ddnnf`/`d4` solvers, and `mc-sat` all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver ddnnf`, `--solver d4`, and `--solver mc-sat`; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles. `mc-sat` samples from the conditioned distribution — the evidence clauses are simply part of the hard set every SampleSAT call must satisfy.)
 
 - `:evidence` (Lisp) / `--evidence '<form>'` (shell, repeatable) — a **ground** FiFO formula. It is clausified by FiFO's own parser (`(implies (P A) (P B))` → `(OR (NOT (P A)) (P B))`, etc.) and conjoined with the theory. Multiple forms are conjoined.
 - `:evidence-file` / `--evidence-file <f>` — a file of ground FiFO formulas, conjoined with any `--evidence` forms.

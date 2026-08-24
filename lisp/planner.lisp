@@ -157,8 +157,10 @@ MARGINALS switches from planning to inference: instead of searching for a plan,
 the problem (conjoined with any evidence) is instantiated once at the working
 horizon and handed to weighted model counting, printing P(atom | evidence) for
 each atom.  COUNTER names the model counter: \"maxent\" (default) is the built-in
-exact enumeration; any other value is the ADDMC binary (name or path) to shell out
-to.
+exact enumeration; \"mc-sat\" is APPROXIMATE MC-SAT sampling (one WalkSAT v58 run
+for all the marginals -- for horizons where exact counting times out; check the
+reported sampling efficiency); any other value is the ADDMC binary (name or path)
+to shell out to.
 
 STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
 PDDL translation, or the input itself for a .wff), and :SCNF returns after
@@ -234,9 +236,13 @@ wff/scnf.  Progress is printed to STREAM."
                 (format stream "Computing marginals at ~A time slices with the ~A counter~:[~; (conditioned on evidence)~]...~%"
                         lo (if (string-equal counter "maxent") "maxent enumeration" counter)
                         evidence-forms)
-                (if (string-equal counter "maxent")
-                    (marginals msc)
-                    (marginals-addmc msc :addmc counter))
+                (cond ((string-equal counter "maxent") (marginals msc))
+                      ;; Approximate: one MC-SAT run gives every marginal.  Unit
+                      ;; propagation is on because SatPlan encodings are unit-heavy
+                      ;; (the initial state alone); it fixes only variables forced
+                      ;; in every model, so it does not change the distribution.
+                      ((string-equal counter "mc-sat") (marginals-mcsat msc :unitprop t))
+                      (t (marginals-addmc msc :addmc counter)))
                 (return-from plan (values :marginals lo msc))))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).
             (loop for n from lo to hi until found do

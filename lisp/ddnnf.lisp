@@ -338,8 +338,13 @@ returned circuit across many queries with DDNNF-QUERY / DDNNF-MARGINALS-SETS."
 ;;; ----------------------------------------------------------------------------
 
 (defvar *d4* (or (uiop:getenv "D4")
+                 ;; NB: strip name/type from the defaults -- merging onto
+                 ;; "ddnnf.lisp" would otherwise inherit its type and look for
+                 ;; "compiler.lisp".
                  (namestring (merge-pathnames "../../d4v2/demo/compiler/build/compiler"
-                                              (or *load-pathname* *default-pathname-defaults*))))
+                                              (make-pathname :name nil :type nil :version nil
+                                                             :defaults (or *load-pathname*
+                                                                           *default-pathname-defaults*)))))
   "Path to the d4 (d4v2) d-DNNF compiler demo executable.  Defaults to the D4
 environment variable, else a sibling d4v2 checkout.  Optional -- only the d4
 producer needs it.")

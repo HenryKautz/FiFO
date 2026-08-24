@@ -1,13 +1,14 @@
 #!/bin/bash
 #
-# marginals.sh -- compute the exact marginal probability of every atom in a
-# weighted .scnf file.
+# marginals.sh -- compute the marginal probability of every atom in a weighted
+# .scnf file.
 #
 # Reads an instantiated .scnf (hard (OR ...) clauses plus (WEIGHT literal w)
 # costs) and prints, for EVERY atom -- weighted or not -- the marginal P(atom =
 # true) under the Gibbs distribution P(x) proportional to exp(-(sum of the weights
-# of the true literals)) over the feasible set.  Exact enumeration, so this is for
-# small instances.
+# of the true literals)) over the feasible set.  The default back end is exact
+# enumeration, so it is for small instances; see --solver for the counters that
+# scale further and for mc-sat, which samples rather than counts.
 #
 # The lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).
 
@@ -19,11 +20,13 @@ print_usage() {
   cat <<'EOF'
 usage: marginals.sh <file.scnf> [options]
 
-Compute the exact marginal probability P(atom = true) of every atom in a weighted
-.scnf, under the Gibbs distribution defined by its (WEIGHT ...) costs over the
-feasible set (the assignments satisfying its hard (OR ...) clauses).  All atoms
-are reported, weighted or not (e.g. SatPlan Holds state atoms, not just Occurs
-action atoms).  Exact enumeration -- intended for small instances.
+Compute the marginal probability P(atom = true) of every atom in a weighted .scnf,
+under the Gibbs distribution defined by its (WEIGHT ...) costs over the feasible
+set (the assignments satisfying its hard (OR ...) clauses).  All atoms are
+reported, weighted or not (e.g. SatPlan Holds state atoms, not just Occurs action
+atoms).  Four of the back ends are exact (the default, maxent, is enumeration --
+intended for small instances); mc-sat samples instead, for instances past the
+reach of exact counting.
 
   --solver <name>     marginal-inference back end (default: maxent):
                         maxent  exact Lisp enumeration of the feasible set --
@@ -41,6 +44,12 @@ action atoms).  Exact enumeration -- intended for small instances.
                                 but the Boolean structure is compiled by the external
                                 state-of-the-art d4 (d4v2) compiler -- for instances
                                 too structured for the home-grown compiler
+                        mc-sat  APPROXIMATE: MC-SAT sampling (WalkSAT v58's -mcsat
+                                mode) -- one run gives every marginal, so it scales
+                                to instances the exact back ends cannot count, at
+                                the price of Monte-Carlo error.  Use --seed for
+                                reproducibility and --samples for accuracy, and
+                                watch the reported sampling efficiency (see below)
   --weighted-only     report (and enumerate) only the weighted atoms, not every
                       atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
@@ -52,16 +61,43 @@ action atoms).  Exact enumeration -- intended for small instances.
                       implies --solver addmc
   --d4-bin <path>     path to the d4 (d4v2) compiler binary (else $D4, else a sibling
                       d4v2 checkout); implies --solver d4
+  --walksat-bin <p>   path to the WalkSAT v58 (MC-SAT) binary (else $WALKSAT, else a
+                      sibling Walksat_v58_MC-SAT checkout, else 'walksat' on PATH);
+                      implies --solver mc-sat
   --scale <n>         divide integer weights by n before exponentiating; default
                       reads the 'scale: N' the weight-learning pipeline records in
                       the header (1 if absent).  The pipeline scales costs by an
                       integer factor (100 by default) for MaxSAT, which would
                       otherwise distort the marginals; --scale 1 uses raw weights.
-                      Applies to both solvers.
+                      Applies to every solver.
   --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
-  --evidence <form>   (addmc/ddnnf) condition on a GROUND FiFO formula: it is
+  --samples <n>       (mc-sat only) number of retained samples (default 10000).
+                      Monte-Carlo error falls as 1/sqrt(n)
+  --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)
+  --seed <n>          (mc-sat only) seed the sampler; the same seed reproduces the
+                      same marginals exactly.  Default: time-based (so runs differ)
+  --unitprop          (mc-sat only) unit-propagate before each sample, fixing forced
+                      variables and shrinking the search -- a large speedup on
+                      instances with many unit clauses (SatPlan initial states)
+  --walk-prob <r>     (mc-sat only) SampleSAT's probability of a WalkSAT (rather
+                      than simulated-annealing) move, default 0.5
+  --temp <r>          (mc-sat only) SampleSAT's annealing temperature, default 0.25
+  --samplesat-cutoff <n>
+                      (mc-sat only) flips of the SampleSAT walk per sample; default
+                      100 + 10 * #atoms.  Raise it if the chain mixes poorly
+  --init-cutoff <n>   (mc-sat only) flips per try for the INITIAL solve of the hard
+                      clauses (default 100 * #atoms), and the budget to repair a
+                      SampleSAT endpoint back onto a solution
+  --init-tries <n>    (mc-sat only) random restarts allowed for that initial solve
+                      (default 100)
+  --no-sat-seed       (mc-sat only) do NOT seed the initial assignment from the CDCL
+                      SAT solver.  By default the hard clauses are solved once with
+                      kissat and its model starts the sampler, because local search
+                      alone cannot reach a model of a structured (SatPlan) encoding
+                      -- and a CDCL UNSAT verdict is then a proof, reported at once
+  --evidence <form>   (addmc/ddnnf/d4/mc-sat) condition on a GROUND FiFO formula: it is
                       clausified and conjoined with the theory as a hard
                       constraint, so the reported marginals become P(atom | form).
                       Repeatable; multiple --evidence are conjoined.  E.g.
@@ -69,7 +105,7 @@ action atoms).  Exact enumeration -- intended for small instances.
                       --evidence '(implies (holds (on s1) 1) (p a))'
                       With ddnnf, unit-literal evidence reuses the compiled circuit;
                       a non-unit form triggers a recompile.
-  --evidence-file <f> (addmc/ddnnf) a file of ground FiFO formulas to condition on,
+  --evidence-file <f> (addmc/ddnnf/d4/mc-sat) a file of ground FiFO formulas to condition on,
                       conjoined with any --evidence forms.  Evidence must be ground
                       (over atoms already in the scnf); quantified evidence needs
                       the .wff (re-instantiate with the assertion added).
@@ -86,12 +122,23 @@ action atoms).  Exact enumeration -- intended for small instances.
 
 Each line of output is  (MARGINAL <atom> <probability>).
 
+With --solver mc-sat the results are APPROXIMATE, and the run also prints the
+sampler's diagnostics as ';' comment lines -- in particular the effective sample
+size and its "efficiency" (mean ESS / samples, 1.0 = independent samples).  MC-SAT
+mixes poorly on strongly coupled models (many large weights), where the chain
+freezes in one mode; a very low efficiency means the marginals are unreliable
+rather than merely noisy, and the run says so explicitly.
+
 The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 ADDMC is a separate executable (https://github.com/HenryKautz/ADDMC, a macOS
 fork of vardigroup/ADDMC); build it and put 'addmc' on PATH, set ADDMC, or pass
 --addmc-bin.
+
+MC-SAT needs WalkSAT version 58 or later (https://gitlab.com/HenryKautz/Walksat,
+the Walksat_v58_MC-SAT directory); build it and set WALKSAT or pass --walksat-bin.
+Earlier releases have no -mcsat option.
 EOF
 }
 
@@ -108,6 +155,16 @@ EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
 CIRCUIT=""
+SAMPLES=""
+BURNIN=""
+SEED=""
+UNITPROP=0
+WALK_PROB=""
+TEMP=""
+SS_CUTOFF=""
+INIT_CUTOFF=""
+INIT_TRIES=""
+NO_SAT_SEED=0
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
@@ -118,12 +175,23 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
-    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, or ddnnf)"; SOLVER="$2"; shift 2 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, ddnnf, d4, or mc-sat)"; SOLVER="$2"; shift 2 ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
     --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; SOLVER="addmc"; shift 2 ;;
     --d4-bin)         [[ $# -ge 2 ]] || die "--d4-bin needs an argument"; export D4="$2"; SOLVER="d4"; shift 2 ;;
+    --walksat-bin)    [[ $# -ge 2 ]] || die "--walksat-bin needs an argument"; export WALKSAT="$2"; SOLVER="mc-sat"; shift 2 ;;
+    --samples)        [[ $# -ge 2 ]] || die "--samples needs an argument"; SAMPLES="$2"; shift 2 ;;
+    --burnin)         [[ $# -ge 2 ]] || die "--burnin needs an argument"; BURNIN="$2"; shift 2 ;;
+    --seed)           [[ $# -ge 2 ]] || die "--seed needs an argument"; SEED="$2"; shift 2 ;;
+    --unitprop)       UNITPROP=1; shift ;;
+    --walk-prob)      [[ $# -ge 2 ]] || die "--walk-prob needs an argument"; WALK_PROB="$2"; shift 2 ;;
+    --temp)           [[ $# -ge 2 ]] || die "--temp needs an argument"; TEMP="$2"; shift 2 ;;
+    --samplesat-cutoff) [[ $# -ge 2 ]] || die "--samplesat-cutoff needs an argument"; SS_CUTOFF="$2"; shift 2 ;;
+    --init-cutoff)    [[ $# -ge 2 ]] || die "--init-cutoff needs an argument"; INIT_CUTOFF="$2"; shift 2 ;;
+    --init-tries)     [[ $# -ge 2 ]] || die "--init-tries needs an argument"; INIT_TRIES="$2"; shift 2 ;;
+    --no-sat-seed)    NO_SAT_SEED=1; shift ;;
     --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
@@ -135,7 +203,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--solver must be maxent, addmc, ddnnf, or d4, got: $SOLVER"
+[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" ]] || die "--solver must be maxent, addmc, ddnnf, d4, or mc-sat, got: $SOLVER"
 if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
   [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--circuit/--save-circuit apply to the ddnnf and d4 solvers only"
 fi
@@ -151,8 +219,28 @@ if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale mus
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
-  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, and d4 solvers only"
+  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, d4, and mc-sat solvers only"
 fi
+if [[ "$SOLVER" != "mc-sat" ]]; then
+  [[ -z "$SAMPLES"   ]] || die "--samples applies to the mc-sat solver only"
+  [[ -z "$BURNIN"    ]] || die "--burnin applies to the mc-sat solver only"
+  [[ -z "$SEED"      ]] || die "--seed applies to the mc-sat solver only"
+  [[ -z "$WALK_PROB" ]] || die "--walk-prob applies to the mc-sat solver only"
+  [[ -z "$TEMP"      ]] || die "--temp applies to the mc-sat solver only"
+  [[ -z "$SS_CUTOFF" ]] || die "--samplesat-cutoff applies to the mc-sat solver only"
+  [[ -z "$INIT_CUTOFF" ]] || die "--init-cutoff applies to the mc-sat solver only"
+  [[ -z "$INIT_TRIES" ]] || die "--init-tries applies to the mc-sat solver only"
+  [[ "$NO_SAT_SEED" -eq 0 ]] || die "--no-sat-seed applies to the mc-sat solver only"
+  [[ "$UNITPROP" -eq 0 ]] || die "--unitprop applies to the mc-sat solver only"
+fi
+if [[ -n "$SAMPLES"   && ! "$SAMPLES"   =~ ^[0-9]+$ ]]; then die "--samples must be a non-negative integer, got: $SAMPLES"; fi
+if [[ -n "$BURNIN"    && ! "$BURNIN"    =~ ^[0-9]+$ ]]; then die "--burnin must be a non-negative integer, got: $BURNIN"; fi
+if [[ -n "$SEED"      && ! "$SEED"      =~ ^[0-9]+$ ]]; then die "--seed must be a non-negative integer, got: $SEED"; fi
+if [[ -n "$SS_CUTOFF" && ! "$SS_CUTOFF" =~ ^[0-9]+$ ]]; then die "--samplesat-cutoff must be a non-negative integer, got: $SS_CUTOFF"; fi
+if [[ -n "$INIT_CUTOFF" && ! "$INIT_CUTOFF" =~ ^[0-9]+$ ]]; then die "--init-cutoff must be a non-negative integer, got: $INIT_CUTOFF"; fi
+if [[ -n "$INIT_TRIES" && ! "$INIT_TRIES" =~ ^[0-9]+$ ]]; then die "--init-tries must be a non-negative integer, got: $INIT_TRIES"; fi
+if [[ -n "$WALK_PROB" && ! "$WALK_PROB" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--walk-prob must be a number in [0,1], got: $WALK_PROB"; fi
+if [[ -n "$TEMP"      && ! "$TEMP"      =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--temp must be a positive number, got: $TEMP"; fi
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
@@ -184,6 +272,51 @@ if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
     --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" \
     --eval "$NODE_EVAL" \
     --eval "(handler-case (progn (ddnnf-marginals $SCNF_ARG $KW) (sb-ext:exit :code 0))
+              (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+fi
+
+if [[ "$SOLVER" == "mc-sat" ]]; then
+  [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent and ddnnf solvers, not mc-sat"
+  # Resolve the binary the same way lisp/mcsat.lisp does, so the capability check
+  # below tests the binary that will actually run.
+  WALKSAT_BIN="${WALKSAT:-}"
+  if [[ -z "$WALKSAT_BIN" ]]; then
+    SIBLING="$FIFO_LISP/../../Walksat/Walksat_v58_MC-SAT/walksat"
+    if [[ -x "$SIBLING" ]]; then WALKSAT_BIN="$SIBLING"; else WALKSAT_BIN="walksat"; fi
+  fi
+  if ! command -v "$WALKSAT_BIN" >/dev/null 2>&1 && [[ ! -x "$WALKSAT_BIN" ]]; then
+    die "WalkSAT binary not found: '$WALKSAT_BIN' (set --walksat-bin, the WALKSAT env var, or put 'walksat' on PATH)"
+  fi
+  # v57 and earlier print their help and silently ignore -mcsat, so check for it.
+  # (Capture first rather than piping: walksat exits non-zero after printing help,
+  # and under 'set -o pipefail' that would masquerade as a failed check.)
+  WS_HELP="$("$WALKSAT_BIN" -help </dev/null 2>&1 || true)"
+  if ! grep -q -- "-mcsat" <<<"$WS_HELP"; then
+    die "'$WALKSAT_BIN' has no -mcsat option -- MC-SAT needs WalkSAT version 58 or later (Walksat_v58_MC-SAT); set --walksat-bin or WALKSAT"
+  fi
+  export WALKSAT="$WALKSAT_BIN"
+  KW=""
+  [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
+  [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ -n "$SAMPLES" ]] && KW="$KW :samples $SAMPLES"
+  [[ -n "$BURNIN" ]] && KW="$KW :burnin $BURNIN"
+  [[ -n "$SEED" ]] && KW="$KW :seed $SEED"
+  [[ -n "$WALK_PROB" ]] && KW="$KW :walk-prob $WALK_PROB"
+  [[ -n "$TEMP" ]] && KW="$KW :temp $TEMP"
+  [[ -n "$SS_CUTOFF" ]] && KW="$KW :cutoff $SS_CUTOFF"
+  [[ -n "$INIT_CUTOFF" ]] && KW="$KW :init-cutoff $INIT_CUTOFF"
+  [[ -n "$INIT_TRIES" ]] && KW="$KW :init-tries $INIT_TRIES"
+  [[ "$NO_SAT_SEED" -eq 1 ]] && KW="$KW :seed-from-sat nil"
+  [[ "$UNITPROP" -eq 1 ]] && KW="$KW :unitprop t"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
+  exec sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
+    --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+    --eval "(load \"$FIFO_LISP/mcsat.lisp\")" \
+    --eval "(handler-case (progn (marginals-mcsat \"$SCNF\" $KW) (sb-ext:exit :code 0))
               (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
 fi
 

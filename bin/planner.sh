@@ -47,7 +47,10 @@ usage() {
   echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
-  echo "               enumeration) or an ADDMC binary name/path." >&2
+  echo "               exact enumeration), 'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT" >&2
+  echo "               v58 -- one run for all marginals, for horizons where exact counting" >&2
+  echo "               times out; watch the reported sampling efficiency), or an ADDMC" >&2
+  echo "               binary name/path." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -139,6 +142,7 @@ PDDL2FIFO="$FIFO_LISP/pddl2fifo.lisp"
 PLANNER="$FIFO_LISP/planner.lisp"
 MAXENT="$FIFO_LISP/maxent.lisp"      # loaded only for --marginals (weighted model counting)
 WMC="$FIFO_LISP/wmc.lisp"            #   "
+MCSAT="$FIFO_LISP/mcsat.lisp"        #   "  (--counter mc-sat)
 SATPLAN="$FIFO_LISP/satplan.wff"
 
 # The (include ...) path written into a generated wff is computed relative to the
@@ -172,7 +176,8 @@ COUNTER_KW=""
 
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
-[[ "$MARGINALS" -eq 1 ]] && EVALS+=( --eval "(load \"$MAXENT\")" --eval "(load \"$WMC\")" )
+[[ "$MARGINALS" -eq 1 ]] && EVALS+=( --eval "(load \"$MAXENT\")" --eval "(load \"$WMC\")" \
+                                     --eval "(load \"$MCSAT\")" )
 EVALS+=( --eval "(load \"$PLANNER\")" )
 EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"

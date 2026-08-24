@@ -32,11 +32,11 @@
 A working summary of how to learn the weights in a FiFO weighted-MaxSAT theory —
 i.e. the costs attached to weighted literals — across the full range of data
 regimes, from complete optimal demonstrations down to nothing but prior beliefs
-about marginal probabilities. Sections 12–13 cover the parts of the
-marginal-*inference* design space that are not yet implemented (sampling-based
-methods and projected inference); section 14 covers the maximum-term
-approximation, which the plan-recognition pipeline (`recognize.sh`) *does*
-implement. The implemented back ends of both directions are documented in
+about marginal probabilities. Sections 12–13 cover the sampling end of the
+marginal-*inference* design space: section 12's MC-SAT is implemented
+(`--solver mc-sat`) and this is the theory behind it, while section 13's
+projected inference is not; section 14 covers the maximum-term approximation,
+which the plan-recognition pipeline (`recognize.sh`) *does* implement. The implemented back ends of both directions are documented in
 [probability.md](probability.md).
 
 ---
@@ -311,11 +311,15 @@ one corner here that touches a genuinely open question rather than settled techn
 
 ## 12. Sampling-based marginal inference: MC-SAT
 
-The implemented marginal-inference back ends ([probability.md](probability.md))
-are all *exact*: enumeration, ADDMC, and the d-DNNF circuit compilers. Past their
+Four of the marginal-inference back ends ([probability.md](probability.md)) are
+*exact*: enumeration, ADDMC, and the two d-DNNF circuit compilers. Past their
 scale limits, the canonical MLN approach is **MC-SAT** (Poon & Domingos 2006),
 which fits FiFO's architecture particularly well because its inner loop is a SAT
-solve. It is not yet implemented; this section records the design.
+solve. It **is now implemented** as `bin/marginals.sh --solver mc-sat`
+(`lisp/mcsat.lisp`, driving WalkSAT v58's `-mcsat` mode); see
+[probability.md § Approximate marginals by MC-SAT sampling](probability.md#approximate-marginals-by-mc-sat-sampling)
+for how to run it. This section records the theory and the design space behind
+that choice.
 
 **The algorithm.** Given a current satisfying assignment $x$:
 
@@ -335,7 +339,27 @@ solve. It is not yet implemented; this section records the design.
 - **UniGen / ApproxMC**: near-uniform samplers based on universal hashing. They give provably near-uniform samples but are slower than WalkSAT. UniGen3 is the current state of the art.
 - **Random-phase SAT**: run kissat many times with different random seeds and random variable-phase initialization. Not provably uniform but often adequate in practice and completely free to implement (just loop over `solve`).
 
-For a first implementation, random-phase SAT calls are the lowest-friction path, and the approximation quality improves with sample count.
+**What was implemented.** The third option was rejected on cost grounds: a
+per-sample process spawn plus a re-parse of the CNF dominates the inner search
+when there are tens of thousands of samples. Instead the *whole* loop — outer
+slice sampling and inner sampler — lives in C, in WalkSAT v58's `-mcsat` mode, so
+FiFO writes one weighted CNF and shells out once. The inner sampler is **SampleSAT**
+proper (Wei, Erenrich & Selman 2004): with probability `p` a greedy WalkSAT move,
+otherwise a simulated-annealing (Metropolis) move whose energy is the number of
+unsatisfied active clauses. The annealing move is what supplies the near-uniformity
+WalkSAT alone lacks, and the weights never reach it — they are consumed entirely
+by the slice step, so the inner loop is unweighted.
+
+Two properties fell out of the construction and are worth recording. First, the
+constraint set `M` **can never be unsatisfiable**: only *satisfied* soft clauses
+are eligible for inclusion and the current assignment satisfies every hard clause,
+so the current assignment is always a witness. The only from-scratch solve is the
+initial one. Second, the failure mode is not sampling noise but **freezing**: on
+strongly coupled models (many large weights) `1 − e^{−w} → 1`, nearly every clause
+enters `M`, and the chain stops moving. That is invisible in the marginals
+themselves, so the implementation reports an effective-sample-size diagnostic
+alongside them; on the UAI-2014 MAR *Grids* benchmarks it correctly flagged badly
+wrong marginals (efficiency ≈ 0.02) before any ground truth was available.
 
 ---
 
