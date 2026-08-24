@@ -3,8 +3,9 @@
 ## Documentation
 
 - $\color{red}{\textbf{README.md}}$ — the FiFO language reference and user guide.
+- [software-components.md](software-components.md) - summary of FiFO scripts and all the systems for logical and probabilistic reasoning and scripts that FiFO uses.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
-- [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
+- [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](discussion.md) — discussion and open issues.
@@ -66,9 +67,17 @@ make install
 
 This copies `bin/` into `~/bin` and `lisp/` into `~/lib/fifo/lisp`, creating the directories as needed. Override the destinations with `make install BINDIR=... LISPDIR=...`. Make sure `~/bin` is on your `PATH`.
 
-The shell scripts locate the lisp via the `FIFO_LISP` environment variable, which `planner.sh` defaults to `~/lib/fifo/lisp` (the install location). To run from a source checkout without installing — or to point the tools at a non-default install — set `FIFO_LISP` to the directory containing `FiFO.lisp`, e.g. `FIFO_LISP=$PWD/lisp`.
+The shell scripts locate the lisp code via the `FIFO_LISP` environment variable, which defaults to `~/lib/fifo/lisp` (the install location). To run from a source checkout without installing — or to point the tools at a non-default install — set `FIFO_LISP` to the directory containing `FiFO.lisp`, e.g. `FIFO_LISP=$PWD/lisp`.
 
 You also need SBCL with Quicklisp, and a SAT solver on your `PATH` (`kissat` by default; see [SAT solvers](#sat-solvers)).
+
+To fetch and build the solvers, run
+
+```sh
+bin/install-solvers.sh          # add --all to rebuild ones you already have
+```
+
+which clones each repository into `Solvers/`, builds it, and installs the binary into `~/bin`, skipping whatever is already usable and printing a summary of what succeeded and what failed. For information about installing other solvers for logical or probabilistic reasoning see [software-components.md](software-components.md#solvers-and-external-tools).
 
 Common Lisp API
 ------------
@@ -284,25 +293,9 @@ Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* i
 
 ## SAT solvers
 
-The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected (via the `sat-solver` variable, or the planner's `SAT_SOLVER` / `--solver` setting). Some options:
+The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected — with `(option *solver* <name>)` in a `.wff`, or the planner's `SAT_SOLVER` / `--solver` setting.
 
-**Kissat**
-
-- Source: https://github.com/arminbiere/kissat
-
-A fast, self-contained sequential SAT solver in C by Armin Biere (a "keep it simple and clean" reimplementation of the CaDiCaL ideas). Standard `./configure && make` build, no dependencies; the default solver here.
-
-**MallobSat (Mallob)**
-
-- Source: https://github.com/domschrei/mallob
-
-A distributed, malleable SAT solver by Dominik Schreiber that scales across many cores and machines via MPI, and has won the International SAT Competition's Cloud Track repeatedly. Useful when a single machine is not enough.
-
-**Painless**
-
-- Source: https://github.com/lip6/painless
-
-A framework for parallel (and, via D-Painless, distributed) SAT solving that composes existing sequential solvers with configurable clause-sharing strategies; a key contributor is Mazigh Saoudi (see also https://github.com/S-Mazigh). Painless-based solvers have placed first in recent SAT Competition parallel tracks.
+The catalog of solvers FiFO can use — SAT solvers, weighted MaxSAT solvers, model counters, knowledge compilers, and the MC-SAT sampler — with what each one does, where to get it, and installation notes, is in [software-components.md](software-components.md#solvers-and-external-tools).
 
 ## Constraint Satisfaction
 
@@ -484,7 +477,7 @@ A `.scnf` containing `(PROBABILITY ...)` forms carries *target probabilities, no
 
 ### Weighted CNF output formats
 
-The option `(option weights <format>)` controls how weights appear in the DIMACS `.cnf` file produced by `propositionalize`. It has no effect when the problem contains no weights.
+The option `(option *cnf-format* <format>)` controls how weights appear in the DIMACS file produced by `propositionalize`. It has no effect when the problem contains no weights. (`instantiate` records the setting in the `.scnf` as a trailing `(OPTION WEIGHTS <format>)` line, which is how `propositionalize` learns of it; that internal marker is not a `.wff`-level option.)
 
 **`cnf`** (the default) writes a standard `p cnf` file followed by one `cw <literal> <weight>` line per weight. Since these lines begin with the letter `c`, ordinary SAT solvers treat them as comments, so the file remains valid input for solvers like kissat (which simply ignore the weights).
 
@@ -497,40 +490,11 @@ In both wcnf formats, a weight *w* on literal *L* (the cost of making *L* true) 
 - **Shift**: for each atom, the minimum of its total weight when true and its total weight when false is subtracted from both, so at most one polarity retains a (positive) weight. This also eliminates negative weights: a reward for making a literal true becomes a cost for making it false. The discarded total is a constant offset on the objective, reported in a comment line `c weight shift offset <n>`.
 - **Scale**: all weights are multiplied by the smallest positive integer making them integral (e.g., weights 0.4 and 2 are scaled by 5 to 2 and 10), reported in a comment line `c weights scaled by <n>`.
 
-The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that the built-in `solve` pipeline runs an ordinary SAT solver, which will not accept wcnf files; the wcnf formats are intended for `.cnf` files handed to an external MaxSAT solver.
+The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that `solve` runs whichever binary `*solver*` names, and the default (`kissat`) is an ordinary SAT solver that will not accept a wcnf file — so a weighted problem needs `(option *solver* tt-glucose)` (or another MaxSAT solver) alongside `(option *cnf-format* WCNF)`. With both set, `solve` performs MAP inference end to end and `interpret` reports the objective; see [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
 
 ### Weighted CNF solvers
 
-Solvers for weighted CNF include:
-
-**RC2 via PySAT**
-
-- pip install python-sat (PyPI: https://pypi.org/project/python-sat/)
-- Source: https://github.com/pysathq/pysat
-- Docs: https://pysathq.github.io/
-
-RC2 ships inside the package — from pysat.examples.rc2 import RC2 plus from pysat.formula import WCNF and you're solving in about five lines. There's also a command-line entry point (rc2.py).
-
-**MaxHS**
-
-- Source: https://github.com/fbacchus/MaxHS
-
-One important caveat: MaxHS uses CPLEX from IBM as its MIP solver, so you need the CPLEX static libraries to link against; CPLEX is free to faculty and graduate students through the IBM Academic Initiative (https://www.ibm.com/academic), and you set the CPLEX library/include paths in the Makefile before building. If the CPLEX dependency is a blocker for you, precompiled MaxHS binaries from past MaxSAT Evaluations are available on the evaluation sites (e.g., https://maxsat-evaluations.github.io/ → pick a year → "Descriptions/Downloads"), and an alternative IHS solver without that build step is worth knowing about.
-
-**TT-Open-WBO-Inc**
-
-- Source: https://github.com/alexander-nadel-academic/tt-open-wbo-inc (the GitHub version corresponds to the MaxSAT Evaluation 2023 submission)
-- Fork updated to compile cleanly on Mac OSX: https://github.com/HenryKautz/tt-open-wbo-inc-osx
-
-Standard C++ build (make), no commercial dependencies; reads WCNF and prints improving solutions as it finds them (o lines), with the best model on the v line.
-
-**CP-SAT (Google OR-Tools)**
-
-- Easiest: pip install ortools (PyPI: https://pypi.org/project/ortools/)
-- Source and binaries: https://github.com/google/or-tools
-- Docs: https://developers.google.com/optimization/cp/cp_solver
-
-No license hassle, no compilation, and the Python API is pleasant. Note CP-SAT takes its own model format rather than WCNF, so you'd build the model programmatically (clauses as AddBoolOr, objective as Minimize).  Utilities for converting wcnf files to Python code for CP-SAT are included in [wcnfsolvers](https://github.com/HenryKautz/wcnfsolvers).
+The MaxSAT solvers FiFO can drive — TT-Open-WBO-Inc (the default), RC2 via PySAT, MaxHS, and CP-SAT — are cataloged in [software-components.md](software-components.md#weighted-maxsat-solvers), with sources and installation notes. Driving one end to end to get the most probable model is covered in [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
 
 ### Weight Learning
 
@@ -832,9 +796,9 @@ Schema BNF
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
     <weight> = (weight <formula> <numeric expression>)
-
+    
     <probability> = (probability <formula> <numeric expression> [<tie-label>])
-
+    
     <literal> = <proposition> | (not <proposition>)
     
     <statics> = (static <static-formula>+)

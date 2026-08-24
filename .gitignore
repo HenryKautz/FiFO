@@ -8,5 +8,8 @@
 .vscode/
 *.fasl
 
+# Solver checkouts and build trees fetched by bin/install-solvers.sh
+Solvers/
+
 # SatPlan/ is managed manually -- never ignore anything under it
 !SatPlan/**

@@ -3,8 +3,9 @@
 ## Documentation
 
 - [README.md](../README.md) — the FiFO language reference and user guide.
+- [software-components.md](../software-components.md) - summary of FiFO scripts and all the systems for logical and probabilistic reasoning and scripts that FiFO uses.
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
-- [Probability/probability.md](probability.md) — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
+- [Probability/probability.md](probability.md) — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.
 - $\color{red}{\textbf{Probability/probability-background.md}}$ — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](../discussion.md) — discussion and open issues.
@@ -25,8 +26,9 @@
 - [12. Sampling-based marginal inference: MC-SAT](#12-sampling-based-marginal-inference-mc-sat)
 - [13. Projected inference over action variables](#13-projected-inference-over-action-variables)
 - [14. Maximum-term approximation of the partition function](#14-maximum-term-approximation-of-the-partition-function)
-- [15. Provenance / related work](#15-provenance--related-work)
-- [16. Summary table](#16-summary-table)
+- [15. MAP inference: the mode of the distribution](#15-map-inference-the-mode-of-the-distribution)
+- [16. Provenance / related work](#16-provenance--related-work)
+- [17. Summary table](#17-summary-table)
 - [References](#references)
 
 A working summary of how to learn the weights in a FiFO weighted-MaxSAT theory —
@@ -36,8 +38,10 @@ about marginal probabilities. Sections 12–13 cover the sampling end of the
 marginal-*inference* design space: section 12's MC-SAT is implemented
 (`--solver mc-sat`) and this is the theory behind it, while section 13's
 projected inference is not; section 14 covers the maximum-term approximation,
-which the plan-recognition pipeline (`recognize.sh`) *does* implement. The implemented back ends of both directions are documented in
-[probability.md](probability.md).
+which the plan-recognition pipeline (`recognize.sh`) *does* implement; section 15
+covers MAP — the other query on the same distribution, the one every MaxSAT call
+in the stack is actually making. The implemented back ends of all of it are
+documented in [probability.md](probability.md).
 
 ---
 
@@ -430,7 +434,123 @@ worked results are in
 
 ---
 
-## 15. Provenance / related work
+## 15. MAP inference: the mode of the distribution
+
+Sections 12–14 are all concerned, one way or another, with the *sum*
+$`Z = \sum_{x\in\mathcal F} e^{-\beta\,\mathrm{cost}(x)}`$ — exactly, approximately,
+or by sampling. The complementary query asks for the **mode**: the single most
+probable feasible assignment,
+
+$`x^\star \;=\; \arg\max_{x\in\mathcal{F}} P_\theta(x)
+   \;=\; \arg\min_{x\in\mathcal{F}} \sum_a \theta_a N_a(x),`$
+
+the equality holding because $`t \mapsto e^{-t}`$ is strictly decreasing, so the
+normalizer $`Z`$ — the hard part of every other query in this document — plays no
+role at all. In FiFO's encoding this is literally weighted MaxSAT over the hard
+clauses and the `(WEIGHT ...)` costs; see
+[probability.md](probability.md#map-inference-the-most-probable-model) for how to run
+it. Every MaxSAT call in the stack — the planner's cost-minimization step, each of
+`recognize.sh`'s $`2n`$ solves, the oracle inside the learning loops of §§4–7 — is a
+MAP query.
+
+**Terminology.** The graphical-models literature reserves **MPE** (most probable
+explanation) for the maximization over *all* variables, and uses **MAP** (or
+*marginal MAP*) for the mixed query
+
+$`\arg\max_{y}\sum_{z} P_\theta(y,z),`$
+
+which maximizes over a subset $`Y`$ and *sums out* the rest. The two are genuinely
+different: the most probable joint assignment need not contain the most probable
+setting of any sub-block. FiFO implements only the full-assignment query; nothing
+in the pipeline sums out a block before maximizing. The projected-inference sketch
+of §13 splits the variables the same way (weighted action atoms vs. determined
+state atoms), but it is a *summing* method with a deterministic completion, not a
+marginal MAP.
+
+**Why the stack leans on it.** The complexity separation is the whole practical
+story. The decision version of MPE — "is there a feasible model of cost at most
+$`k`$?" — is NP-complete, and the optimization is a short sequence of such
+queries ($`\mathrm{FP}^{\mathrm{NP}}`$), which is exactly the regime core-guided
+MaxSAT solvers are engineered for. Computing
+$`Z`$ or a marginal is `#P`-hard, and marginal MAP is harder still, NP<sup>PP</sup>-complete
+(Park & Darwiche 2004): it embeds a counting problem inside a search. That ordering
+is visible in FiFO's own measurements — on the plan-recognition benchmarks the
+exact weighted model counts time out at a 240 s cap while the corresponding MAP
+solves finish in seconds, which is precisely why §14's substitution of optimization
+for counting is worth making
+([benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)).
+
+**MAP is the zero-temperature limit.** Introduce the inverse temperature explicitly,
+$`P_\beta(x)\propto e^{-\beta\,\mathrm{cost}(x)}`$. As $`\beta\to\infty`$ the
+distribution concentrates on the minimum-cost models, converging to the uniform
+distribution over the argmin set; as $`\beta\to 0`$ it flattens to the uniform
+distribution over $`\mathcal{F}`$, and marginal inference at $`\beta=0`$ is plain
+model counting. MAP is the $`\beta\to\infty`$ end of that family, which yields two
+invariances worth stating because they explain an asymmetry in the implementation:
+
+- **Scaling.** $`\arg\min`$ is unchanged by multiplying every cost by a positive
+  constant. So the `scale: N` header the learning pipeline writes (100 by default,
+  to make weights integral for MaxSAT) is *irrelevant* to MAP but is a temperature
+  for everything else — which is why every counting and sampling back end divides
+  it out before exponentiating (see *Weight scale* in
+  [probability.md](probability.md)) and MaxSAT never has to.
+- **Shifting.** $`\arg\min`$ is likewise unchanged by adding a constant, and by the
+  per-atom re-basing that turns a reward for `L` true into a cost for `L` false.
+  That is what licenses the wcnf encoding's shift transformation: it moves the
+  reported objective by a known offset while leaving the optimal model fixed.
+
+Under the same limit, MAP is the leading term of the partition function:
+$`\log Z = -\beta\,c_{\min} + \log\Omega(\beta)`$ with $`\Omega \ge 1`$ the
+degeneracy factor of §14. So a MAP cost is always a bound, $`Z \ge e^{-\beta c_{\min}}`$,
+and §14's recognizer is nothing but this bound applied twice and differenced.
+
+**Conditioning.** Evidence has probability 1, so conditioning is the same operation
+for MAP as for counting: the evidence joins the hard clauses and MaxSAT runs on the
+augmented theory, giving the conditional mode $`\arg\max_x P_\theta(x\mid E)`$. The
+non-obvious part is that the mode does not behave like a marginal under
+conditioning. $`x^\star_{\mid E}`$ need not agree with $`x^\star`$ on any variable,
+and evidence that raises an atom's marginal can flip it off in the mode; there is no
+monotonicity to exploit and no way to update a stored MAP model incrementally. Each
+piece of evidence needs its own solve — the reason `recognize.sh` pays for $`2n`$
+independent runs rather than reusing one.
+
+**What the mode does not tell you.** It is tempting to read $`x^\star`$ as a summary
+of $`P_\theta`$; it generally is not, and the failure is not subtle:
+
+- *The mode is not the marginals.* Take $`n`$ unconstrained atoms each with cost
+  $`\theta`$ when true, so $`P(a) = \sigma(-\theta)`$. At $`\theta = \log(3/2)`$
+  every atom has marginal 0.4, yet the MAP model sets **all** of them false, and
+  its probability, $`0.6^n`$, is exponentially small. The mode of a cost
+  distribution turns off everything it is not forced to turn on; expectations do
+  not.
+- *Degeneracy is invisible.* MaxSAT returns one minimum-cost model and says nothing
+  about how many others tie it. That count is exactly the $`\Omega`$ dropped by the
+  max-term approximation, so the error §14 incurs is precisely the quantity a MAP
+  solve cannot report.
+- *The consequences are measurable.* On the recognition benchmarks the single
+  cheapest plan identifies the hypothesis that is cheapest to *reach*, not the one
+  best supported by the observations — a bias that is not fixed by better search,
+  because it is a property of the query. The repair is to take a *ratio* of two MAP
+  costs within each hypothesis so the baseline cancels (§14), not to solve the
+  single MAP more accurately.
+
+**MAP as the learning oracle.** The learning cases of §§4–7 call MAP rather than a
+counter, and the substitution is the same zero-temperature approximation seen in
+§14. The maximum-likelihood gradient is the moment-matching residual
+$`\Phi(x_{\text{data}}) - \mathbb{E}_\theta[\Phi]`$; replacing the expectation by
+the features of the current best model gives the (voted) perceptron update
+$`\theta \leftarrow \theta + \eta\,(\Phi(x_{\text{data}}) - \Phi(x^\star_\theta))`$,
+which is Viterbi training / hard EM — exact when the distribution is peaked on
+$`x^\star`$, biased by exactly the near-optimal mass it ignores when it is not. Max-margin
+training (§6) goes further and makes the oracle *loss-augmented* MAP, so the
+approximation is built into the objective rather than into the gradient. This also
+draws the line the other way: the belief-driven MaxEnt fit of §8 constrains
+$`\mathbb{E}_\theta[\Phi]`$ itself, which no MAP call can supply — that regime needs
+the counting or sampling back ends, and is why FiFO carries both kinds of machinery.
+
+---
+
+## 16. Provenance / related work
 
 Essentially all of the above is established, mostly within Markov Logic or its direct
 foundations:
@@ -463,7 +583,7 @@ exhaustive literature search of the exact combination.)
 
 ---
 
-## 16. Summary table
+## 17. Summary table
 
 | Data regime | Hidden vars | Objective | Convex? | Oracle / inference |
 |---|---|---|---|---|
@@ -493,7 +613,14 @@ For §14 (maximum-term approximation):
 
 - M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, pp. 1121–1126. (The `σ(β·(c(G,¬O) − c(G,O)))` recognizer — the max-term approximation to `Z_{G,O}/Z_G`.)
 
-Full citations for the works named in §15 (Provenance / related work):
+For §15 (MAP inference):
+
+- J. D. Park & A. Darwiche (2004). Complexity results and approximation strategies for MAP explanations. *Journal of Artificial Intelligence Research* 21:101–133. (MPE vs. marginal MAP; NP<sup>PP</sup>-completeness of the latter.)
+- D. Koller & N. Friedman (2009). *Probabilistic Graphical Models: Principles and Techniques*. MIT Press, ch. 13. (MAP inference and the mode-vs-marginals distinction.)
+- M. Collins (2002). Discriminative training methods for hidden Markov models: theory and experiments with perceptron algorithms. *EMNLP 2002*, pp. 1–8. (The perceptron update as a MAP-for-expectation substitution.)
+- M. J. Wainwright & M. I. Jordan (2008). Graphical models, exponential families, and variational inference. *Foundations and Trends in Machine Learning* 1(1–2):1–305. (The zero-temperature limit of an exponential family.)
+
+Full citations for the works named in §16 (Provenance / related work):
 
 - M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
 - J. Besag (1975). Statistical analysis of non-lattice data. *The Statistician* 24(3):179–195. (Pseudo-likelihood.)

@@ -3,8 +3,9 @@
 ## Documentation
 
 - [README.md](../README.md) — the FiFO language reference and user guide.
+- [software-components.md](../software-components.md) - summary of FiFO scripts and all the systems for logical and probabilistic reasoning and scripts that FiFO uses.
 - [SatPlan/satplan.md](../SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
-- $\color{red}{\textbf{Probability/probability.md}}$ — the probabilistic layer in practice: computing marginals under a weighted theory and learning weights from target probabilities.
+- $\color{red}{\textbf{Probability/probability.md}}$ — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.
 - [Probability/probability-background.md](probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](../benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](../discussion.md) — discussion and open issues.
@@ -12,6 +13,7 @@
 ## Table of Contents
 
 - [The probability model](#the-probability-model)
+- [MAP inference: the most probable model](#map-inference-the-most-probable-model)
 - [Marginal inference: weights → probabilities](#marginal-inference-weights--probabilities)
 - [From inference to learning](#from-inference-to-learning)
 - [Weight learning: probabilities → weights](#weight-learning-probabilities--weights)
@@ -19,8 +21,14 @@
 
 A FiFO theory with weighted literals defines a probability distribution over the
 models of its hard clauses. That single fact supports two directions of
-computation, and this guide covers how to run both:
+computation — reading answers out of the weights, and fitting the weights to
+desired answers — and this guide covers how to run all of it. Reading out comes
+in two flavours, one that maximizes and one that sums:
 
+- **MAP inference (weights → the best model):** given the weights, find the
+  single most probable assignment. Because probability is `exp(−cost)`, this is
+  weighted MaxSAT, and it is the query the planner and the plan recognizer are
+  built on — cheap enough to run at horizons where counting is hopeless.
 - **Marginal inference (weights → probabilities):** given the weights, compute
   the probability that each atom is true — and, with evidence, conditional
   probabilities. Four *exact* back ends: enumeration, the ADDMC weighted model
@@ -32,16 +40,19 @@ computation, and this guide covers how to run both:
   that realize them. Two implemented estimators: independent log-odds and
   exact iterative MaxEnt.
 
-The two directions are inverses, and the learner uses inference as its inner
-loop: it adjusts the weights until the model's *actual* marginals match the
-targets. For the theory — the full range of learning data regimes, the
-sampling-based inference design space, and provenance — see
+Learning and marginal inference are inverses, and the learner uses inference as
+its inner loop: it adjusts the weights until the model's *actual* marginals match
+the targets. MAP sits at the other extreme of the same distribution — the
+zero-temperature limit, where the sum collapses onto its single largest term. For
+the theory — the mode-vs-mean distinction, the full range of learning data
+regimes, the sampling-based inference design space, and provenance — see
 [probability-background.md](probability-background.md).
 
-For **PDDL planning** problems you usually drive both directions from the
-planner instead of running these tools directly: write `:probability` specs on
+For **PDDL planning** problems you usually drive all of this from the planner
+instead of running these tools directly: write `:probability` specs on
 actions / preferences / `:fluent-cost` forms and use `bin/learn-pddl.sh` for
-learning, and `planner.sh --marginals [--pddl-evidence ...]` for conditioned
+learning, `planner.sh` for the minimum-cost plan (the MAP query), and
+`planner.sh --marginals [--pddl-evidence ...]` for conditioned
 marginals at the working horizon. See
 [../SatPlan/satplan.md](../SatPlan/satplan.md).
 
@@ -75,6 +86,187 @@ independent log-odds estimator gives the usual per-feature approximation (exact
 only when φ is uncorrelated with the rest of the theory). These internal atoms are
 suppressed from the default `marginals.sh` listing and shown under
 `--weighted-only`, where their marginal is `P(φ)`.
+
+------
+
+## MAP inference: the most probable model
+
+The distribution above supports two quite different queries. Marginal inference
+(the next section) **sums**: `P(L) = Z_L / Z`. **MAP inference** **maximizes** — it
+returns the single most probable assignment,
+
+$$x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)$$
+
+Because `exp(−·)` is monotone decreasing, *maximizing probability is minimizing
+cost*: MAP inference in FiFO is exactly **weighted MaxSAT** over the hard clauses
+and the `(WEIGHT ...)` costs, and needs no separate back end — the ordinary
+`solve` pipeline performs it once you point it at a MaxSAT solver. It is also far
+cheaper than counting (an NP optimization rather than a `#P` sum), which is why
+the planner and the plan recognizer are built on it while the exact marginal back
+ends time out at the same horizons.
+
+(In the graphical-models literature this query is usually called **MPE** — the most
+probable *explanation*, an assignment to *every* variable. "Marginal MAP", which
+maximizes over a subset of variables and sums over the rest, is a strictly harder
+problem that FiFO does not implement. See
+[probability-background.md §15](probability-background.md#15-map-inference-the-mode-of-the-distribution).)
+
+### Running it: `solve` plus two options
+
+Two options switch the pipeline from satisfiability to optimization:
+
+```
+(option *cnf-format* WCNF)     ; write weighted CNF instead of plain CNF
+(option *solver* tt-glucose)   ; a MaxSAT solver instead of the default kissat
+```
+
+`tt-glucose` and `tt-intelsat` are built-in abbreviations for
+`tt-open-wbo-inc-Glucose4_1` and `tt-open-wbo-inc-IntelSATSolver`; any binary that
+reads a wcnf file and prints its model on stdout works (the catalog, with sources
+and installation notes, is in
+[software-components.md](../software-components.md#weighted-maxsat-solvers)).
+A complete example, `groceries.wff`:
+
+```lisp
+(option *cnf-format* WCNF)
+(option *solver* tt-glucose)
+(domain item (set banana steak milk))
+(weight (buy banana) 1.25)
+(weight (buy steak) 15.50)
+(weight (buy milk) 3.10)
+(or (buy steak) (buy milk))
+```
+
+`(solve "groceries.wff")` writes `groceries.answer`:
+
+```
+SAT
+(*OBJECTIVE* 62)
+(BUY MILK)
+```
+
+The MAP model buys milk and nothing else. Note that `interpret` lists only the
+*true* atoms, so `(buy banana)` and `(buy steak)` are false in $x^\star$ — the mode
+of a cost distribution turns everything off that it is not forced to turn on.
+
+The same thing step by step, when you want the intermediate files:
+
+```lisp
+(instantiate "groceries.wff")        ; -> groceries.scnf
+(propositionalize "groceries.scnf")  ; -> groceries.wcnf (+ .map); returns the path
+(satisfy "groceries.wcnf")           ; -> groceries.satout
+(interpret "groceries.satout")       ; -> groceries.soln
+```
+
+`propositionalize` chooses the `.wcnf` extension (rather than `.cnf`) whenever the
+format is `WCNF` or `WCNF-OLD`, and **returns** the pathname it chose, so a script
+never has to guess. From the shell the same two options can be set with `--eval`
+instead of editing the `.wff`:
+
+```sh
+sbcl --noinform --disable-debugger --load "$FIFO_LISP/FiFO.lisp" \
+     --eval '(setq *cnf-format* (quote WCNF) *solver* "tt-open-wbo-inc-Glucose4_1")' \
+     --eval '(progn (solve "groceries.wff") (sb-ext:exit))'
+```
+
+Two traps on that route. Abbreviations are resolved only by `(option *solver* ...)`,
+so a `setq` needs the **full binary name**. And if you set the solver but forget
+`*cnf-format*`, the run silently stops being MAP: a plain `.cnf` carries its weights
+as `cw` comment lines, which every solver ignores, so you get an arbitrary feasible
+model with no objective line at all.
+
+### Reading the objective
+
+`(*OBJECTIVE* N)` is the solver's **raw** reported cost, not the modelled cost.
+Because DIMACS wcnf requires positive integer weights, `propositionalize` applies
+two transformations and records each in a comment line of the wcnf file:
+
+```
+c weights scaled by 20: true cost = solver cost / 20
+h 1 2 0
+310 -1 0
+62 -2 0
+25 -3 0
+```
+
+(The companion `.map` file gives the numbering — here `1 = (buy steak)`,
+`2 = (buy milk)`, `3 = (buy banana)`; note that `(buy banana)` is numbered even
+though it appears in no clause, because carrying a weight is enough to make it a
+variable.)
+
+- **Scale** — all costs multiplied by the smallest integer making them integral
+  (here 20, since 1.25 needs it). Recorded as `c weights scaled by S`.
+- **Shift** — when an atom carries weight in *both* polarities, the smaller of the
+  two is subtracted from both so at most one polarity keeps a positive weight;
+  this also removes negative costs, turning "a reward for `L` true" into "a cost
+  for `L` false". The discarded constant is recorded as
+  `c weight shift offset M`.
+
+So **true cost = raw objective / S + M**. Above, `62 / 20 = 3.10` — the cost of
+`(buy milk)`, as written. Both comment lines are emitted only when the transformation
+is non-trivial, so for the usual case of non-negative integer costs (`S = 1`,
+`M = 0`) the raw objective already *is* the true cost. `lisp/planner.lisp` does this
+correction for you (`wcnf-scale-offset` / `plan-true-cost`) and is worth copying if
+you drive MaxSAT yourself.
+
+Two further cautions. The optimum need not be **unique**: MaxSAT returns one
+minimum-cost model with no indication of how many others tie it, a blindness that
+matters for the approximation in
+[probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function).
+And TT-Open-WBO-Inc is an **anytime** solver: it prints an `o <cost>` line each time
+it improves, and `interpret` takes the *last* one, so an interrupted run yields the
+best model found rather than a proven optimum.
+
+### Conditional MAP (evidence)
+
+Conditioning is the same operation for MAP as for marginals — evidence has
+probability 1, so it simply joins the **hard** clauses — but the interface differs.
+The counting back ends take `--evidence` on an already-instantiated `.scnf`
+(see [Conditioning on evidence](#conditioning-on-evidence)); for MAP through
+`solve` you assert the evidence in the `.wff` and re-instantiate, which has the
+advantage that quantified evidence is grounded correctly. $x^\star$ then becomes
+the most probable model *given* the evidence.
+
+Worth keeping in mind: the conditional mode is not the mode conditioned. Adding
+evidence can move $x^\star$ to a completely different assignment rather than
+adjusting the old one.
+
+### Where MAP already runs for you
+
+Two drivers wrap all of the above, and neither needs the options set by hand:
+
+- **`bin/planner.sh`** — the SatPlan driver. It searches horizons for feasibility
+  with a plain SAT solver (`kissat`), then, if the domain has action costs or
+  preferences, re-solves the smallest feasible horizon in `WCNF` with the MaxSAT
+  solver: the **minimum-cost plan** is the MAP query for a planning theory. The
+  weighted solver is set at the top of the script (`WEIGHTED_SOLVER`, default
+  `tt-open-wbo-inc-Glucose4_1`); note that `--solver` overrides only the
+  *feasibility* solver. `--longer K` re-runs the MAP query at each of the next `K`
+  horizons and keeps the cheapest plan. See
+  [../SatPlan/satplan.md](../SatPlan/satplan.md).
+- **`bin/recognize.sh`** — plan recognition, which is `2n` conditional MAP queries
+  (cheapest complying vs. non-complying plan per hypothesis) combined into a
+  posterior. See [Plan recognition posteriors](#plan-recognition-posteriors-recognizesh).
+
+### MAP and marginals are different questions
+
+It is tempting to read $x^\star$ as a summary of the distribution; it usually is
+not. Two practical consequences:
+
+- **The mode is not the marginals.** An atom false in $x^\star$ may still have a
+  substantial marginal, and a set of atoms each individually likely may be jointly
+  improbable. With `n` independent atoms of probability 0.4 each, every atom is
+  false in the MAP model even though 40% of them are expected true.
+- **MAP ignores the weight scale; marginals do not.** Multiplying every cost by a
+  positive constant leaves `arg min` unchanged, so the `scale: N` header (100 by
+  default, from the learning pipeline) is irrelevant to MAP — but it is a
+  *temperature*, and rescaling it changes every marginal. This is why every
+  counting back end divides `scale` out before exponentiating and MaxSAT never has
+  to.
+
+The theory of the mode-vs-mean distinction, the zero-temperature limit that
+connects them, and MAP's role as the oracle inside weight learning are in
+[probability-background.md §15](probability-background.md#15-map-inference-the-mode-of-the-distribution).
 
 ------
 
