@@ -77,6 +77,7 @@ die() { echo "map.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 
 source "$SELF_DIR/fifo-options.sh"
 source "$SELF_DIR/fifo-solvers.sh"
+source "$SELF_DIR/fifo-answer.sh"
 _fifo_options_die() { die "$1"; }
 _fifo_expand_options "$@"
 set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
@@ -150,17 +151,37 @@ sbcl --noinform --non-interactive \
   --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
   --eval "(setq scratch-file \"$ROOT\")" \
   --eval "(handler-case
-             (let ((r (solve \"$WFF\" $KW)))
-               (format t \"~&~A~%\" r)
-               (sb-ext:exit :code (if r 0 1)))
+             (sb-ext:exit :code (if (solve \"$WFF\" $KW) 0 1))
            (error (e) (format *error-output* \"map.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
 STATUS=$?
+
+ANSWER="${SOLNFILE:-${WFF%.*}.answer}"
+[[ "$STATUS" -eq 0 ]] && { _fifo_print_answer "$ANSWER" || STATUS=1; }
+
+# A theory with no (weight ...) forms has nothing to optimize, and FiFO writes it
+# as a plain "p cnf" whatever --cnf-format says (propositionalize short-circuits
+# when there is no weight data).  A MaxSAT solver handed that file prints its
+# banner and no verdict, so the run fails -- explain why rather than leaving the
+# solver's own message as the last word.
+if [[ "$STATUS" -ne 0 && -f "$ROOT.cnf" ]] && head -1 "$ROOT.cnf" | grep -q '^p cnf'; then
+  cat >&2 <<EOF
+
+map.sh: this problem has no weights, so there is nothing to minimize.
+
+  FiFO writes an unweighted theory as a plain "p cnf" file regardless of the
+  weighted format requested, and a MaxSAT solver has no verdict to give for one.
+
+  Add (weight <formula> <cost>) forms to the .wff, or ask the satisfiability
+  question instead:
+
+      solve.sh $WFF
+EOF
+fi
 
 # --- report the true cost ----------------------------------------------------
 # The weighted DIMACS formats need positive integer weights, so propositionalize
 # scales all weights by an integer and, when an atom carries weight in both
 # polarities, shifts them; each transformation is recorded as a comment line.
-ANSWER="${SOLNFILE:-${WFF%.*}.answer}"
 if [[ "$STATUS" -eq 0 && -f "$ANSWER" ]]; then
   RAW="$(grep -o '(\*OBJECTIVE\* [0-9.]*)' "$ANSWER" 2>/dev/null | grep -o '[0-9.]*' | head -1)"
   if [[ -n "$RAW" ]]; then
@@ -175,9 +196,9 @@ if [[ "$STATUS" -eq 0 && -f "$ANSWER" ]]; then
     done
     TRUE="$(awk -v r="$RAW" -v s="$SCALE" -v o="$OFFSET" 'BEGIN{ printf "%g", r/s + o }')"
     if [[ "$SCALE" == "1" && "$OFFSET" == "0" ]]; then
-      echo "true cost: $TRUE"
+      echo "; true cost: $TRUE"
     else
-      echo "true cost: $TRUE   (raw objective $RAW / scale $SCALE + offset $OFFSET)"
+      echo "; true cost: $TRUE   (raw objective $RAW / scale $SCALE + offset $OFFSET)"
     fi
   fi
 fi

@@ -299,10 +299,47 @@ FiFO's own SAT/UNSAT reading of the file intact."
           ;; Nothing to map back (UNSAT, or the solver produced no model): the
           ;; preprocessed output is the answer as-is.
           (uiop:copy-file solver-output SATOUTFILE)))
-      ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
-      (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
-            ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
-            (t nil)))))
+      (solver-verdict SATOUTFILE))))
+
+(defun solver-verdict (satoutfile)
+  "SAT, UNSAT, or NIL for the solver output in SATOUTFILE.
+
+The DIMACS \"s\" line is authoritative and is consulted first.  Falling straight
+to a substring scan of the whole file is not safe: solver banners routinely
+contain the word SAT -- tt-open-wbo-inc prints \"MaxSAT Evaluation 2024\" and
+\"SAT-based solver\" before it does anything -- so a run that printed a banner
+and then no verdict at all (which is what a MaxSAT solver does when handed a
+plain \"p cnf\" file) would be read as SAT.  On a prove form that silently turns
+an entailment into a COUNTEREXAMPLE.
+
+The scan is kept only as a fallback, for solvers that report a verdict without
+an \"s\" line."
+  (multiple-value-bind (status) (solution-lines satoutfile)
+    (cond (status
+            ;; Test UNSATISFIABLE before SATISFIABLE: one contains the other.
+            (cond ((search "UNSATISFIABLE" status) 'UNSAT)
+                  ((search "UNKNOWN" status) nil)   ; ran out of time, no answer
+                  ((search "OPTIMUM" status) 'SAT)  ; s OPTIMUM FOUND
+                  ((search "SATISFIABLE" status) 'SAT)
+                  (t nil)))
+          ;; No "s" line.  Scan for a verdict, but match whole words rather than
+          ;; the substring "SAT", which appears in "MaxSAT" and so in the banner
+          ;; of every MaxSAT solver.
+          (t (verdict-by-scan satoutfile)))))
+
+(defun verdict-by-scan (satoutfile)
+  "Fallback verdict for a solver that prints no DIMACS \"s\" line: a line that
+says (UN)SATISFIABLE, or one that is exactly SAT or UNSAT.  Returns NIL when the
+file says neither, which includes the case of a solver that printed only its
+banner."
+  (with-open-file (s satoutfile :direction :input :if-does-not-exist nil)
+    (when s
+      (loop for line = (read-line s nil) while line do
+        (let ((up (string-trim '(#\Space #\Tab #\Return) (string-upcase line))))
+          (cond ((search "UNSATISFIABLE" up) (return 'UNSAT))
+                ((search "SATISFIABLE" up)   (return 'SAT))
+                ((string= up "UNSAT")        (return 'UNSAT))
+                ((string= up "SAT")          (return 'SAT))))))))
 
 (defun instantiate (WFFFILE &key SCNFILE STATICFILE OBSFILE)
   ;; :obsfile is a deprecated synonym for :staticfile

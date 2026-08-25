@@ -59,6 +59,7 @@ die() { echo "solve.sh: $1" >&2; echo >&2; print_usage >&2; exit 2; }
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$SELF_DIR/fifo-options.sh"
 source "$SELF_DIR/fifo-solvers.sh"
+source "$SELF_DIR/fifo-answer.sh"
 _fifo_options_die() { die "$1"; }
 _fifo_expand_options "$@"
 set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
@@ -107,10 +108,17 @@ KW=":cnf-format (quote CNF) :solver \"$SOLVER\""
 [[ -n "$SOLNFILE"   ]] && KW="$KW :solnfile \"$SOLNFILE\""
 [[ -n "$STATICFILE" ]] && KW="$KW :staticfile \"$STATICFILE\""
 
-exec sbcl --noinform --non-interactive \
+# `solve` returns only the verdict symbol; the model or the extracted variable
+# bindings live in the answer file, so render that rather than the return value.
+sbcl --noinform --non-interactive \
   --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
   --eval "(handler-case
-             (let ((r (solve \"$WFF\" $KW)))
-               (format t \"~&~A~%\" r)
-               (sb-ext:exit :code (if r 0 1)))
+             (sb-ext:exit :code (if (solve \"$WFF\" $KW) 0 1))
            (error (e) (format *error-output* \"solve.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+STATUS=$?
+
+ANSWER="${SOLNFILE:-${WFF%.*}.answer}"
+if [[ "$STATUS" -eq 0 ]]; then
+  _fifo_print_answer "$ANSWER" || STATUS=1
+fi
+exit "$STATUS"

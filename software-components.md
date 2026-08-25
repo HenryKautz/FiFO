@@ -15,7 +15,7 @@
 - [What the pieces are](#what-the-pieces-are)
 - [Conventions shared by every script](#conventions-shared-by-every-script)
 - [The scripts](#the-scripts)
-  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
+  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [fifo-answer.sh](#fifo-answersh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
 - [The Lisp modules](#the-lisp-modules)
 - [Solvers and external tools](#solvers-and-external-tools)
   - [How FiFO finds a solver](#how-fifo-finds-a-solver)
@@ -182,8 +182,27 @@ The CNF format is **not** an option here — fixing it is what makes this the
 satisfiability driver. `--cnf-format` and the MaxSAT-only `--preprocessor` are
 both rejected with a pointer to `map.sh`.
 
-Exit status is 0 when the problem is SAT or UNSAT (a real answer), 1 when the
-solver failed to produce one, 2 on bad usage.
+**Output.** Both drivers print the answer in a form that serves two readers at
+once. Everything that is not a `;` comment is the `.answer` file verbatim — a
+verdict on the first line, then s-expressions — so anything already parsing
+`.answer` files works on this stdout unchanged. The `;` lines say what the
+verdict means and what the payload is, which the payload alone cannot: after
+`PROVEN`, `(X ALICE)` is a variable binding; after `SAT`, an identically shaped
+line is a true atom of a model.
+
+```
+; PROVEN -- the theory entails the goal; the 1 line(s) below are variable
+;           bindings, each (<variable> <value>), witnessing it
+PROVEN
+(X ALICE)
+```
+
+The five verdicts are `SAT` / `UNSAT` (no `prove` form) and `PROVEN` /
+`NOANSWER` / `COUNTEREXAMPLE` (with one). Rendering lives in
+[`fifo-answer.sh`](#fifo-answersh).
+
+Exit status is 0 when the problem got a verdict, 1 when the solver failed to
+produce one, 2 on bad usage.
 
 ------
 
@@ -468,6 +487,21 @@ sessions. No options. Exit status is 0 only if every test passes. It tests
 
 ------
 
+### `fifo-answer.sh`
+
+Not a command — a helper `solve.sh` and `map.sh` **source**. `_fifo_print_answer`
+renders a `.answer` file: the file itself verbatim, preceded by `;` comment lines
+explaining the verdict and labelling the payload.
+
+The split matters because `solve` returns only the verdict symbol — the model and
+the extracted variable bindings live in the answer file, so a driver that prints
+the return value alone silently discards the answer to a `prove` query. `;` is
+the comment character in both Lisp and DIMACS and is what the rest of FiFO
+already uses for commentary, so `grep -v '^;'` recovers the machine-readable form
+exactly.
+
+------
+
 ### `fifo-solvers.sh`
 
 Not a command — a helper the task drivers **source**. It classifies a solver name
@@ -512,6 +546,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-pddl.sh` | PDDL-translator regression: for every example with a checked-in translation under `SatPlan/Examples/`, runs `pddl2fifo` on a temp copy and diffs the `.wff` byte-for-byte (the `(include ...)` satplan path is normalized). |
 | `tests/run-test-evidence.sh` | `--pddl-evidence`, chiefly `occur-in-order`: behavioral checks (the plan embeds the observed sequence at strictly increasing slices; bad evidence raises its contextual error), not gold diffs — evidence clauses can contain session-varying gensyms. |
 | `tests/run-test-mcsat.sh` | The MC-SAT back end: each case fixes `--seed` and asserts the sampled marginals match the exact `maxent` ones to a tolerance. Skips cleanly (exit 0) when no WalkSAT v58 binary is found. |
+| `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
 | `tests/run-test-weight-formula.sh` | Formula-valued `weight`/`probability`: the reified biconditional appears, illegal nesting errors, and maxent learns a formula's weight so `P(φ)` hits its target. |
 
