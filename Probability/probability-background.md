@@ -344,6 +344,38 @@ that choice.
 - **Random-phase SAT**: run kissat many times with different random seeds and random variable-phase initialization. Not provably uniform but often adequate in practice and completely free to implement (just loop over `solve`).
 - **CMSGen** (Golia, Soos, Chakraborty & Meel 2021): the disciplined version of that last idea — a CryptoMiniSat variant that samples by randomising the polarity decisions a CDCL solver makes during search. It offers no uniformity guarantee at all; instead it was *tested* into shape, tuned against **Barbarik** (Chakraborty & Meel 2019), a grey-box tester that decides whether a sampler's distribution is close to uniform, until it passed — and it reports a 420× geometric speed-up over the samplers that do carry guarantees. The reason it is not a FiFO back end is the weights: CMSGen samples *uniformly over models*, so recovering $`P_\theta`$ means importance-reweighting each sample by $`e^{-\mathrm{cost}(x)}`$, and that estimator's variance blows up precisely when the weights are large enough to be worth having. MC-SAT instead folds the weights into the sampling process itself, via the slice step.
 
+**Why the whole hashing family is the wrong branch here, not CMSGen especially.**
+None of these tools takes weighted *clauses*; that is the MaxSAT convention. The
+weighted members of the family take **literal weights**, where a model's weight
+is the product over its literals. FiFO's cost $`\theta`$ on a literal `L` is both
+at once — a soft unit clause on the MaxSAT side, and
+$`W(L\ \text{true}) = e^{-\theta}`$, $`W(L\ \text{false}) = 1`$ on the counting
+side, which is exactly what `wmc.lisp` emits for ADDMC. So the encoding is never
+the obstacle. What matters is that each tool comes in an unweighted and a
+weighted variant, and they are different programs:
+
+| | unweighted | literal-weighted |
+|---|---|---|
+| counting | ApproxMC | WeightMC / ApproxWeightMC |
+| sampling | UniGen, CMSGen | WeightGen, then WAPS |
+
+The obstacle is **tilt** — the ratio of the largest model weight to the smallest.
+WeightGen takes a tilt bound as a parameter and degrades as it grows, and the
+standard reduction from literal-weighted to unweighted counting encodes the
+weights with extra variables, which inflates the random XOR constraints that make
+the hashing work in the first place. Tilt is also precisely the quantity that
+wrecks importance reweighting on top of CMSGen. At FiFO's default scale of 100 a
+real cost of `0.69` is stored as `69`, so the tilt is of order $`e^{69}`$: the
+hashing route and the importance-sampling route fail for the same reason, and
+neither is rescued by a better implementation.
+
+That leaves the two approaches FiFO does implement. Where exact counting fits, use
+it — ADDMC and d4 are literal-weighted natively (`--solver addmc`, `--solver d4`),
+with no tilt sensitivity at all. Where it does not, MC-SAT absorbs the weights
+into the slice step rather than correcting for them afterwards. The uniform
+samplers remain useful for the *unweighted* question — sampling diverse models of
+the hard clauses, for which MC-SAT with no weights is the same thing more slowly.
+
 **What was implemented.** The random-phase option was rejected on cost grounds: a
 per-sample process spawn plus a re-parse of the CNF dominates the inner search
 when there are tens of thousands of samples. Instead the *whole* loop — outer
@@ -612,6 +644,8 @@ For §12 (sampling-based inference):
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2015). On parallel scalable uniform SAT witness generation. *TACAS 2015*, LNCS 9035, pp. 304–319. (UniGen.)
 - S. Chakraborty & K. S. Meel (2019). On testing of uniform samplers. *AAAI-19*, 33:7777–7784. (Barbarik — a grey-box tester that decides whether a sampler's distribution is close to uniform, which is what made the next entry possible.)
 - P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising a CDCL solver's polarity choices; see §12.)
+- S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2014). Distribution-aware sampling and weighted model counting for SAT. *AAAI-14*. (WeightGen and WeightMC — the literal-weighted members of the hashing family.)
+- R. Gupta, S. Sharma, S. Roy & K. S. Meel (2019). WAPS: Weighted and projected sampling. *TACAS 2019*, LNCS 11427, pp. 59–76. (Supersedes WeightGen; compiles to d-DNNF, and its runtime is reported as agnostic to the weight distribution.)
 
 For §14 (maximum-term approximation):
 
