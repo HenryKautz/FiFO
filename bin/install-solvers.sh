@@ -32,7 +32,7 @@ SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
 LOG_DIR="$SRC_ROOT/logs"
 BINDIR="$HOME/bin"
 
-ALL_SOLVERS=(kissat tt-open-wbo-inc addmc d4 walksat)
+ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c addmc d4 walksat maxpre)
 
 FORCE=0
 DRY=0
@@ -90,6 +90,8 @@ solver_desc() {
   case "$1" in
     kissat)           echo "CDCL SAT solver -- feasibility for solve/ and the planner's horizon search" ;;
     tt-open-wbo-inc)  echo "anytime weighted MaxSAT -- cost minimization (MAP inference)" ;;
+    nuwls-c)          echo "anytime weighted MaxSAT -- NuWLS local search over tt-open-wbo-inc" ;;
+    maxpre)           echo "MaxPre 2 -- WCNF preprocessor (run in front of any MaxSAT solver)" ;;
     addmc)            echo "ADD-based weighted model counter -- exact marginals and Z" ;;
     d4)               echo "d4v2 decision-DNNF compiler -- exact marginals on structured instances" ;;
     walksat)          echo "WalkSAT v58 -mcsat -- approximate marginals by MC-SAT sampling" ;;
@@ -100,6 +102,8 @@ solver_repo() {
   case "$1" in
     kissat)           echo "https://github.com/arminbiere/kissat.git" ;;
     tt-open-wbo-inc)  echo "https://github.com/HenryKautz/tt-open-wbo-inc.git" ;;
+    nuwls-c)          echo "https://github.com/shaowei-cai-group/NuWLS-c.git" ;;
+    maxpre)           echo "https://bitbucket.org/coreo-group/maxpre2.git" ;;
     addmc)            echo "https://github.com/HenryKautz/ADDMC.git" ;;
     d4)               echo "https://github.com/HenryKautz/d4v2.git" ;;
     walksat)          echo "https://gitlab.com/HenryKautz/Walksat.git" ;;
@@ -124,6 +128,8 @@ solver_dir() {
   case "$1" in
     kissat)           echo "kissat" ;;
     tt-open-wbo-inc)  echo "tt-open-wbo-inc" ;;
+    nuwls-c)          echo "NuWLS-c" ;;
+    maxpre)           echo "maxpre2" ;;
     addmc)            echo "ADDMC" ;;
     d4)               echo "d4v2" ;;
     walksat)          echo "Walksat" ;;
@@ -135,6 +141,8 @@ solver_bins() {
   case "$1" in
     kissat)           echo "kissat" ;;
     tt-open-wbo-inc)  echo "tt-open-wbo-inc-Glucose4_1 tt-open-wbo-inc-IntelSATSolver" ;;
+    nuwls-c)          echo "nuwls-c" ;;
+    maxpre)           echo "maxpre" ;;
     addmc)            echo "addmc" ;;
     d4)               echo "d4" ;;
     walksat)          echo "walksat" ;;
@@ -179,7 +187,7 @@ solver_prereq() {
   case "$1" in
     kissat|walksat)
       command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || missing="$missing cc/gcc" ;;
-    tt-open-wbo-inc)
+    tt-open-wbo-inc|nuwls-c|maxpre)
       command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
     addmc)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
@@ -222,6 +230,21 @@ solver_build() {
       install_bin "$dir/bin/tt-open-wbo-inc-Glucose4_1"     tt-open-wbo-inc-Glucose4_1 || return 1
       install_bin "$dir/bin/tt-open-wbo-inc-IntelSATSolver" tt-open-wbo-inc-IntelSATSolver ;;
 
+    nuwls-c)
+      # Needs gmpxx.h / libgmpxx, which on macOS live under the Homebrew prefix
+      # that Apple clang does not search.  CPATH/LIBRARY_PATH add them without
+      # overriding the Makefile's own CFLAGS/LFLAGS (a command-line CFLAGS= would
+      # wipe the flags it needs).  Both are no-ops where the paths are standard.
+      ( cd "$dir/code" && brew_env make ) || return 1
+      # The Makefile already writes to ../bin/nuwls-c.
+      install_bin "$dir/bin/nuwls-c" nuwls-c ;;
+
+    maxpre)
+      # Same treatment: main.cpp includes boost/iostreams/filter/gzip.hpp.
+      ( cd "$dir" && brew_env make ) || return 1
+      # src/Makefile ends with `mv src/maxpre maxpre`, so it lands at the root.
+      install_bin "$dir/maxpre" maxpre ;;
+
     addmc)
       # INSTALL.sh untars the bundled CUDD/cxxopts, cmakes, and leaves ./addmc.
       # CMAKE_POLICY_VERSION_MINIMUM: ADDMC asks for cmake_minimum_required 2.8.9,
@@ -262,6 +285,19 @@ install_bin() {  # install_bin <built-path> <installed-name>
     return 1
   fi
   mkdir -p "$BINDIR" && cp -f "$src" "$BINDIR/$name" && chmod +x "$BINDIR/$name"
+}
+
+brew_env() {  # brew_env <cmd>... : run CMD with the Homebrew prefix on the header
+              # and library search paths.  Apple clang does not look there by
+              # default, and several of these builds expect system-wide gmp /
+              # boost.  A no-op when Homebrew is absent (e.g. Linux).
+  local prefix
+  if prefix="$(brew --prefix 2>/dev/null)" && [[ -n "$prefix" ]]; then
+    CPATH="${CPATH:+$CPATH:}$prefix/include" \
+    LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$prefix/lib" "$@"
+  else
+    "$@"
+  fi
 }
 
 clone_or_update() {  # clone_or_update <repo-url> <dir> [branch]

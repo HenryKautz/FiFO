@@ -494,7 +494,44 @@ The true cost of a solution is the MaxSAT solver's reported cost divided by the 
 
 ### Weighted CNF solvers
 
-The MaxSAT solvers FiFO can drive — TT-Open-WBO-Inc (the default), RC2 via PySAT, MaxHS, and CP-SAT — are cataloged in [software-components.md](software-components.md#weighted-maxsat-solvers), with sources and installation notes. Driving one end to end to get the most probable model is covered in [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
+The MaxSAT solvers FiFO can drive — TT-Open-WBO-Inc (the default), NuWLS-c, RC2 via PySAT, MaxHS, and CP-SAT — are cataloged in [software-components.md](software-components.md#weighted-maxsat-solvers), with sources and installation notes. Driving one end to end to get the most probable model is covered in [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
+
+`solve` also takes the solver settings as keyword arguments, which bind the corresponding globals for that call only:
+
+```lisp
+(solve "problem.wff" :solver "nuwls" :cnf-format 'WCNF :timeout 120)
+```
+
+The keywords are `:solver`, `:cnf-format`, `:preprocessor`, `:preprocessor-techniques`, and `:timeout`. An `(option ...)` form inside the `.wff` is executed while the file is parsed, so it still has the last word — exactly as it does over a prior `setq`.
+
+### Solver time limits
+
+Anytime MaxSAT solvers do not stop on their own: they keep improving until they are stopped, and print the best solution found so far when they receive `SIGTERM`. That is how the MaxSAT Evaluation harness runs them — NuWLS-c's own submission wrapper is simply `timeout -s 15 $wl ./nuwls-c_static $1` — and it is how FiFO runs them too. Neither TT-Open-WBO-Inc nor NuWLS-c accepts a time limit as a command-line flag, so the limit is enforced externally.
+
+`*solver-timeout*` (default **600** seconds) bounds every solver invocation. When it expires FiFO sends `SIGTERM`, waits `*solver-kill-grace*` seconds (default 10) for the solver to flush its answer, and only then sends `SIGKILL`. A run that is cut short prints a note and still yields the best model the solver had reached:
+
+```
+; solver nuwls-c stopped after the 120 s limit (*solver-timeout*);
+; reporting the best solution it had found
+```
+
+Set the limit to `0`, `-1`, or `nil` to disable it entirely. Because the limit applies to *every* solver call, including the plain SAT solver used by the planner's feasibility search, lowering it materially will cut off long searches — the note above is the signal that this has happened.
+
+### Preprocessing with MaxPre 2
+
+Setting `*preprocessor*` to a [MaxPre 2](https://bitbucket.org/coreo-group/maxpre2/src/master/) binary inserts a preprocessing pass in front of the solver:
+
+```lisp
+(solve "problem.wff" :cnf-format 'WCNF :solver "tt-glucose" :preprocessor "maxpre")
+```
+
+FiFO runs `maxpre <file> preprocess -mapfile=…` to produce a simplified instance, solves *that*, and then runs `maxpre <solution> reconstruct -mapfile=…` to map the model back.
+
+**The reconstruction step is not optional bookkeeping.** MaxPre eliminates and renumbers variables — on the small grocery example above it collapses three variables to one — so a model of the preprocessed instance means nothing in the original variable space that the `.map` file describes. Interpreted directly it does not fail; it silently names the wrong atoms. FiFO always reconstructs before `interpret` sees the file.
+
+Two details are handled for you. MaxPre's `reconstruct` parses only `s OPTIMUM FOUND`, and reports `Failed to parse solution` on the `s SATISFIABLE` an anytime solver prints when it has not proved optimality; it also emits an uninitialised objective if no `o` line is present. FiFO therefore normalises the solver's output to `o`/`s`/`v` before calling it, and restores the solver's own status line afterwards, so the reported status still reflects what was actually proved.
+
+**MaxPre is for optimization only — never for probabilities.** Its techniques (bounded variable elimination, blocked clause elimination, subsumption) preserve the optimum cost and an optimal model, but they do not preserve the *number* of models, so they change `Z` and every marginal derived from it. The marginal-inference back ends never go through this path — they read the `.scnf` directly — and preprocessing a plain (unweighted) `CNF` is rejected with an error rather than silently attempted.
 
 ### Weight Learning
 
@@ -643,6 +680,9 @@ The two forms differ only in how some values are written: booleans use `1`/`0` i
 | `*tracing*` | Print `[TRACE]` diagnostics during instantiation | `nil` (off) | `(option *tracing* 1)` | `--eval '(setq *tracing* t)'` |
 | `*cnf-format*` | DIMACS output format for weighted problems: `CNF`, `WCNF-OLD`, or `WCNF` | `CNF` | `(option *cnf-format* WCNF)` | `--eval '(setq *cnf-format* (quote WCNF))'` |
 | `*solver*` | SAT solver executable invoked by `satisfy`/`solve`; abbreviations are resolved via `*solver-abbreviations*` | `"kissat"` | `(option *solver* tt-glucose)` | `--eval '(setq *solver* "kissat")'` |
+| `*solver-timeout*` | Seconds before the solver is stopped with `SIGTERM`. `0`, `-1` and `nil` all mean no limit. See [Solver time limits](#solver-time-limits) | `600` | `(option *solver-timeout* 60)` | `--eval '(setq *solver-timeout* 60)'` |
+| `*preprocessor*` | MaxPre 2 binary used to preprocess a weighted CNF before solving, reconstructing the model afterwards; `nil` for none. See [Preprocessing with MaxPre 2](#preprocessing-with-maxpre-2) | `nil` | `(option *preprocessor* maxpre)` | `--eval '(setq *preprocessor* "maxpre")'` |
+| `*preprocessor-techniques*` | MaxPre's `-techniques=` string; `nil` uses MaxPre's own default | `nil` | `(option *preprocessor-techniques* "[bu]#[buvsrg]")` | `--eval '(setq *preprocessor-techniques* "[bu]#[buvsrg]")'` |
 | `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`; full names must be strings | `tt-glucose`, `tt-intelsat` | `(option *solver-abbreviations* (("ms" "minisat-2.2")))` | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
 | `*satplan-numslices*` | SatPlan time horizon read by `pddl2fifo`-generated wff files | unbound (treated as `2`) | `(option *satplan-numslices* 10)` | `--eval '(setq *satplan-numslices* 10)'` |
 

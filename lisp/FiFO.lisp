@@ -10,7 +10,37 @@
 ;; abbreviation, the *solver* variable is set to the corresponding full name.
 (defvar *solver-abbreviations*
   '(("tt-glucose" "tt-open-wbo-inc-Glucose4_1")
-    ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")))
+    ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")
+    ("nuwls" "nuwls-c")))
+
+;; Wall-clock limit in seconds for a single solver run.  NIL, 0 or -1 all mean
+;; "no limit".
+;; The anytime MaxSAT solvers have no time-limit flag of their own: the MaxSAT
+;; Evaluation harness stops them with SIGTERM, on which they print the best
+;; solution found so far (NuWLS-c installs such a handler in Main.cc, and its
+;; own StarExec wrapper is just "timeout -s 15 $wl ./nuwls-c_static $1").  FiFO
+;; enforces the limit the same way -- SIGTERM, then SIGKILL after a grace period
+;; if the solver ignores it.
+(defvar *solver-timeout* 600)
+
+(defun solver-time-limit (timeout)
+  "TIMEOUT normalised to a positive number of seconds, or NIL for no limit.
+NIL, 0 and -1 all mean unlimited, so a caller can switch the limit off with
+whichever of the three spellings is convenient."
+  (and timeout (realp timeout) (plusp timeout) timeout))
+
+;; MaxSAT preprocessor: NIL, or the path/name of a MaxPre 2 binary.  When set,
+;; a weighted problem is preprocessed before solving and the solver's model is
+;; reconstructed afterwards.  This is not optional bookkeeping: MaxPre renumbers
+;; (and eliminates) variables, so a model of the preprocessed instance is
+;; meaningless in the original variable space that the .map file describes.
+(defvar *preprocessor* nil)
+
+;; Techniques string for MaxPre's -techniques= option; NIL uses MaxPre's default.
+(defvar *preprocessor-techniques* nil)
+
+;; Seconds to wait after SIGTERM before resorting to SIGKILL.
+(defvar *solver-kill-grace* 10)
 
 ;; Muffle warnings about common lisp style
 (declaim (sb-ext:muffle-conditions cl:style-warning))
@@ -128,6 +158,89 @@ exactly where it was."
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 
+(defun run-program-to-file (program args outfile &key timeout)
+  "Run PROGRAM with ARGS, sending stdout to OUTFILE.  When TIMEOUT (seconds) is a
+positive number and the process outlives it, send SIGTERM -- an anytime MaxSAT
+solver responds by printing the best solution it has found, so the partial output
+is still useful -- and escalate to SIGKILL after *solver-kill-grace* seconds.
+Returns (values exit-code timed-out-p)."
+  (with-open-file (out outfile :direction :output :if-exists :supersede
+                               :if-does-not-exist :create)
+    (let ((proc (sb-ext:run-program program args :search t :output out
+                                    :error nil :wait nil))
+          (timed-out nil))
+      (unwind-protect
+           (let ((limit (solver-time-limit timeout)))
+             (when limit
+               (let ((deadline (+ (get-internal-real-time)
+                                  (* limit internal-time-units-per-second))))
+                 (loop while (sb-ext:process-alive-p proc) do
+                   (when (> (get-internal-real-time) deadline)
+                     (setq timed-out t)
+                     (sb-ext:process-kill proc 15)   ; SIGTERM
+                     (let ((grace (+ (get-internal-real-time)
+                                     (* *solver-kill-grace*
+                                        internal-time-units-per-second))))
+                       (loop while (and (sb-ext:process-alive-p proc)
+                                        (< (get-internal-real-time) grace))
+                             do (sleep 0.05)))
+                     (when (sb-ext:process-alive-p proc)
+                       (sb-ext:process-kill proc 9)) ; SIGKILL
+                     (return))
+                   (sleep 0.05)))))
+        (sb-ext:process-wait proc))
+      (values (sb-ext:process-exit-code proc) timed-out))))
+
+(defun solution-lines (file)
+  "The last 's', last 'o' and last 'v' lines of a MaxSAT solver's output FILE,
+returned as (values status objective model).  Any is NIL when absent."
+  (let (status objective model)
+    (with-open-file (s file :direction :input :if-does-not-exist nil)
+      (when s
+        (loop for line = (read-line s nil) while line do
+          (cond ((and (>= (length line) 2) (string= "s " (subseq line 0 2)))
+                  (setq status line))
+                ((and (>= (length line) 2) (string= "o " (subseq line 0 2)))
+                  (setq objective line))
+                ((and (>= (length line) 2) (string= "v " (subseq line 0 2)))
+                  (setq model line))))))
+    (values status objective model)))
+
+(defun maxpre--reconstruct (rawfile mapfile satoutfile)
+  "Map the solver's model in RAWFILE back to the ORIGINAL variable numbering with
+MaxPre's reconstruct mode, writing the result to SATOUTFILE.  Returns T on
+success, NIL if there was nothing to reconstruct (e.g. UNSAT, or no model).
+
+MaxPre's parser is strict in two ways this has to work around: it accepts only
+\"s OPTIMUM FOUND\" as the status line -- \"s SATISFIABLE\", which is what an
+anytime solver prints when it has not proved optimality, makes it report
+\"Failed to parse solution\" -- and it prints an uninitialised objective if no
+'o' line is present.  So the solver's output is normalised to exactly o/s/v
+before the call, and the ORIGINAL status line is restored afterwards, keeping
+FiFO's own SAT/UNSAT reading of the file intact."
+  (multiple-value-bind (status objective model) (solution-lines rawfile)
+    (unless model (return-from maxpre--reconstruct nil))
+    (let ((normalized (concatenate 'string satoutfile ".in")))
+      (with-open-file (s normalized :direction :output :if-exists :supersede
+                                    :if-does-not-exist :create)
+        (format s "~A~%s OPTIMUM FOUND~%~A~%" (or objective "o 0") model))
+      (run-program-to-file *preprocessor* (list normalized "reconstruct"
+                                                (format nil "-mapfile=~A" mapfile))
+                           satoutfile)
+      (multiple-value-bind (rstatus robjective rmodel) (solution-lines satoutfile)
+        (declare (ignore rstatus))
+        (unless rmodel
+          (error "MaxPre could not reconstruct the solution from ~A" rawfile))
+        ;; Rewrite with the solver's own status line: MaxPre always says OPTIMUM
+        ;; FOUND because that is the only status it parses, which would otherwise
+        ;; both overstate the result and hide the SAT/UNSAT token FiFO looks for.
+        (with-open-file (s satoutfile :direction :output :if-exists :supersede
+                                      :if-does-not-exist :create)
+          (format s "~A~%~A~%~A~%" (or robjective objective "o 0")
+                  (or status "s SATISFIABLE") rmodel))
+        (delete-file normalized)
+        t))))
+
 (defun satisfy (CNFFILE &key SATOUTFILE)
   (if (null (cl-ppcre:scan "\\." CNFFILE))
       (setq CNFFILE (concatenate 'string CNFFILE ".cnf")))
@@ -136,17 +249,60 @@ exactly where it was."
   (with-clean-errors ("running the SAT solver on" CNFFILE)
     (unless (probe-file CNFFILE)
       (error "cnf file ~A does not exist" CNFFILE))
-    (handler-case
-        (uiop:run-program (list *solver* CNFFILE)
-                          :output SATOUTFILE :ignore-error-status t)
-      (error (c)
-        (format *error-output* "FiFO error: could not run SAT solver ~A: ~A~%"
-                *solver* c)
-        (return-from satisfy nil)))
-    ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
-    (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
-          ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
-          (t nil))))
+    (let ((solver-input CNFFILE)
+          (solver-output SATOUTFILE)
+          mapfile)
+      ;; --- optional MaxPre preprocessing -------------------------------------
+      (when *preprocessor*
+        (unless (member *cnf-format* '(WCNF WCNF-OLD))
+          (error "*preprocessor* is a MaxSAT preprocessor, but *cnf-format* is ~S;~%~
+                  set (option *cnf-format* WCNF) or clear *preprocessor*"
+                 *cnf-format*))
+        (let ((root (replace-suffix-with-regex CNFFILE "\\..*?$" "")))
+          (setq solver-input (concatenate 'string root "-pre.wcnf")
+                mapfile      (concatenate 'string root "-pre.map")
+                solver-output (concatenate 'string root "-pre.satout"))
+          (handler-case
+              (run-program-to-file *preprocessor*
+                                   (append (list CNFFILE "preprocess")
+                                           (when *preprocessor-techniques*
+                                             (list (format nil "-techniques=~A"
+                                                           *preprocessor-techniques*)))
+                                           (list (format nil "-mapfile=~A" mapfile)))
+                                   solver-input)
+            (error (c)
+              (format *error-output* "FiFO error: could not run preprocessor ~A: ~A~%"
+                      *preprocessor* c)
+              (return-from satisfy nil)))
+          (unless (probe-file solver-input)
+            (format *error-output* "FiFO error: preprocessor ~A produced no output~%"
+                    *preprocessor*)
+            (return-from satisfy nil))))
+      ;; --- the solver --------------------------------------------------------
+      (multiple-value-bind (code timed-out)
+          (handler-case
+              (run-program-to-file *solver* (list solver-input) solver-output
+                                   :timeout *solver-timeout*)
+            (error (c)
+              (format *error-output* "FiFO error: could not run SAT solver ~A: ~A~%"
+                      *solver* c)
+              (return-from satisfy nil)))
+        (declare (ignore code))
+        (when timed-out
+          (format t "; solver ~A stopped after the ~A s limit (*solver-timeout*);~%~
+                     ; reporting the best solution it had found~%"
+                  *solver* *solver-timeout*)
+          (finish-output)))
+      ;; --- reconstruction ----------------------------------------------------
+      (when *preprocessor*
+        (unless (maxpre--reconstruct solver-output mapfile SATOUTFILE)
+          ;; Nothing to map back (UNSAT, or the solver produced no model): the
+          ;; preprocessed output is the answer as-is.
+          (uiop:copy-file solver-output SATOUTFILE)))
+      ;; Check UNSAT first since SAT is a substring of UNSAT/UNSATISFIABLE.
+      (cond ((file-contains-string-p "UNSAT" SATOUTFILE) 'UNSAT)
+            ((file-contains-string-p "SAT" SATOUTFILE) 'SAT)
+            (t nil)))))
 
 (defun instantiate (WFFFILE &key SCNFILE STATICFILE OBSFILE)
   ;; :obsfile is a deprecated synonym for :staticfile
@@ -306,9 +462,43 @@ or maxent.lisp)."
                 (format OS "~{~S~%~}" litdata)))))
    t))
 
-(defun solve (WFFFILE &key SOLNFILE STATICFILE OBSFILE)
+(defun solve (WFFFILE &key SOLNFILE STATICFILE OBSFILE
+                           (SOLVER nil solver-p)
+                           (CNF-FORMAT nil cnf-format-p)
+                           (PREPROCESSOR nil preprocessor-p)
+                           (PREPROCESSOR-TECHNIQUES nil techniques-p)
+                           (TIMEOUT nil timeout-p))
+  "Solve WFFFILE end to end, writing the answer to SOLNFILE.
+
+The solver-related keywords bind the corresponding special variables for the
+duration of the call, so they need not be set globally:
+
+  :solver       the solver executable (abbreviations in *solver-abbreviations*
+                are resolved, so :solver \"nuwls\" works)
+  :cnf-format   CNF, WCNF or WCNF-OLD -- a MaxSAT solver needs one of the
+                weighted formats
+  :preprocessor a MaxPre 2 binary to preprocess the weighted CNF with, whose
+                model is reconstructed back into the original variable numbering
+                afterwards; NIL for none
+  :preprocessor-techniques  MaxPre's -techniques= string, NIL for its default
+  :timeout      seconds before the solver is stopped with SIGTERM (NIL, 0 or -1
+                for no limit); anytime MaxSAT solvers print their best solution
+                so far when stopped this way
+
+An (option ...) form inside the .wff is executed while the file is parsed and so
+still has the last word, exactly as it does over a prior setq."
   ;; :obsfile is a deprecated synonym for :staticfile
   (setq STATICFILE (or STATICFILE OBSFILE))
+  (let ((*solver*                  (if solver-p (resolve-solver-name SOLVER) *solver*))
+        (*cnf-format*              (if cnf-format-p CNF-FORMAT *cnf-format*))
+        (*preprocessor*            (if preprocessor-p PREPROCESSOR *preprocessor*))
+        (*preprocessor-techniques* (if techniques-p PREPROCESSOR-TECHNIQUES
+                                       *preprocessor-techniques*))
+        (*solver-timeout*          (if timeout-p (solver-time-limit TIMEOUT)
+                                       *solver-timeout*)))
+    (solve--1 WFFFILE SOLNFILE STATICFILE)))
+
+(defun solve--1 (WFFFILE SOLNFILE STATICFILE)
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
   (if (not SOLNFILE)
@@ -876,6 +1066,24 @@ the tie-group id assigned to this source form by assign-probability-gids."
             (unless (integerp val)
               (error "*satplan-numslices* must be an integer, not ~S" val))
             (set '*satplan-numslices* val))
+          ((eql opt '*solver-timeout*)
+            ;; 0 and -1 both mean "no limit" (parse-option has already turned a
+            ;; literal 0 into NIL); solver-time-limit normalises all three.
+            (unless (or (null val) (realp val))
+              (error "*solver-timeout* must be a number of seconds, not ~S" val))
+            (setq *solver-timeout* (solver-time-limit val)))
+          ((eql opt '*preprocessor*)
+            (setq *preprocessor*
+                  (cond ((null val) nil)
+                        ((stringp val) val)
+                        ((symbolp val) (string-downcase (symbol-name val)))
+                        (t (error "*preprocessor* must be a symbol or string, not ~S" val)))))
+          ((eql opt '*preprocessor-techniques*)
+            (setq *preprocessor-techniques*
+                  (cond ((null val) nil)
+                        ((stringp val) val)
+                        ((symbolp val) (symbol-name val))
+                        (t (error "*preprocessor-techniques* must be a string, not ~S" val)))))
           (t (error "Unknown option ~S" opt)))
     nil))
 

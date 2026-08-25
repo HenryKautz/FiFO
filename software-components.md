@@ -22,6 +22,7 @@
   - [Runtime](#runtime)
   - [SAT solvers](#sat-solvers)
   - [Weighted MaxSAT solvers](#weighted-maxsat-solvers)
+  - [Preprocessors](#preprocessors)
   - [Weighted model counters and knowledge compilers](#weighted-model-counters-and-knowledge-compilers)
   - [Samplers](#samplers)
   - [Which component uses which solver](#which-component-uses-which-solver)
@@ -122,7 +123,7 @@ in the install directory, since FiFO does not search `PATH` for it.
 | Option | Meaning |
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
-| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `addmc`, `d4`, `walksat`. |
+| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `addmc`, `d4`, `walksat`, `maxpre`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -148,7 +149,8 @@ failed.
 Prerequisites are checked *before* cloning, so a missing tool is reported as a
 one-line "missing build prerequisites: cmake" rather than a wall of compiler
 errors. All of them need `git`, `make`, and a C/C++ compiler; `addmc` and `d4`
-also need `cmake`; on macOS `d4` additionally needs Homebrew with
+also need `cmake`; `nuwls-c` needs GMP and `maxpre` needs Boost (both found via
+the Homebrew prefix, which the script puts on `CPATH`/`LIBRARY_PATH`); on macOS `d4` additionally needs Homebrew with
 `brew install gcc gmp boost cmake`, because its build uses the GNU toolchain
 rather than Apple clang.
 
@@ -435,6 +437,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-pddl.sh` | PDDL-translator regression: for every example with a checked-in translation under `SatPlan/Examples/`, runs `pddl2fifo` on a temp copy and diffs the `.wff` byte-for-byte (the `(include ...)` satplan path is normalized). |
 | `tests/run-test-evidence.sh` | `--pddl-evidence`, chiefly `occur-in-order`: behavioral checks (the plan embeds the observed sequence at strictly increasing slices; bad evidence raises its contextual error), not gold diffs — evidence clauses can contain session-varying gensyms. |
 | `tests/run-test-mcsat.sh` | The MC-SAT back end: each case fixes `--seed` and asserts the sampled marginals match the exact `maxent` ones to a tolerance. Skips cleanly (exit 0) when no WalkSAT v58 binary is found. |
+| `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
 | `tests/run-test-weight-formula.sh` | Formula-valued `weight`/`probability`: the reified biconditional appears, illegal nesting errors, and maxent learns a formula's weight so `P(φ)` hits its target. |
 
 ------
@@ -591,6 +594,26 @@ model so far rather than a proven optimum — `interpret` takes the last `o` lin
 The planner uses the Glucose 4.1 build, `tt-open-wbo-inc-Glucose4_1`; the
 IntelSAT build is the other option.
 
+**NuWLS-c**
+
+- Source: https://github.com/shaowei-cai-group/NuWLS-c
+- Paper: Chu, Cai & Luo, *NuWLS: Improving Local Search for (Weighted) Partial MaxSAT*, AAAI 2023.
+
+The winner of all four incomplete categories at MaxSAT Evaluation 2022, and the
+lineage that has topped the anytime tracks since. It is an Open-WBO derivative —
+the same family as TT-Open-WBO-Inc — with NuWLS as its stochastic-local-search
+component, so it reads the same WCNF and prints the same `s`/`o`/`v` output.
+Select it with `(option *solver* nuwls)` or `:solver "nuwls"`.
+
+*Installation note:* `cd code && make`; the Makefile already writes the binary to
+`bin/nuwls-c`. It needs `gmpxx.h` and `libgmpxx`, which on macOS live under the
+Homebrew prefix that Apple clang does not search — `install-solvers.sh` puts them
+on `CPATH`/`LIBRARY_PATH` for the build.
+
+*Time limits:* like TT-Open-WBO-Inc it has no time-limit flag; it is an anytime
+solver meant to be stopped with `SIGTERM`, on which it prints its best solution.
+See `*solver-timeout*` in the [README](README.md#solver-time-limits).
+
 **RC2 via PySAT**
 
 - Install: `pip install python-sat` (PyPI: https://pypi.org/project/python-sat/)
@@ -624,6 +647,41 @@ CP-SAT takes its own model format rather than WCNF, so the model is built
 programmatically (clauses as `AddBoolOr`, objective as `Minimize`). Utilities for
 converting wcnf files into CP-SAT Python code are in
 [wcnfsolvers](https://github.com/HenryKautz/wcnfsolvers).
+
+------
+
+### Preprocessors
+
+**MaxPre 2**
+
+- Source: https://bitbucket.org/coreo-group/maxpre2/src/master/ (Hannes Ihalainen,
+  Helsinki CoReO group). The original MaxPre (Korhonen et al., SAT 2017) is a
+  different repository, https://github.com/Laakeri/maxpre — build guides for
+  other solvers often point there, so check which one a guide assumes.
+- Selected with `*preprocessor*` / `--preprocessor`; optional, and used only by
+  the MaxSAT path.
+
+A WCNF preprocessor that simplifies a weighted instance before it reaches the
+solver — bounded variable elimination, blocked clause elimination, subsumption,
+label matching and more. Cheap, and often decisive on instances with many hard
+clauses. FiFO drives it in standalone mode: preprocess, solve, then reconstruct
+the model back into the original variable numbering.
+
+*Installation note:* plain `make`; `src/Makefile` moves the binary to `maxpre` at
+the repository root. It needs Boost's iostreams headers (`main.cpp` includes
+`boost/iostreams/filter/gzip.hpp`), which on macOS need the Homebrew prefix on
+`CPATH`/`LIBRARY_PATH` — `install-solvers.sh` handles that.
+
+*Reconstruction is mandatory.* MaxPre renumbers and eliminates variables, so a
+model of the preprocessed instance is meaningless against FiFO's `.map` file.
+Interpreted directly it names the wrong atoms rather than failing outright. See
+[Preprocessing with MaxPre 2](README.md#preprocessing-with-maxpre-2) for the
+details FiFO papers over, including the fact that MaxPre's `reconstruct` parses
+only `s OPTIMUM FOUND`.
+
+*Not for probabilities.* MaxPre preserves the optimum cost and an optimal model;
+it does **not** preserve the model count, so it changes `Z` and every marginal.
+It belongs to the MAP path only, and the marginal back ends never touch it.
 
 ------
 
@@ -723,6 +781,8 @@ wrong, not merely noisy. Details in
 | `planner.sh` horizon search | satisfiability | SAT — `kissat` |
 | `planner.sh` cost minimization | MAP | MaxSAT — `tt-open-wbo-inc-Glucose4_1` |
 | `recognize.sh` | `2n` conditional MAP queries | MaxSAT (via `planner.sh`) |
+| `solve` with `:solver "nuwls"` | MAP / most probable model | MaxSAT — `nuwls-c` |
+| `solve` with `:preprocessor "maxpre"` | MAP, on a simplified instance | MaxPre 2 + any MaxSAT solver |
 | `marginals.sh --solver maxent` | exact marginals | none — built-in enumeration |
 | `marginals.sh --solver ddnnf` | exact marginals | none — built-in d-DNNF compiler |
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
