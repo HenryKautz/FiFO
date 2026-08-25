@@ -15,7 +15,7 @@
 - [What the pieces are](#what-the-pieces-are)
 - [Conventions shared by every script](#conventions-shared-by-every-script)
 - [The scripts](#the-scripts)
-  - [install-solvers.sh](#install-solverssh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
+  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
 - [The Lisp modules](#the-lisp-modules)
 - [Solvers and external tools](#solvers-and-external-tools)
   - [How FiFO finds a solver](#how-fifo-finds-a-solver)
@@ -157,6 +157,61 @@ rather than Apple clang.
 Not covered: the alternative solvers FiFO does not drive directly (Mallob,
 Painless, MaxHS) and the two that install through a package manager (RC2 via
 `pip install python-sat`, CP-SAT via `pip install ortools`).
+
+------
+
+### `solve.sh`
+
+Solve a problem for **satisfiability**: plain DIMACS CNF, a pure SAT solver, and
+the model translated back into symbolic literals.
+
+```sh
+solve.sh <problem.wff> [options]
+```
+
+| Option | Meaning |
+|---|---|
+| `--solver <name>` | SAT solver (default `kissat`). A MaxSAT solver is refused with an explanation pointing at `map.sh`. |
+| `--timeout <secs>` | Stop the solver after this many seconds. `0`, `-1` or `none` mean no limit. Default is FiFO's `*solver-timeout*`, 600 s. |
+| `--out <file>` | Answer file (default `<problem>.answer`). |
+| `--staticfile <file>` | Static ground facts to instantiate against. |
+| `--options <file>` | Splice in the options from `<file>`. |
+| `-h`, `--help` | Usage. |
+
+The CNF format is **not** an option here — fixing it is what makes this the
+satisfiability driver. `--cnf-format` and the MaxSAT-only `--preprocessor` are
+both rejected with a pointer to `map.sh`.
+
+Exit status is 0 when the problem is SAT or UNSAT (a real answer), 1 when the
+solver failed to produce one, 2 on bad usage.
+
+------
+
+### `map.sh`
+
+**MAP inference**: the most probable model, i.e. the one of minimum total
+weight. Weighted CNF, a MaxSAT solver, the same symbolic answer.
+
+```sh
+map.sh <problem.wff> [options]
+```
+
+| Option | Meaning |
+|---|---|
+| `--solver <name>` | MaxSAT solver (default `tt-open-wbo-inc-Glucose4_1`). Abbreviations `tt-glucose`, `tt-intelsat`, `nuwls` are resolved. A plain SAT solver is refused with a pointer to `solve.sh`. |
+| `--old-format` | Emit the classic `p wcnf <v> <c> <top>` format instead of the 2022 `h`-line format, for solvers that predate it. |
+| `--timeout <secs>` | As above. An anytime MaxSAT solver stopped this way prints its best solution so far, so a timeout still yields a usable — if not provably optimal — answer. |
+| `--preprocessor <p>` | Preprocess with a MaxPre 2 binary and reconstruct the model afterwards (usually `--preprocessor maxpre`). |
+| `--preprocessor-techniques <s>` | MaxPre's `-techniques=` string. |
+| `--out <file>`, `--staticfile <file>`, `--options <file>`, `-h` | As for `solve.sh`. |
+| `--keep` | Keep the intermediate `.cnf`/`.map`/`.satout` files. |
+
+Besides the answer file's raw `(*OBJECTIVE* N)`, `map.sh` prints the **true
+cost**, correcting `N` by the scale and shift the weighted formats require:
+
+```
+true cost: 3.1   (raw objective 62 / scale 20 + offset 0)
+```
 
 ------
 
@@ -410,6 +465,26 @@ affect the others; gensym symbols (`#:XXnnnn`) are renumbered by order of first
 appearance before comparison, since their absolute numbers differ between SBCL
 sessions. No options. Exit status is 0 only if every test passes. It tests
 `lisp/` by default; set `FIFO_LISP` to test an installed copy.
+
+------
+
+### `fifo-solvers.sh`
+
+Not a command — a helper the task drivers **source**. It classifies a solver name
+as `sat`, `maxsat`, or `unknown` (`_fifo_solver_kind`), and refuses a mismatch
+with an explanation (`_fifo_require_solver_kind`). Matching is on the basename,
+case-insensitively, and checks the MaxSAT patterns first, so
+`tt-open-wbo-inc-Glucose4_1` classifies as MaxSAT rather than being caught by
+"glucose". An unrecognised name is `unknown` and allowed through — a locally
+built binary is the user's business.
+
+It also mirrors FiFO's `*solver-abbreviations*` (`_fifo_resolve_solver`), so the
+shell can check that `nuwls` really means `nuwls-c` before reporting it missing.
+Keep that table in step with `lisp/FiFO.lisp`.
+
+The check matters because the failure it prevents is silent rather than loud:
+weights written into a plain `.cnf` become `cw` comment lines, which a SAT
+solver ignores while cheerfully returning a **non-optimal** model.
 
 ------
 
@@ -776,6 +851,8 @@ wrong, not merely noisy. Details in
 
 | Component | Query | Solver |
 |---|---|---|
+| `solve.sh` | satisfiability | SAT — `kissat` |
+| `map.sh` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` |
 | `solve` (plain `.wff`) | satisfiability | SAT — `kissat` |
 | `solve` with `(option *cnf-format* WCNF)` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*` |
 | `planner.sh` horizon search | satisfiability | SAT — `kissat` |
