@@ -342,8 +342,9 @@ that choice.
 - **WalkSAT with random restart**: run WalkSAT (stochastic local search) from a random initial assignment. This is what the original Alchemy MLN system does, and it's approximately uniform in practice for sparse problems. For planning formulas, mixing is harder because of the tight constraint structure.
 - **UniGen / ApproxMC**: near-uniform samplers based on universal hashing. They give provably near-uniform samples but are slower than WalkSAT. UniGen3 is the current state of the art.
 - **Random-phase SAT**: run kissat many times with different random seeds and random variable-phase initialization. Not provably uniform but often adequate in practice and completely free to implement (just loop over `solve`).
+- **CMSGen** (Golia, Soos, Chakraborty & Meel 2021): the disciplined version of that last idea — a CryptoMiniSat variant that samples by randomising the polarity decisions a CDCL solver makes during search. It offers no uniformity guarantee at all; instead it was *tested* into shape, tuned against **Barbarik** (Chakraborty & Meel 2019), a grey-box tester that decides whether a sampler's distribution is close to uniform, until it passed — and it reports a 420× geometric speed-up over the samplers that do carry guarantees. The reason it is not a FiFO back end is the weights: CMSGen samples *uniformly over models*, so recovering $`P_\theta`$ means importance-reweighting each sample by $`e^{-\mathrm{cost}(x)}`$, and that estimator's variance blows up precisely when the weights are large enough to be worth having. MC-SAT instead folds the weights into the sampling process itself, via the slice step.
 
-**What was implemented.** The third option was rejected on cost grounds: a
+**What was implemented.** The random-phase option was rejected on cost grounds: a
 per-sample process spawn plus a re-parse of the CNF dominates the inner search
 when there are tens of thousands of samples. Instead the *whole* loop — outer
 slice sampling and inner sampler — lives in C, in WalkSAT v58's `-mcsat` mode, so
@@ -610,7 +611,7 @@ For §12 (sampling-based inference):
 - S. Chakraborty, K. S. Meel & M. Y. Vardi (2013). A scalable approximate model counter. *CP 2013*, LNCS 8124, pp. 200–216. (ApproxMC — the universal-hashing counter the UniGen samplers are built on.)
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2015). On parallel scalable uniform SAT witness generation. *TACAS 2015*, LNCS 9035, pp. 304–319. (UniGen.)
 - S. Chakraborty & K. S. Meel (2019). On testing of uniform samplers. *AAAI-19*, 33:7777–7784. (Barbarik — a grey-box tester that decides whether a sampler's distribution is close to uniform, which is what made the next entry possible.)
-- P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising the polarity choices of a CDCL solver. It carries no uniformity guarantee; it was tuned against Barbarik until it passed, and is reported at a 420× geometric speed-up over the guaranteed samplers. The disciplined version of the "random-phase SAT" option in §12's list.)
+- P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising a CDCL solver's polarity choices; see §12.)
 
 For §14 (maximum-term approximation):
 
