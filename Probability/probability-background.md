@@ -607,7 +607,10 @@ For §12 (sampling-based inference):
 
 - H. Poon & P. Domingos (2006). Sound and efficient inference with probabilistic and deterministic dependencies. *AAAI-06*, pp. 458–463. (MC-SAT.)
 - W. Wei, J. Erenrich & B. Selman (2004). Towards efficient sampling: Exploiting random walk strategies. *AAAI-04*, pp. 670–676. (SampleSAT.)
+- S. Chakraborty, K. S. Meel & M. Y. Vardi (2013). A scalable approximate model counter. *CP 2013*, LNCS 8124, pp. 200–216. (ApproxMC — the universal-hashing counter the UniGen samplers are built on.)
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2015). On parallel scalable uniform SAT witness generation. *TACAS 2015*, LNCS 9035, pp. 304–319. (UniGen.)
+- S. Chakraborty & K. S. Meel (2019). On testing of uniform samplers. *AAAI-19*, 33:7777–7784. (Barbarik — a grey-box tester that decides whether a sampler's distribution is close to uniform, which is what made the next entry possible.)
+- P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising the polarity choices of a CDCL solver. It carries no uniformity guarantee; it was tuned against Barbarik until it passed, and is reported at a 420× geometric speed-up over the guaranteed samplers. The disciplined version of the "random-phase SAT" option in §12's list.)
 
 For §14 (maximum-term approximation):
 
