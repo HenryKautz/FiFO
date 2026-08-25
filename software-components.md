@@ -263,7 +263,8 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--pddl-evidence <form>` | Evidence in the PDDL modal language — `always`, `at-end`, `hold-during`, `occur-sometime`, `never`, `at`, `occur-in-order` — over PDDL predicate/action names, translated by `pddl2fifo`. Repeatable. PDDL input only. |
 | `--pddl-evidence-file <f>` | A file of such PDDL modal forms. |
 | `--marginals` | Run weighted model counting instead of planning: print `P(atom \| evidence)` at the working horizon, with no plan search. |
-| `--counter <name>` | With `--marginals`: `maxent` (default, exact enumeration), `mc-sat` (approximate sampling), or an ADDMC binary name/path. |
+| `--counter <name>` | With `--marginals`: `maxent` (default, exact enumeration), `addmc` (the ADDMC counter, located via `$ADDMC` else `addmc` on `PATH`, exactly as `marginals.sh --solver addmc` does), `mc-sat` (approximate sampling), or an explicit ADDMC binary path. |
+| `--addmc-bin <path>` | The ADDMC binary; implies `--counter addmc`. Mirrors `marginals.sh`. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 

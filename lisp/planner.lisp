@@ -242,6 +242,11 @@ wff/scnf.  Progress is printed to STREAM."
                       ;; (the initial state alone); it fixes only variables forced
                       ;; in every model, so it does not change the distribution.
                       ((string-equal counter "mc-sat") (marginals-mcsat msc :unitprop t))
+                      ;; "addmc" names the configured binary -- *addmc*, which is
+                      ;; the ADDMC environment variable else "addmc" on PATH --
+                      ;; so it behaves like --solver addmc does everywhere else.
+                      ;; Any other value is taken as a path or binary name.
+                      ((string-equal counter "addmc") (marginals-addmc msc))
                       (t (marginals-addmc msc :addmc counter)))
                 (return-from plan (values :marginals lo msc))))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).

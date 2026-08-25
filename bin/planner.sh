@@ -47,10 +47,12 @@ usage() {
   echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
-  echo "               exact enumeration), 'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT" >&2
-  echo "               v58 -- one run for all marginals, for horizons where exact counting" >&2
-  echo "               times out; watch the reported sampling efficiency), or an ADDMC" >&2
-  echo "               binary name/path." >&2
+  echo "               exact enumeration), 'addmc' (the ADDMC weighted model counter, found" >&2
+  echo "               via \$ADDMC else on PATH, same as marginals.sh --solver addmc)," >&2
+  echo "               'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT v58 -- one run for" >&2
+  echo "               all marginals, for horizons where exact counting times out; watch the" >&2
+  echo "               reported sampling efficiency), or an explicit ADDMC binary path." >&2
+  echo "  --addmc-bin <path>  the ADDMC binary; implies --counter addmc." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -90,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --pddl-evidence-file) [[ $# -ge 2 ]] || usage; PDDL_EVFILE="$2"; shift 2 ;;
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
+    --addmc-bin) [[ $# -ge 2 ]] || usage; export ADDMC="$2"; COUNTER="addmc"; shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
