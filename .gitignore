@@ -13,3 +13,8 @@ Solvers/
 
 # SatPlan/ is managed manually -- never ignore anything under it
 !SatPlan/**
+
+# ... except macOS turds, which the negation above would otherwise re-include,
+# leaving them permanently untracked-but-listed in git status.  This must come
+# AFTER the negation: git applies the last matching pattern.
+SatPlan/**/.DS_Store
