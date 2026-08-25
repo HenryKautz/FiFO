@@ -370,7 +370,7 @@ wmc.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
-| `--addmc <path>` | ADDMC binary (else `$ADDMC`, else `addmc` on `PATH`). Note the spelling differs from `marginals.sh --addmc-bin`. |
+| `--addmc-bin <path>` | ADDMC binary (else `$ADDMC`, else `addmc` on `PATH`), spelled as in `marginals.sh` and `planner.sh`. `--addmc` is accepted as a deprecated alias. |
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header (1 if absent). |
 | `--epsilon <e>` | ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. |
 | `--evidence <form>` | Condition on a ground FiFO formula, so `Z` becomes the conditioned count. Repeatable. |
@@ -620,7 +620,7 @@ is, where it comes from, and what its build needs.
 |---|---|---|---|---|
 | SAT (feasibility) | `*solver*` | — | `planner.sh --solver`, or `(option *solver* ...)` in a `.wff` | `kissat` on `PATH` |
 | MaxSAT (costs) | `*solver*` (rebound) | — | `WEIGHTED_SOLVER` at the top of `planner.sh`; `(option *solver* tt-glucose)` in a `.wff` | `tt-open-wbo-inc-Glucose4_1` on `PATH` |
-| ADDMC | `*addmc*` | `ADDMC` | `marginals.sh --addmc-bin`, `wmc.sh --addmc` | `addmc` on `PATH` |
+| ADDMC | `*addmc*` | `ADDMC` | `--addmc-bin` (marginals.sh, wmc.sh, planner.sh) | `addmc` on `PATH` |
 | d4 | `*d4*` | `D4` | `marginals.sh --d4-bin` | a `d4v2` checkout beside the FiFO repo: `d4v2/demo/compiler/build/compiler` |
 | WalkSAT (MC-SAT) | `*walksat*` | `WALKSAT` | `marginals.sh --walksat-bin` | a `Walksat` checkout beside the FiFO repo: `Walksat/Walksat_v58_MC-SAT/walksat`; else `walksat` on `PATH` |
 
