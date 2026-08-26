@@ -371,6 +371,62 @@ than pattern-matching. The query set supplies only the *candidates*.
   finish. A harness that runs `max-term` and `d4` on the same file and reports the
   error distribution would turn "approximates the weight half" from an argument
   into a measurement.
+- **The estimator has a resolution ceiling.** Since `logit P(a) = β·Δ_a`, it can
+  take only as many distinct values as there are distinct cost gaps. On pb1, 15
+  atoms produced 7 distinct estimates, and five atoms with true marginals from
+  `0.0176` to `0.2024` all came back as `σ(−2) = 0.1192`
+  ([benchmarks.md](benchmarks.md#max-term-marginals-versus-exact-counting)). This
+  is a property of the encoding's cost structure, so no solver improves it.
+
+### Open problem: characterising when the degeneracy cancels
+
+The error is `log(Ω_a / Ω_{¬a})`, where
+`Ω_S(β) = Σ_{x∈S} e^{−β(cost(x) − c_min(S))}` is the near-optimal mass measured
+relative to *that side's own* minimum. So the question "when is max-term
+trustworthy?" is the question "when do the two polarities have the same shifted
+cost spectrum?" — the same number of solutions at each increment above their
+respective minima. Equivalently: equal excess free energy above the ground state.
+**The atom must shift the cost landscape without reshaping it.**
+
+Four partial answers, in decreasing order of confidence.
+
+**1. Conditional independence is sufficient, and exact.** If fixing the atom
+changes only the cost and not what the rest of the theory can do, the residual
+contributes the same `Ω` to both sides. This is the same factoring identity that
+makes post-hoc priors free: a unit cost is constant across the models where its
+atom is true, so it leaves `c_min` shifted but the spectrum unchanged.
+
+**2. At low temperature the error is a ratio of optimum multiplicities.** As
+`β → ∞`, each `Ω` tends to the number of optimal solutions on its side, so the
+error tends to `log(#optima with a / #optima without a)`. That is *testable*: solve,
+add a blocking clause, re-solve. If the second-best cost is strictly higher on
+both sides, the optimum is unique both ways and the estimate is well conditioned.
+Two extra solves per atom — expensive, but it yields a per-atom confidence flag
+rather than a global guess, and it composes with the `K`-best refinement above,
+which computes the same gap profile for its own purposes.
+
+**3. Symmetry looks like the structural story — conjecture, untested.** Write
+`Ω ≈ N · μ`, distinct solutions times the nuisance multiplicity contributed by
+symmetry (permuting parallel actions, padding, floating fluents). When
+`μ_a = μ_{¬a}` the nuisance cancels and only `N_a/N_{¬a}` survives. That predicts
+what is observed: an atom lying in a **nontrivial orbit of the CNF's automorphism
+group** — "does this load happen at slice 2 or slice 3?" — has its symmetry broken
+on one side only, so `μ` differs and nothing cancels; an atom **fixed by every
+automorphism**, such as a nullary goal predicate `hypI`, has the same `μ` either
+way. This is mechanically checkable with a symmetry tool (BreakID, saucy), and
+would explain the gap between a pb1 action atom and a recognition hypothesis in
+structural terms rather than by appeal to the domain.
+
+**4. Why differencing helps, in the same language.** `recognize.sh` compares
+`c(G,O)` against `c(G,¬O)` at **fixed G**. The nuisance factor `μ` is a property of
+`G`'s plan space, identical on both sides, so it divides out and only the
+observation asymmetry survives. A bare marginal compares two polarity-restricted
+ensembles with no such shared factor, which is why it is the worse-conditioned
+question.
+
+None of this is settled. The exact criterion is solid, the symmetry account is a
+conjecture, and every diagnostic above costs more per atom than the estimate it
+would qualify. The cheapest useful one is the uniqueness probe of (2).
 
 ### References
 

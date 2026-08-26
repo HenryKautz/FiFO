@@ -191,6 +191,19 @@ Individual cases: an atom whose true marginal is `0.236` is reported as `1.000`;
 `0.253` is reported as `0.808`; `0.124` as `0.500`. Determined atoms (exactly 0
 or 1) are recovered exactly, as the method guarantees.
 
+**A resolution ceiling, visible in the same run.** Of the 15 sampled atoms,
+`max-term` produced only **7 distinct values**, and five atoms — whose true
+marginals are `0.1437`, `0.0549`, `0.0176`, `0.1437` and `0.2024` — all came back
+as exactly `0.1192`. That number is `σ(−2)`: one and the same cost gap.
+
+This is a structural limit rather than slow convergence. `logit P(a) = β·Δ_a`, so
+the estimator can take **only as many distinct values as there are distinct cost
+gaps**. With integer action costs and small differences, whole classes of atoms
+collapse onto one estimate while their true marginals stay continuous and
+distinct. It is an independent reason to distrust the numbers wherever the cost
+structure is coarse, quite separate from the degeneracy argument — and it does not
+improve with a better solver, since the gaps are a property of the encoding.
+
 **These figures were re-measured with a solver that proves optimality.** The first
 version of this table used `tt-open-wbo-inc`, which — like every anytime MaxSAT
 solver — reports its best assignment without proving it minimal: on this instance
