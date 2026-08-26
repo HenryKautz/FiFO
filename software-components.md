@@ -325,7 +325,7 @@ marginals.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
-| `--solver <name>` | Back end: `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58). |
+| `--solver <name>` | Back end: `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58), `max-term` (**approximate, and a different quantity** — see below). |
 | `--weighted-only` | Report (and enumerate) only the weighted atoms. Much cheaper when there are many state atoms. Also reveals the internal `(WEIGHTED-FORMULA n)` atoms carrying formula weights. |
 | `--out <file>` | Also write the `(MARGINAL ...)` lines to a file. |
 | `--node-limit <int>` | Search-effort cap: enumeration nodes for `maxent` (default 5 000 000), circuit nodes for `ddnnf` (default 2 000 000). Not accepted by `addmc`/`d4`/`mc-sat`. |
@@ -348,6 +348,13 @@ marginals.sh <file.scnf> [options]
 | `--init-cutoff <n>` | *(mc-sat)* Flips per try for the initial solve of the hard clauses (default `100 × #atoms`), and the budget to repair a SampleSAT endpoint back onto a solution. |
 | `--init-tries <n>` | *(mc-sat)* Random restarts for that initial solve (default 100). |
 | `--no-sat-seed` | *(mc-sat)* Do **not** seed the initial assignment from the CDCL solver. On by default because local search alone cannot reach a model of a structured SatPlan encoding — and a CDCL UNSAT verdict is then a proof, reported at once. |
+| `--query <atom>` | *(max-term)* Atom to report; repeatable, or `all`. **Required** — each atom costs one MaxSAT solve. |
+| `--query-file <f>` | *(max-term)* A file of atoms, one per line. |
+| `--beta <r>` | *(max-term)* Inverse temperature; default `1/scale`. |
+| `--prior <atom>=<p>` | *(max-term)* Log-odds prior. **Replaces** that atom's own weight rather than stacking on it, and costs no re-solving. Repeatable. |
+| `--priors <file>` | *(max-term)* A file of `atom = p` lines. |
+| `--groups auto\|none` | *(max-term)* Detect groups of queried atoms the **theory** makes mutually exclusive and renormalise over each. Default `auto`. |
+| `--verify-groups` | *(max-term)* Additionally *prove* each group by SAT entailment, catching encodings the syntactic scan misses. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 
@@ -355,6 +362,35 @@ marginals.sh <file.scnf> [options]
 `--solver mc-sat` the run also prints the sampler's diagnostics as `;` comments —
 read the **efficiency** and **mixing** lines before the numbers; see
 [Probability/probability.md](Probability/probability.md#approximate-marginals-by-mc-sat-sampling).
+
+**`--solver max-term` answers a different question.** It applies the maximum-term
+approximation ([probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function))
+per atom:
+
+```
+logit P(a) = beta * ( c_min(not a) - c_min(a) )
+```
+
+with each `c_min` a MaxSAT solve, so `1 + n` solves cover `n` atoms (the
+unconstrained optimum already supplies one polarity each). It scales where
+counting cannot — the same trade `recognize.sh` makes — but it approximates what
+the **weights** contribute and discards what the **counting** contributes. On an
+unweighted theory every difference is zero and it returns 0.5 for everything.
+Output is labelled `(MAXTERM-MARGINAL …)` rather than `(MARGINAL …)` so that it
+cannot be mistaken for a Gibbs marginal by eye or by `grep`.
+
+Two things it gets exactly right. A **backbone** atom — one whose opposite
+polarity is UNSAT — is reported as 0 or 1 and flagged `[proved]`. And a group of
+atoms the theory makes **mutually exclusive** is renormalised over, which recovers
+the exact answer where per-atom independence would not: on an unweighted
+exactly-one-of-three theory the ungrouped estimates are `0.5` three times, summing
+to 1.5, while the grouped ones are `1/3` each, matching the exact enumerator.
+Exclusivity is a property of the theory, so it is **detected** from the clauses
+(an at-least-one clause plus the pairwise at-most-one clauses) rather than
+declared in the query — the exact back ends need no such declaration because they
+see the constraints directly. An at-most-one group that is not exhaustive gets a
+virtual "none of them" outcome, so its probabilities sum to less than 1 rather
+than being inflated.
 
 A convenient way to produce the input: `planner.sh <problem.pddl> --stop-after scnf`.
 
@@ -549,6 +585,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-evidence.sh` | `--pddl-evidence`, chiefly `occur-in-order`: behavioral checks (the plan embeds the observed sequence at strictly increasing slices; bad evidence raises its contextual error), not gold diffs — evidence clauses can contain session-varying gensyms. |
 | `tests/run-test-mcsat.sh` | The MC-SAT back end: each case fixes `--seed` and asserts the sampled marginals match the exact `maxent` ones to a tolerance. Skips cleanly (exit 0) when no WalkSAT v58 binary is found. |
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
+| `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
 | `tests/run-test-weight-formula.sh` | Formula-valued `weight`/`probability`: the reified biconditional appears, illegal nesting errors, and maxent learns a formula's weight so `P(φ)` hits its target. |
 
@@ -902,6 +939,7 @@ wrong, not merely noisy. Details in
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
 | `marginals.sh --solver d4` | exact marginals | d4 (structure) + FiFO circuit evaluation |
 | `marginals.sh --solver mc-sat` | approximate marginals | WalkSAT v58 `-mcsat` (+ `kissat` to seed) |
+| `marginals.sh --solver max-term` | max-term pseudo-marginals | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` |
 | `wmc.sh` | partition function `Z` | ADDMC |
 | `learn.sh --method log-odds` | closed-form fit | none |
 | `learn.sh --method maxent` | exact iterative fit | none — built-in enumeration |

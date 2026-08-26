@@ -191,6 +191,25 @@ Returns (values exit-code timed-out-p)."
         (sb-ext:process-wait proc))
       (values (sb-ext:process-exit-code proc) timed-out))))
 
+(defun wcnf-scale-offset (wcnf-file)
+  "Read the 'c weights scaled by S' / 'c weight shift offset M' comment lines a
+weighted .cnf/.wcnf carries (written only when non-trivial) and return (values S
+M), defaulting to 1 and 0.  The true plan cost of a solution is its raw objective
+/ S + M -- so for the usual non-negative integer action costs (S=1, M=0) the raw
+objective already is the true cost; this corrects it when weights were shifted
+(e.g. negative costs from learned weights)."
+  (let ((scale 1) (offset 0))
+    (with-open-file (s wcnf-file :direction :input :if-does-not-exist nil)
+      (when s
+        (let ((*read-eval* nil))
+          (loop for line = (read-line s nil) while line do
+            (let (m)
+              (cond ((setq m (nth-value 1 (cl-ppcre:scan-to-strings "scaled by\\s+(\\S+):" line)))
+                     (setq scale (read-from-string (aref m 0))))
+                    ((setq m (nth-value 1 (cl-ppcre:scan-to-strings "shift offset\\s+(\\S+):" line)))
+                     (setq offset (read-from-string (aref m 0))))))))))
+    (values scale offset)))
+
 (defun solution-lines (file)
   "The last 's', last 'o' and last 'v' lines of a MaxSAT solver's output FILE,
 returned as (values status objective model).  Any is NIL when absent."

@@ -44,6 +44,15 @@ reach of exact counting.
                                 but the Boolean structure is compiled by the external
                                 state-of-the-art d4 (d4v2) compiler -- for instances
                                 too structured for the home-grown compiler
+                        max-term  APPROXIMATE and NOT a Gibbs marginal: the
+                                maximum-term approximation, sigma(beta*(cost with
+                                the atom false - cost with it true)), from 1+n
+                                MaxSAT solves.  Scales where counting cannot, but
+                                it approximates what the WEIGHTS contribute and
+                                discards what the COUNTING contributes -- on an
+                                unweighted theory it returns 0.5 for everything.
+                                Reported as (MAXTERM-MARGINAL ...), deliberately
+                                not (MARGINAL ...).  Requires --query
                         mc-sat  APPROXIMATE: MC-SAT sampling (WalkSAT v58's -mcsat
                                 mode) -- one run gives every marginal, so it scales
                                 to instances the exact back ends cannot count, at
@@ -97,7 +106,26 @@ reach of exact counting.
                       kissat and its model starts the sampler, because local search
                       alone cannot reach a model of a structured (SatPlan) encoding
                       -- and a CDCL UNSAT verdict is then a proof, reported at once
-  --evidence <form>   (addmc/ddnnf/d4/mc-sat) condition on a GROUND FiFO formula: it is
+  --query <atom>      (max-term only) atom to report; repeatable, or 'all' for
+                      every atom.  Required, since the cost is one MaxSAT solve
+                      per atom
+  --query-file <f>    (max-term only) a file of atoms, one per line
+  --beta <r>          (max-term only) inverse temperature; default 1/scale
+  --prior <atom=p>    (max-term only) log-odds prior on an atom.  REPLACES that
+                      atom's own weight rather than stacking on it, and needs no
+                      re-solving, since a unit cost factors out of the
+                      minimisation.  Repeatable
+  --priors <file>     (max-term only) a file of 'atom = p' lines
+  --groups auto|none  (max-term only) detect groups of queried atoms that the
+                      THEORY makes mutually exclusive -- an at-least-one clause
+                      plus the pairwise at-most-one clauses -- and renormalise
+                      over each.  Exclusivity is a property of the theory, so it
+                      is detected, not declared.  Default: auto
+  --verify-groups     (max-term only) additionally PROVE each group's exclusivity
+                      by SAT entailment, catching encodings the syntactic scan
+                      misses (auxiliary-variable at-most-one, or exclusivity that
+                      is entailed rather than stated)
+  --evidence <form>   (addmc/ddnnf/d4/mc-sat/max-term) condition on a GROUND FiFO formula: it is
                       clausified and conjoined with the theory as a hard
                       constraint, so the reported marginals become P(atom | form).
                       Repeatable; multiple --evidence are conjoined.  E.g.
@@ -149,6 +177,15 @@ OUT=""
 NODE_LIMIT=""
 WEIGHTED_ONLY=0
 SOLVER="maxent"
+QUERY=()
+QUERY_FILE=""
+BETA=""
+PRIORS=()
+PRIORS_FILE=""
+# NB: not GROUPS -- bash owns that name (the user's group ids) and silently
+# ignores assignments to it, which made every run see "20" here.
+GROUP_MODE="auto"
+VERIFY_GROUPS=0
 SCALE=""
 EPSILON=""
 EVFILE=""
@@ -175,7 +212,14 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
-    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, ddnnf, d4, or mc-sat)"; SOLVER="$2"; shift 2 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; shift 2 ;;
+    --query)          [[ $# -ge 2 ]] || die "--query needs an argument"; QUERY+=("$2"); shift 2 ;;
+    --query-file)     [[ $# -ge 2 ]] || die "--query-file needs an argument"; QUERY_FILE="$2"; shift 2 ;;
+    --beta)           [[ $# -ge 2 ]] || die "--beta needs an argument"; BETA="$2"; shift 2 ;;
+    --prior)          [[ $# -ge 2 ]] || die "--prior needs an argument"; PRIORS+=("$2"); shift 2 ;;
+    --priors)         [[ $# -ge 2 ]] || die "--priors needs an argument"; PRIORS_FILE="$2"; shift 2 ;;
+    --groups)         [[ $# -ge 2 ]] || die "--groups needs auto or none"; GROUP_MODE="$2"; shift 2 ;;
+    --verify-groups)  VERIFY_GROUPS=1; shift ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
@@ -203,7 +247,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" ]] || die "--solver must be maxent, addmc, ddnnf, d4, or mc-sat, got: $SOLVER"
+[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" || "$SOLVER" == "max-term" ]] || die "--solver must be maxent, addmc, ddnnf, d4, mc-sat or max-term, got: $SOLVER"
+if [[ "$SOLVER" != "max-term" ]]; then
+  [[ ${#QUERY[@]} -eq 0 ]] || die "--query applies to the max-term solver only"
+  [[ -z "$QUERY_FILE" ]]   || die "--query-file applies to the max-term solver only"
+  [[ -z "$BETA" ]]         || die "--beta applies to the max-term solver only"
+  [[ ${#PRIORS[@]} -eq 0 ]] || die "--prior applies to the max-term solver only"
+  [[ -z "$PRIORS_FILE" ]]  || die "--priors applies to the max-term solver only"
+  [[ "$VERIFY_GROUPS" -eq 0 ]] || die "--verify-groups applies to the max-term solver only"
+fi
 if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
   [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--circuit/--save-circuit apply to the ddnnf and d4 solvers only"
 fi
@@ -272,6 +324,66 @@ if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
     --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" \
     --eval "$NODE_EVAL" \
     --eval "(handler-case (progn (ddnnf-marginals $SCNF_ARG $KW) (sb-ext:exit :code 0))
+              (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+fi
+
+if [[ "$SOLVER" == "max-term" ]]; then
+  [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent and ddnnf solvers, not max-term"
+  [[ ${#QUERY[@]} -gt 0 || -n "$QUERY_FILE" ]] || die "max-term needs --query <atom>... or --query all
+  Each atom costs one MaxSAT solve, so the query set is not optional."
+  [[ "$GROUP_MODE" == "auto" || "$GROUP_MODE" == "none" ]] || die "--groups must be auto or none, got: $GROUP_MODE"
+  # max-term asks for minimum COSTS, so it needs a weighted solver.
+  MT_SOLVER="${MAXTERM_SOLVER:-tt-open-wbo-inc-Glucose4_1}"
+  if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
+    die "MaxSAT solver not found: '$MT_SOLVER'
+  max-term computes minimum costs, so it needs a weighted solver, not a SAT one.
+  Install one with:  bin/install-solvers.sh --only tt-open-wbo-inc
+  or set MAXTERM_SOLVER to the binary you want."
+  fi
+  KW=":solver \"$MT_SOLVER\""
+  ALLQ=0
+  for q in ${QUERY[@]+"${QUERY[@]}"}; do [[ "$q" == "all" ]] && ALLQ=1; done
+  if [[ "$ALLQ" -eq 1 ]]; then
+    KW="$KW :all-atoms t"
+  else
+    QL=""
+    for q in ${QUERY[@]+"${QUERY[@]}"}; do QL="$QL $q"; done
+    if [[ -n "$QUERY_FILE" ]]; then
+      [[ -f "$QUERY_FILE" ]] || die "query file not found: $QUERY_FILE"
+      QL="$QL $(grep -v '^[[:space:]]*;' "$QUERY_FILE" | tr '\n' ' ')"
+    fi
+    KW="$KW :query (quote ($QL))"
+  fi
+  [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+  [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ -n "$BETA" ]] && KW="$KW :beta $BETA"
+  [[ "$GROUP_MODE" == "none" ]] && KW="$KW :groups :none"
+  [[ "$VERIFY_GROUPS" -eq 1 ]] && KW="$KW :verify-groups t"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
+  # priors: "atom = p" pairs become an alist ((atom . p) ...)
+  PL=""
+  for pr in ${PRIORS[@]+"${PRIORS[@]}"}; do
+    a="${pr%%=*}"; v="${pr##*=}"
+    [[ "$a" != "$pr" ]] || die "--prior wants <atom>=<probability>, got: $pr"
+    PL="$PL (cons (quote $a) $v)"
+  done
+  if [[ -n "$PRIORS_FILE" ]]; then
+    [[ -f "$PRIORS_FILE" ]] || die "priors file not found: $PRIORS_FILE"
+    while IFS= read -r line; do
+      [[ -z "$line" || "$line" =~ ^[[:space:]]*\; ]] && continue
+      a="${line%%=*}"; v="${line##*=}"
+      PL="$PL (cons (quote $a) $v)"
+    done < "$PRIORS_FILE"
+  fi
+  [[ -n "$PL" ]] && KW="$KW :priors (list $PL)"
+  exec sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
+    --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+    --eval "(load \"$FIFO_LISP/maxterm.lisp\")" \
+    --eval "(handler-case (progn (marginals-maxterm \"$SCNF\" $KW) (sb-ext:exit :code 0))
               (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
 fi
 

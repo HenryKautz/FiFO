@@ -15,6 +15,7 @@
 - [The probability model](#the-probability-model)
 - [MAP inference: the most probable model](#map-inference-the-most-probable-model)
 - [Marginal inference: weights → probabilities](#marginal-inference-weights--probabilities)
+- [Max-term marginals: MaxSAT instead of counting](#max-term-marginals-maxsat-instead-of-counting)
 - [From inference to learning](#from-inference-to-learning)
 - [Weight learning: probabilities → weights](#weight-learning-probabilities--weights)
 - [References](#references)
@@ -34,7 +35,9 @@ in two flavours, one that maximizes and one that sums:
   probabilities. Four *exact* back ends: enumeration, the ADDMC weighted model
   counter, FiFO's own d-DNNF compiler, and the external d4 compiler. Past their
   scale limits there is a fifth, *approximate* one: **MC-SAT** sampling, which
-  gets every marginal from a single MCMC run.
+  gets every marginal from a single MCMC run. A sixth, **max-term**, answers a
+  deliberately different question with MaxSAT instead of counting, for instances
+  past the reach of all of them.
 - **Weight learning (probabilities → weights):** given target marginal
   probabilities for the weighted atoms, recover the integer literal weights
   that realize them. Two implemented estimators: independent log-odds and
@@ -535,6 +538,73 @@ optional — only `--solver mc-sat` uses it — and versions 57 and earlier are
 detected and refused rather than silently ignoring `-mcsat`. Sampling parameters
 (`--samples`, `--burnin`, `--seed`, `--walk-prob`, `--temp`,
 `--samplesat-cutoff`) pass straight through; see `marginals.sh --help`.
+
+------
+
+### Max-term marginals: MaxSAT instead of counting
+
+Every back end above *counts*, exactly or approximately. `--solver max-term` does
+not count at all: it applies the maximum-term approximation
+([probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function))
+to each atom's two polarities,
+
+$$\operatorname{logit} P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)$$
+
+where each $c_{\min}$ is a MaxSAT solve with a unit clause clamping the atom.
+That is Ramírez & Geffner's recognizer with the hypothesis replaced by an atom —
+the same substitution of optimization for counting that makes `recognize.sh`
+affordable, generalised from goal posteriors to arbitrary atoms. Only $1+n$ solves
+are needed for $n$ atoms, since the unconstrained optimum already supplies
+whichever polarity it happens to set.
+
+```sh
+# every atom; --query is required, because each one costs a MaxSAT solve
+bin/marginals.sh problem.scnf --solver max-term --query all
+
+# a few atoms, with a prior on one of them
+bin/marginals.sh problem.scnf --solver max-term --query '(occurs (turn-on s1) 1)' \
+                 --prior '(occurs (turn-on s1) 1)=0.3'
+```
+
+**This is not a Gibbs marginal, and the output says so** — lines are
+`(MAXTERM-MARGINAL …)`, not `(MARGINAL …)`. The dropped degeneracy factor is the
+*asymmetry* in near-optimal multiplicity between the two polarities, so the method
+approximates what the **weights** contribute and discards what the **counting**
+contributes. On an unweighted theory every difference is zero and it returns 0.5
+for every atom, carrying no information at all. Note this fails in the opposite
+regime to MC-SAT, which freezes when the weights are *large*.
+
+**What it gets exactly right.** A backbone atom — one whose opposite polarity is
+UNSAT — comes back as 0 or 1 flagged `[proved]`, not estimated. And a group of
+atoms that the *theory* makes mutually exclusive is renormalised over, recovering
+the exact answer where per-atom independence would not:
+
+| exactly-one-of-three, unweighted | A | B | C | sum |
+|---|---|---|---|---|
+| `--groups none` | 0.5 | 0.5 | 0.5 | 1.5 |
+| `--groups auto` (default) | 0.333 | 0.333 | 0.333 | **1.0** |
+| exact enumeration | 0.333 | 0.333 | 0.333 | 1.0 |
+
+Exclusivity is a property of the theory, so it is **detected** from the clauses —
+an at-least-one clause over queried atoms plus the pairwise at-most-one clauses —
+rather than declared in the query. The exact back ends need no such declaration
+because they see the constraints; only the approximation does, and asking the
+query to repeat what the theory already says would create a second place to be
+wrong. `--verify-groups` proves each group by SAT entailment instead, which also
+catches at-most-one encodings that introduce auxiliary variables. A group that is
+at-most-one but *not* exhaustive gets a virtual "none of them" outcome, so it sums
+to less than 1 rather than being inflated.
+
+**Priors are free.** A unit cost is constant across the models where its atom is
+true, so it factors out of the minimisation: `--prior a=p` **replaces** that
+atom's own weight and is applied as a log-odds shift with **no re-solving**. One
+set of solves therefore supports an entire prior sweep. The limit is that this is
+exact only for the atom the prior is on — its effect on *other* atoms needs the
+weight in the theory and a fresh solve.
+
+Measured against exact enumeration on `test_marginals_reweighted.scnf`: the two
+determined atoms agree exactly (and are proved), and the largest error elsewhere
+is 0.035.
 
 ------
 
