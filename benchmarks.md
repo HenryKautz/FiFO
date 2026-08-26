@@ -227,11 +227,52 @@ Two honest qualifications:
   narrows the set, and incremental MaxSAT (IPAMIR) is the structural fix, since
   the `n` instances differ by one unit clause.
 
-### Where it should still pay
+### Where it does pay: an instance that will not compile
 
-Not measured here, and worth doing: the plan-recognition instances at horizons 6
-and 15, where every weighted model count timed out at a 240 s cap
-([above](#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks))
-while MaxSAT finished in seconds. That is the regime `max-term` was built for,
-and `recognize.sh` already demonstrates the differenced form of it working there.
-The gap in this table is a genuine open item, not an omission of convenience.
+The plan-recognition family, which `benchmarks.md` had already recorded ADDMC
+failing on. IntrusionDetection at H = 6 — **2223 clauses, 450 weighted atoms**:
+
+| | result |
+|---|---|
+| `addmc` (exact) | timed out at a 240 s cap |
+| `d4` (exact), `--weighted-only` | **no result after 8.5 min**, killed; 0 marginals |
+| `max-term` (exact solver), **all 450 atoms** | **38.4 s**, every optimum proved |
+
+Of the 450, 180 come back determined and flagged `[proved]`; 270 are fractional.
+
+The d4 failure is the interesting part, and it is not a size effect. This instance
+is **eight times smaller than pb1**, which d4 compiles in 5.2 s. Watching the
+process shows d4 pinned at 97% CPU inside the **d-DNNF compilation itself** — it
+is not answering queries slowly, it never finishes building the circuit.
+Compilability tracks treewidth, not clause count, and the recognition encodings
+are structurally hostile to it in a way the logistics ones are not.
+
+So the two instances answer different questions:
+
+| | pb1 (logistics) | IntrusionDetection H=6 |
+|---|---|---|
+| clauses | 17 606 | 2 223 |
+| exact counting | **5.2 s** for all 1344 | **does not finish** |
+| max-term | dominated — slower *and* 0.145 mean error | **the only method that returns anything** |
+
+### Reading both halves together
+
+`max-term` is not a general-purpose substitute for counting. On instances that
+compile, it is strictly worse — slower and less accurate — and pb1 shows that
+clearly. Its value is confined to two situations, which the recognition
+benchmarks satisfy simultaneously:
+
+1. **The instance resists compilation**, so exact counting is unavailable at any
+   price. This is a structural property, and not predictable from problem size.
+2. **The query is a ratio or difference in which degeneracy cancels.** This is the
+   more important of the two. A SatPlan encoding is saturated with degeneracy —
+   permuting parallel actions, floating fluents — which is precisely the term
+   `max-term` discards, so a *bare* marginal over a planning atom is badly
+   conditioned (pb1's 0.145). But `recognize.sh` never asks for one: it computes
+   `c(G,¬O) − c(G,O)` *within* a hypothesis, so both sides range over the same
+   goal's plan space, the shared degeneracy cancels, and only the asymmetry
+   survives.
+
+Which is why the differenced form was the right first application and the bare
+marginal is the harder sell: "planning problems" is not the useful category —
+"queries where the degeneracy cancels" is.

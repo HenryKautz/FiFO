@@ -297,12 +297,27 @@ permute, irrelevant fluents float, and enormous numbers of plans share a cost.
 That is exactly the $`\Omega`$ term, and it is exactly what `max-term` discards.
 So the approximation is weakest on the instances FiFO most often produces. And
 the premise that would justify accepting that — "counting will not finish here" —
-should be checked rather than assumed: on LogisticsCosts pb1, d4 compiles all
-1344 weighted marginals in 5.2 s while `max-term` needs an extrapolated 50
-minutes and lands a mean error of 0.145 on the atoms that are not already
-determined ([benchmarks.md](benchmarks.md#max-term-marginals-versus-exact-counting)).
-On that instance the approximation is both slower and worse. It earns its place
-only where the exact back ends genuinely time out.
+has to be checked instance by instance, because it does not follow from problem
+size. Measured ([benchmarks.md](benchmarks.md#max-term-marginals-versus-exact-counting)):
+
+| | pb1 (logistics) | IntrusionDetection H=6 |
+|---|---|---|
+| clauses | 17 606 | 2 223 |
+| exact counting (`d4`) | 5.2 s, all 1344 marginals | **never finishes** — 8.5 min in the compile, killed |
+| `max-term` | dominated: slower, 0.145 mean error | 38.4 s for all 450, every optimum proved |
+
+The *smaller* instance is the one that defeats the compiler, because
+compilability tracks treewidth rather than clause count. So `max-term` is not
+"for planning problems": on a planning problem that compiles it is strictly
+worse, and on one that does not it is the only thing that returns an answer.
+
+The sharper statement is that it suits **queries in which the degeneracy
+cancels**. A bare marginal over a planning atom keeps the full
+$`\Omega_a/\Omega_{\lnot a}`$ and is badly conditioned; `recognize.sh`'s
+difference *within* a hypothesis puts both sides over the same goal's plan space,
+so the shared degeneracy cancels and only the asymmetry survives. That is why the
+differenced form was the right first application and the bare marginal is the
+harder sell.
 
 The compensating strength is that `max-term` is exact where the theory is
 *determined*. A backbone atom, one whose opposite polarity is unsatisfiable, comes
