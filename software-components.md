@@ -254,7 +254,8 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--minslices <int>` | First horizon tried. Default: `pddl2fifo`'s relaxed-planning-graph reachability lower bound (2 for a `.wff`). |
 | `--maxslices <int>` | Last horizon tried. Default: `2 × minslices`. |
 | `--numslices <int>` | Shorthand setting both bounds — solve at exactly this horizon. |
-| `--solver <name>` | The **pure SAT** (feasibility) solver. Default `kissat`. Note this does *not* change the MaxSAT solver. |
+| `--solver <name>` | The **pure SAT** (feasibility) solver. Default `kissat`. Does *not* change the MaxSAT solver — see the next row. |
+| `--weighted-solver <name>` | The MaxSAT solver for the cost-minimization step. Default `tt-open-wbo-inc-Glucose4_1`, which is **anytime**: it returns the best plan found, not a proven optimum. `wmaxcdcl`, `EvalMaxSAT_bin` and `rc2-maxsat.py` are exact and prove there is no cheaper plan. Also settable from the environment as `WEIGHTED_SOLVER`. |
 | `--stop-after wff` | Stop after writing the `.wff` (translation only). |
 | `--stop-after scnf` | Stop after instantiating the `.scnf` at the smallest horizon (or `--numslices`), without solving. With evidence, also leaves `<root>-evidence.scnf`. |
 | `--longer <K>` | For a costed domain, also minimize cost at up to `K` horizons beyond the smallest feasible one and return the cheapest plan found (default 0). A longer horizon can admit a cheaper plan. |
@@ -269,9 +270,10 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 
-**Solvers.** Set at the top of the script: `SAT_SOLVER="kissat"` and
-`WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"`. Only the first has a command-line
-override; changing the MaxSAT solver means editing line 21.
+**Solvers.** `SAT_SOLVER="kissat"` for feasibility and
+`WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"` for the cost step. Both now have
+command-line overrides (`--solver` and `--weighted-solver`), and the weighted one
+also reads the `WEIGHTED_SOLVER` environment variable.
 
 **Output.** The plan (or the marginals) on stdout; all intermediates and the
 `.answer` file next to the problem file.
