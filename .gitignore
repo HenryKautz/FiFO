@@ -11,6 +11,13 @@
 # Solver checkouts and build trees fetched by bin/install-solvers.sh
 Solvers/
 
+# Per-process scratch files from test-scnf (make-scratch-file-root writes
+# "scratch-<universal-time>-<random>.{scnf,cnf,wcnf,map,satout,soln}" into the
+# current directory, so they land wherever solve was run from).  Regenerable;
+# bin/cleanupfifo.sh sweeps them.  Unanchored, since they appear in whichever
+# directory the run started from, not only the repository root.
+scratch-*
+
 # SatPlan/ is managed manually -- never ignore anything under it
 !SatPlan/**
 
@@ -18,3 +25,4 @@ Solvers/
 # leaving them permanently untracked-but-listed in git status.  This must come
 # AFTER the negation: git applies the last matching pattern.
 SatPlan/**/.DS_Store
+SatPlan/**/scratch-*
