@@ -16,6 +16,7 @@
 - [d-DNNF compilation on the LogisticsCosts benchmarks](#d-dnnf-compilation-on-the-logisticscosts-benchmarks)
 - [MAP inference on the plan-recognition benchmarks](#map-inference-on-the-plan-recognition-benchmarks)
 - [Ramírez and Geffner recognition on the plan-recognition benchmarks](#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)
+- [Max-term marginals versus exact counting](#max-term-marginals-versus-exact-counting)
 
 This file collects the measured results referenced throughout the documentation:
 planning horizons and CNF sizes for the example problems, the cost of compiling
@@ -131,3 +132,89 @@ The wall-clock is the `2n` MaxSAT runs for that evidence set. It is essentially 
 The normalization does exactly what it should. On **IntrusionDetection**, where raw MAP never recovered the true broad-espionage goal, R&G puts `hyp0` at or above every rival and sharpens it from a 5-way tie (0.16) to a decisive 0.67 as observations accrue — because reconning taurus/leo/… is *on the optimal path* for the all-hosts goal (`Δ = 0`, complying is free) but *wasteful* for a targeted attack (`Δ < 0`). The evidence-1 structure is itself informative: the five hypotheses that require reconning taurus get `c(¬O) = ∞` (that observation is *necessary*, likelihood 1) and tie at the top, while the five that don't are ranked down. On **BlockWords** the true `hyp16` climbs from a large tie (1 obs) to 2nd (3 obs, behind `hyp10`, whose plan the observed prefix makes strictly cheaper, `Δ = +2`) to tied-first with `hyp15` (5 obs) — the two words that share the observed prefix.
 
 The one-line takeaway: the same `2n` cheapest-plan computations that MAP already does per hypothesis, differenced against a *not-complying* baseline, recover the calibrated recognition posterior that exact model counting could not afford — the practical realization of the `Z_G` normalization discussed in [discussion.md](discussion.md#goal-posteriors-and-the-per-goal-normalization-z_g-issue). Per-hypothesis costs and posteriors for each evidence set are under each instance's `runs/recognize/`.
+
+------
+
+## Max-term marginals versus exact counting
+
+`marginals.sh --solver max-term` replaces weighted model counting with `1 + n`
+MaxSAT solves ([probability.md](Probability/probability.md#max-term-marginals-maxsat-instead-of-counting)).
+The question these numbers answer is when that trade is worth making. On the
+evidence below, **less often than the argument for it suggests.**
+
+All runs on the same machine, `tt-open-wbo-inc-Glucose4_1` as the MaxSAT solver,
+`d4` as the exact reference.
+
+### A small weighted instance
+
+`Probability/test_marginals_reweighted.scnf`, 6 atoms, weights from the learning
+pipeline:
+
+| back end | wall | max error vs exact |
+|---|---|---|
+| `maxent` (exact) | 0.76 s | — |
+| `ddnnf` (exact) | 0.93 s | — |
+| `d4` (exact) | 1.05 s | — |
+| `addmc` (exact) | 1.26 s | — |
+| `max-term` | 2.79 s | **0.035** |
+
+Accurate, and the two determined atoms (`BUY BREAD` = 1, `BUY SPAM` = 0) come
+back exactly and flagged `[proved]`. But it is also the slowest option here, and
+at this size every exact back end finishes instantly.
+
+### A real SatPlan encoding: LogisticsCosts pb1
+
+17 606 clauses, 1344 weighted atoms, at the smallest feasible horizon. Of those
+1344 exact marginals, **1235 are exactly 0** and only **109 are strictly between
+0 and 1** — the instance is overwhelmingly determined.
+
+| | wall | atoms |
+|---|---|---|
+| `d4` (exact), `--weighted-only` | **5.2 s** | all 1344 |
+| `max-term`, 15 atoms | 33.8 s | 15 |
+| `max-term`, extrapolated to all 1344 | **≈ 50 min** | 1344 |
+
+Accuracy on a sample of 15 atoms whose exact marginal is strictly between 0 and
+1 — that is, on the only atoms where the answer is not already obvious:
+
+| statistic | value |
+|---|---|
+| mean absolute error | **0.145** |
+| max absolute error | **0.764** |
+
+Individual cases: an atom whose true marginal is `0.236` is reported as `1.000`;
+`0.253` is reported as `0.808`; `0.124` as `0.500`. Determined atoms (exactly 0
+or 1) are recovered exactly, as the method guarantees.
+
+### Reading the results
+
+On pb1, `max-term` is **both slower and substantially less accurate** than exact
+compilation — roughly 600× slower for a mean error of 0.145. That is not a
+marginal call; on this instance there is no reason to use it.
+
+The explanation is the one [discussion.md](discussion.md#max-term-versus-counting)
+predicts. A SatPlan encoding at a fixed horizon is dominated by *degeneracy* —
+parallel actions permute, irrelevant fluents float, and vast numbers of plans
+share a cost — and degeneracy is precisely the term `max-term` discards. The 109
+non-trivial atoms are non-trivial *because* of counting, so the one part of the
+instance where an answer is wanted is the part the approximation cannot see.
+
+Two honest qualifications:
+
+- **The premise "counting will not finish" did not hold here.** d4 compiled pb1
+  in 5.2 s. The case for `max-term` rests on instances where the exact back ends
+  time out, and pb1 is not one of them, despite being a genuine SatPlan encoding
+  of realistic size. Before reaching for `max-term`, try `d4` and find out.
+- **`1 + n` solves is the real cost driver**, at ~2.3 s per atom here. Querying a
+  handful of atoms is affordable; querying thousands is not. `--weighted-only`
+  narrows the set, and incremental MaxSAT (IPAMIR) is the structural fix, since
+  the `n` instances differ by one unit clause.
+
+### Where it should still pay
+
+Not measured here, and worth doing: the plan-recognition instances at horizons 6
+and 15, where every weighted model count timed out at a 240 s cap
+([above](#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks))
+while MaxSAT finished in seconds. That is the regime `max-term` was built for,
+and `recognize.sh` already demonstrates the differenced form of it working there.
+The gap in this table is a genuine open item, not an omission of convenience.

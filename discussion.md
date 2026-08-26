@@ -15,6 +15,7 @@
 - [Mixing Probabilities and Utilities](#mixing-probabilities-and-utilities)
 - [Handling Sequential Action Evidence](#handling-sequential-action-evidence)
 - [Goal Posteriors and the Per-Goal Normalization (Z_G) Issue](#goal-posteriors-and-the-per-goal-normalization-z_g-issue)
+- [Max-Term versus Counting](#max-term-versus-counting)
 
 ## Mixing Probabilities and Utilities
 
@@ -264,3 +265,103 @@ counterpart; and the exact-WMC normalization remains an open item.
   off-the-shelf classical planners. *Proceedings of the 24th AAAI Conference on
   Artificial Intelligence (AAAI-10)*, 1121–1126. (The `c(G, O) − c(G, ¬O)`
   baseline that removes each goal's intrinsic reachability.)
+
+------
+
+## Max-Term versus Counting
+
+FiFO now has two ways to answer "what is the probability of this atom", and they
+are not two approximations of one quantity. They approximate **different halves**
+of it, which is worth stating plainly because the numbers look alike.
+
+The exact identity behind both is
+
+$$P(a) = \sigma\!\big(\beta\,(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)$$
+
+with $`c_{\min}`$ the cheapest model of each polarity and $`\Omega`$ the
+degeneracy — the number of near-optimal models, weighted by how near-optimal they
+are. The counting back ends (`maxent`, `addmc`, `ddnnf`, `d4`) evaluate the whole
+thing. `max-term` keeps the first term and drops the second.
+
+**So the split is cost versus count.** The first term is what the *weights* say;
+the second is what the *counting* says. A theory whose content is mostly weights
+is one where `max-term` does well; a theory whose content is mostly combinatorial
+structure is one where it says nothing at all. The degenerate case is sharp: on an
+unweighted theory every difference is zero and every atom comes back 0.5, while
+the true marginals are pure counts.
+
+### Why this matters for SatPlan specifically
+
+At a fixed horizon, a planning encoding is *full* of degeneracy: parallel actions
+permute, irrelevant fluents float, and enormous numbers of plans share a cost.
+That is exactly the $`\Omega`$ term, and it is exactly what `max-term` discards.
+So the approximation is weakest on the instances FiFO most often produces. And
+the premise that would justify accepting that — "counting will not finish here" —
+should be checked rather than assumed: on LogisticsCosts pb1, d4 compiles all
+1344 weighted marginals in 5.2 s while `max-term` needs an extrapolated 50
+minutes and lands a mean error of 0.145 on the atoms that are not already
+determined ([benchmarks.md](benchmarks.md#max-term-marginals-versus-exact-counting)).
+On that instance the approximation is both slower and worse. It earns its place
+only where the exact back ends genuinely time out.
+
+The compensating strength is that `max-term` is exact where the theory is
+*determined*. A backbone atom, one whose opposite polarity is unsatisfiable, comes
+back as 0 or 1 with a proof rather than an estimate. Compare MC-SAT's frozen-chain
+failure on the same encodings, which reports every atom as 0 or 1 *wrongly*: both
+produce a column of zeros and ones, and only one of them is entitled to.
+
+### The three approximations are not interchangeable
+
+FiFO now offers three ways to avoid exact counting, and they fail in different
+regimes — which is more useful than it sounds, because it means a disagreement
+between them is informative.
+
+| | approximates | fails when |
+|---|---|---|
+| `mc-sat` | the whole distribution, by sampling | weights are **large** — the chain freezes and stops moving |
+| `max-term` | the weight contribution only | weights are **small** relative to the entropy — returns 0.5 |
+| `recognize.sh` | a ratio of two max-terms | the two sides have asymmetric degeneracy |
+
+The third row is the reason `recognize.sh` works better than its ingredients
+suggest: differencing two max-term estimates *within* a hypothesis cancels the
+shared degeneracy, leaving only the asymmetry. A bare `max-term` marginal has no
+such cancellation, so it is the more exposed of the two.
+
+### Exclusivity is information, not a query parameter
+
+One design point worth recording, because the alternative is tempting. When a
+group of atoms is mutually exclusive, renormalising `max-term`'s estimates over
+the group recovers exactly what independence gets wrong — on an unweighted
+exactly-one-of-three theory, `0.5, 0.5, 0.5` becomes the exact `1/3, 1/3, 1/3`.
+
+That information belongs to the **theory**, not to the query. The exact back ends
+need no declaration of exclusivity because they see the constraints directly; only
+the approximation does. Requiring the query to declare it would duplicate what the
+theory already states and create a second place for it to be wrong. So FiFO
+detects the group from the clauses — an at-least-one clause plus the pairwise
+at-most-one clauses — and `--verify-groups` proves it by SAT entailment rather
+than pattern-matching. The query set supplies only the *candidates*.
+
+### Open issues
+
+- **The degeneracy term is not estimated, only dropped.** `K`-best enumeration
+  would interpolate: take the top `K` models per polarity with blocking clauses
+  and use $`Z_S \approx \sum_{i \le K} e^{-\beta c_i}`$. Since $`\Omega_S \ge 1`$,
+  every `K` gives a *lower bound* on $`Z_S`$, so this converts a biased point
+  estimate into anytime bracketing. `K = 1` is what is implemented today.
+- **Cost is `1 + n` MaxSAT solves**, so a query over thousands of atoms is hours.
+  `--weighted-only` helps; IPAMIR, the incremental MaxSAT interface, is the real
+  answer, since the `n` instances differ by a single unit clause.
+- **Nothing checks the two families against each other** on an instance where both
+  finish. A harness that runs `max-term` and `d4` on the same file and reports the
+  error distribution would turn "approximates the weight half" from an argument
+  into a measurement.
+
+### References
+
+- See [Probability/probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function)
+  for the derivation of the maximum-term approximation and its error, and
+  [§15](Probability/probability-background.md#15-map-inference-the-mode-of-the-distribution)
+  for the mode-versus-marginals distinction it rests on.
+- [notes-from-claude-code.md §5](notes-from-claude-code.md) records the working
+  discussion this section summarises, including the measurements.
