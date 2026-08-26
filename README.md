@@ -94,19 +94,21 @@ Reads the FiFO file "test.wff", instantiates it, and saves the result in symboli
 Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS format CNF file3 "test.cnf". In DIMACS format (the standard input language for all modern SAT solvers), propositions are represented by positive and negative integers. The mapping from symbolic ground atoms to integers is written to the file "test.map". The file "test.cnf" may then be sent to a SAT solver. When the output file name is not given explicitly and the problem is written in one of the WCNF formats (see Optimization), the default extension is `.wcnf` instead of `.cnf`. `propositionalize` returns the pathname of the cnf/wcnf file it wrote.
 
 **(satisfy "test.cnf" &key satoutfile)**
-The solver named by the variable **sat-solver** (default "kissat") is called on "test.cnf" and the output of the solver is captured in the file "test.out".  Satisfy returns 'SAT, 'UNSAT, or nil if the solver fails or its output contains neither the strings SAT nor UNSAT.
+The solver named by the variable **`*solver*`** (default `"kissat"`) is called on "test.cnf" and the output is captured in "test.out".  The run is bounded by **`*solver-timeout*`** (default 600 s; `0`, `-1` or `nil` for no limit), enforced with `SIGTERM` so an anytime MaxSAT solver still prints its best solution.  When **`*preprocessor*`** names a MaxPre 2 binary, the weighted CNF is preprocessed first and the model reconstructed afterwards.  Satisfy returns `'SAT`, `'UNSAT`, or `nil` when the solver gave no verdict.  The verdict is taken from the DIMACS `s` line first, falling back to a scan for the whole words SATISFIABLE / UNSATISFIABLE (or a line that is exactly SAT or UNSAT).  It deliberately does **not** look for the substring "SAT": every MaxSAT solver's banner contains it, so a run that printed a banner and no verdict would otherwise be read as satisfiable.
 
 **(interpret "test.out" &key mapfile solnfile (sort-by-time t))**  
 Reads in the output of a SAT solver "test.out" and a mapping file (`:mapfile`), and creates an answer file (`:solnfile`) containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. By default (`:sort-by-time t`) the results are sorted by the last argument to each predicate, which is often used to specify a time index; pass `:sort-by-time nil` to sort alphabetically instead.
 
 The MaxSAT output format used by solvers such as `tt-open-wbo-inc` is also understood: the satisfiability status is taken from the `s` line, and the model is given as a single `v` line that is a bit string of length *numvar* (one `0`/`1` per variable) rather than a list of signed literals. When the output contains one or more `o <number>` (objective/cost) lines, the value from the last such line is written to "test.answer" as an atom of the form `(*objective* <number>)`, placed before the symbolic atoms.
 
-**(solve "test.wff" &key solnfile staticfile)**
-Reads in the FiFO file "test.wff" and an optional static facts file (`:staticfile`; `:obsfile` is accepted as a deprecated synonym), solves it using the **sat-solver** and writes the results in symbolic form to the answer file (`:solnfile`).  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
+**(solve "test.wff" &key solnfile staticfile solver cnf-format preprocessor preprocessor-techniques timeout)**
+Reads in the FiFO file "test.wff" and an optional static facts file (`:staticfile`; `:obsfile` is accepted as a deprecated synonym), solves it and writes the results in symbolic form to the answer file (`:solnfile`).  If "test.wff" contains no **prove** formula, the sat solver will be called a single time.  If it does contain **prove**, then the sat solver may be invoked several times as described in the section below on Answer Extraction for Deduction.  The format of "test.answer" will be one of:
 
 - If the formula does not contain a prove form and:
   - Is satisfiable: SAT followed by the positive ground literals in a satisying model.
   - Is unsatisfiable: UNSAT.
+
+The solver keywords bind the corresponding globals for the call only, so they need not be set beforehand: `:solver` (abbreviations are resolved, so `:solver "nuwls"` works), `:cnf-format` (`CNF`, `WCNF` or `WCNF-OLD`), `:preprocessor`, `:preprocessor-techniques` and `:timeout`.  An `(option ...)` form inside the `.wff` runs while the file is parsed, so it still has the last word.
 
 - If the formula contains a prove form and
   - Is satisfiable: COUNTEREXAMPLE followed by the positive ground literals in a counterexample (satisfying model).
@@ -779,7 +781,8 @@ Schema BNF
     
     <option> = (option <option name> <option value>)
     
-    <option name> = *compact-encoding* | *tracing* | *cnf-format* | *solver* | *solver-abbreviations* | *satplan-numslices*
+    <option name> = *compact-encoding* | *tracing* | *cnf-format* | *solver* | *solver-abbreviations*
+                  | *solver-timeout* | *preprocessor* | *preprocessor-techniques* | *satplan-numslices*
     
     <option value> = <numeric expression> | cnf | wcnf-old | wcnf
     

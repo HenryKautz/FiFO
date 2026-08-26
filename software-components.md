@@ -636,6 +636,7 @@ need. The interpreter's own API (`parse`, `instantiate`, `propositionalize`,
 | `plearn.lisp` | The PDDL weight-learning orchestrator behind `learn-pddl.sh`. |
 | `wmc.lisp` | The ADDMC bridge: `(wmc ...)` and `(marginals-addmc ...)`, plus the MCC weighted-CNF writer and the evidence clausifier the other back ends reuse. |
 | `ddnnf.lisp` | FiFO's own d-DNNF compiler and circuit evaluator, the d4 importer, and circuit persistence. |
+| `maxterm.lisp` | The max-term bridge: `(marginals-maxterm ...)` — `1+n` MaxSAT solves per query, exclusive-group detection from the theory, and post-hoc log-odds priors. Answers a different question from the counting back ends, and labels its output `(MAXTERM-MARGINAL ...)` to say so. |
 | `mcsat.lisp` | The MC-SAT bridge: `(marginals-mcsat ...)`, the WCNF writer in MLN sign convention, CDCL seeding, and the diagnostics. |
 | `satplan.wff` | The domain-independent SatPlan axioms — a *runtime* dependency of every generated planning `.wff`. |
 
