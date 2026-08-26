@@ -306,3 +306,166 @@ The cost is engineering: a per-sample process spawn is what drove the whole loop
 into C, so this means linking CryptoMiniSat as a library inside the WalkSAT v58
 binary. Worth measuring against simply raising `--samplesat-cutoff` before
 building anything.
+
+------
+
+## 5. Max-term marginals: generalising `recognize.sh` beyond planning
+
+`recognize.sh` computes a posterior using cheapest-plan (MaxSAT) calls only —
+the maximum-term approximation of §14, applied to a restricted set. The question
+was whether the same move gives **marginals for FiFO generally**, not just goal
+posteriors for planning.
+
+It does, with a clean derivation and two sharp limits.
+
+### The formula
+
+A marginal is a ratio of partition functions over the two polarities of an atom,
+so substituting the §14 decomposition `log Z_S = −β·c_min(S) + log Ω_S`:
+
+```
+P(a) = σ( β·(c_min(¬a) − c_min(a))  +  log(Ω_a / Ω_¬a) )
+```
+
+Dropping the degeneracy ratio leaves the max-term marginal
+
+```
+P(a) ≈ σ( β · (c_min(¬a) − c_min(a)) )
+```
+
+which is literally the Ramírez–Geffner formula with the hypothesis replaced by an
+atom, `c_min(a)` and `c_min(¬a)` being MaxSAT solves with a unit clause clamping
+the atom true or false. In graphical-model terms these are **max-marginals**,
+with MaxSAT playing the role max-product belief propagation plays there.
+
+### Cost: `1 + n` solves
+
+Not `2n`. Solve the unconstrained MaxSAT once for `x*` and `c_min`; for each atom
+whichever polarity `x*` already has *is* `c_min`, so only the opposite clamp needs
+a solve. That is exactly the shape of `marginals-addmc` (one run for `Z`, one per
+clamped atom).
+
+The scaling caveat is real: `recognize.sh` does `2n` calls for `n` = 10–21
+hypotheses, whereas marginals over all atoms means `n` in the thousands. Two
+mitigations already exist — `--weighted-only`, and **IPAMIR**, the incremental
+MaxSAT interface flagged in `notes-from-claude-cloud.md` for exactly this shape of
+problem (many instances differing by one unit clause).
+
+### No hypothesis set, and no disjointness
+
+Unlike `recognize.sh`, nothing needs declaring. `{a, ¬a}` is automatically an
+exhaustive, mutually exclusive partition, so `Z = Z_a + Z_¬a` holds for every atom
+and each marginal **self-normalises**. `recognize.sh` needs disjointness only
+because it builds one *categorical* distribution with a shared denominator — and
+even there disjointness is an assumption about the domain ("exactly one goal is
+the agent's"), not something the encoding enforces.
+
+Consequence: which atoms you query is a reporting choice, not a modelling one.
+Max-term marginals are local; R&G posteriors are global, since dropping a
+hypothesis changes every other one.
+
+**What is lost** is coherence. The estimates are pseudo-marginals, not guaranteed
+consistent with any joint. Measured on an unweighted exactly-one-of-three theory:
+
+| | A | B | C | sum |
+|---|---|---|---|---|
+| exact (enumeration) | 0.333 | 0.333 | 0.333 | **1.0** |
+| max-term | 0.5 | 0.5 | 0.5 | **1.5** |
+
+Both clamps of every atom are satisfiable at cost 0, so `Δ = 0` and `σ(0) = 0.5`
+three times over. So disjointness is not a *requirement* inherited from
+`recognize.sh` — it is **information that would otherwise be discarded**.
+Renormalising a known-exclusive group recovers `1/3` each, exactly. That argues
+for optional exclusive groups rather than a required hypothesis set; FiFO's
+existing `gid` tie-group field on `(PROBABILITY …)` lines is a natural hook,
+though it currently means shared *weight* rather than mutual exclusion.
+
+### The degeneracy blindness, stated sharply
+
+The dropped `log(Ω_a/Ω_¬a)` is the *asymmetry* in near-optimal multiplicity
+between the polarities, so symmetric atoms come out well — that is why the
+differencing in R&G works. But on an **unweighted** theory every `Δ_a` is 0 and
+the method returns 0.5 for everything, carrying literally no information.
+
+It approximates the part of the distribution coming from **weights** and discards
+the part coming from **counting**. Worth contrasting with MC-SAT, which degrades
+when weights are *large* (the chain freezes); this degrades when weights are
+*small* relative to the entropy. They fail in opposite regimes.
+
+Backbone atoms are the compensating strength: if clamping `a` false is UNSAT then
+`P(a) = 1` **exactly, with a proof** — unlike MC-SAT's frozen chain, which reports
+0/1 wrongly.
+
+### Priors are already weights — and post-hoc priors are exact
+
+A unit cost `θ` on `a` is constant across `{a true}`, so it factors out of the
+minimisation: `c_min(a) = θ + c⁰_min(a)`. Hence
+
+```
+logit P(a) ≈ β·(c⁰_min(¬a) − c⁰_min(a))  −  βθ
+              ╰──────── evidence ────────╯   ╰prior╯
+```
+
+a log-odds sum of prior and evidence. So the `1 + n` MaxSAT calls can be run once
+with priors zeroed and **any** prior applied afterwards as a log-odds shift,
+exactly, with no re-solving. Prior sweeps are free.
+
+The limit, measured on `(or a b)` with a cost of `log 3` on `A`:
+
+| | P(A) | P(B) |
+|---|---|---|
+| prior **in the theory** | 0.2500 | **0.7500** |
+| prior applied **post-hoc** | 0.2500 | **0.5000** |
+| exact | 0.4000 | 0.8000 |
+
+A prior on `A` shifts `P(A)` separably but its effect on *other* atoms is not
+recoverable post-hoc, because `θ` is constant across `{A true}` and not across
+`{B true}`. So: exact for the atom it is on, wrong for everything else.
+
+### The circularity, which max-term does not fix
+
+FiFO's `(probability a p)` is a target marginal **with respect to the whole
+theory**, so converting it to a weight is itself the inverse problem — and needs
+marginals. On `(or a b)` with a target `P(A) = 0.4`:
+
+| estimator | learned weight | |
+|---|---|---|
+| log-odds (closed form) | 0.4055 | `log(1.5)` — the isolated-atom / empty-theory answer |
+| maxent (enumerates) | 1.0986 | `log(3)` — the value that actually yields 0.4 |
+
+A factor of 2.7 apart on a two-atom theory. This is pre-existing rather than
+something the max-term idea introduces: it is exactly why FiFO ships two
+estimators, and `propositionalize` already refuses a `.scnf` containing
+`(PROBABILITY …)` forms, so the choice must be made upstream.
+
+Inverting the log-odds identity, `θ_a = Δ⁰_a − logit(p)/β`, looks like a way out
+— but here `Δ⁰ = 0`, so it returns `log(1.5)`, **identical to log-odds and wrong
+in the same way**. The counting content that makes the true answer `log 3` is
+invisible to it. Max-term would beat log-odds only where the theory already
+carries weights enough that `Δ⁰ ≠ 0` says something.
+
+What it does buy is **self-consistency**: learn with the max-term oracle, query
+with max-term, and the round trip is exact by construction, because the biases are
+the same bias. That is defensible provided "P" is understood to denote the
+max-term pseudo-marginal rather than the Gibbs marginal. Three coherent stacks,
+and the middle one does not exist yet:
+
+- **exact everywhere** — maxent learning + addmc/d4/ddnnf querying;
+- **cheap everywhere** — log-odds learning + max-term querying, self-consistent
+  only if the inversion also uses max-term;
+- **mixed** — what one would do by accident, with no guarantee at all.
+
+### If it gets built
+
+`marginals.sh --solver max-term`, reusing `rw--read-scnf`, the wcnf writer, the
+scale/offset correction (`wcnf-scale-offset`), `*solver-timeout*`, and
+`marginals-addmc`'s clamp-and-resolve loop; `β = 1/scale` with a `--beta`
+override as `recognize.sh` has. A `K`-best refinement is the natural tunable
+version — enumerate the top `K` models per side with blocking clauses and use
+`Z_S ≈ Σ_{i≤K} e^{−β c_i}`. `K = 1` is max-term, `K → ∞` is exact, and since
+`Ω_S ≥ 1` every `K` gives a **lower bound** on `Z_S`, turning a biased point
+estimate into anytime bracketing.
+
+It should be documented as answering a *different question* rather than as
+approximating the same one — much as `recognize.sh` is presented as R&G's
+recognizer rather than as approximate WMC.
