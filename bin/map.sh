@@ -40,7 +40,11 @@ CNF, handed to a MaxSAT solver, and the model translated back into symbolic
 literals.
 
   --solver <name>     MaxSAT solver to run (default: $SOLVER).
-                      Abbreviations work: tt-glucose, tt-intelsat, nuwls.
+                      Abbreviations: tt-glucose, tt-intelsat, nuwls (anytime --
+                      best solution found, no proof of optimality), and
+                      evalmaxsat (exact).  wmaxcdcl and rc2-maxsat.py are also
+                      EXACT: they prove optimality and print s OPTIMUM FOUND, so
+                      the reported cost is the true minimum rather than a bound.
                       A plain SAT solver is rejected -- see solve.sh
   --old-format        write the classic "p wcnf <v> <c> <top>" format instead of
                       the 2022 format with 'h' lines.  Needed by older solvers

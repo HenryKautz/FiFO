@@ -18,7 +18,11 @@ set -euo pipefail
 
 # --- Solver configuration ---------------------------------------------------
 SAT_SOLVER="kissat"                            # pure SAT solver (feasibility)
-WEIGHTED_SOLVER="tt-open-wbo-inc-Glucose4_1"   # weighted/MaxSAT solver (costs)
+# Weighted/MaxSAT solver used for the cost-minimization step.  The default is an
+# ANYTIME solver: it returns the best plan it found, not a proven optimum.  Set
+# WEIGHTED_SOLVER (or edit here) to an exact one -- wmaxcdcl, EvalMaxSAT_bin, or
+# bin/rc2-maxsat.py -- to get a proof that no cheaper plan exists.
+WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-tt-open-wbo-inc-Glucose4_1}"
 # ----------------------------------------------------------------------------
 
 usage() {
@@ -28,6 +32,9 @@ usage() {
   echo "  Searches horizons for the smallest plan.  --minslices defaults to a reachability" >&2
   echo "  lower bound (2 for a .wff); --maxslices defaults to 2 * minslices." >&2
   echo "  --solver overrides the pure SAT (feasibility) solver; default: $SAT_SOLVER." >&2
+  echo "  --weighted-solver <name>  the MaxSAT solver for the cost step; default:" >&2
+  echo "               $WEIGHTED_SOLVER (anytime -- best plan found, not a proven" >&2
+  echo "               optimum).  wmaxcdcl / EvalMaxSAT_bin / rc2-maxsat.py are exact." >&2
   echo "  --stop-after wff   stops after writing the .wff (translation only, no solving)." >&2
   echo "  --stop-after scnf  stops after instantiating the .scnf at the smallest horizon" >&2
   echo "                     (or --numslices), without solving; with evidence, also leaves" >&2
@@ -87,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --maxslices) [[ $# -ge 2 ]] || usage; MAXSLICES="$2"; shift 2 ;;
     --numslices) [[ $# -ge 2 ]] || usage; MINSLICES="$2"; MAXSLICES="$2"; shift 2 ;;  # fixed horizon
     --solver)    [[ $# -ge 2 ]] || usage; SAT_SOLVER="$2";  shift 2 ;;
+    --weighted-solver) [[ $# -ge 2 ]] || usage; WEIGHTED_SOLVER="$2"; shift 2 ;;
     --stop-after) [[ $# -ge 2 ]] || usage; STOP_AFTER="$2"; shift 2 ;;
     --longer)    [[ $# -ge 2 ]] || usage; LONGER="$2";    shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || usage; EVIDENCE_FORMS+=("$2"); shift 2 ;;

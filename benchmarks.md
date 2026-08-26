@@ -268,6 +268,32 @@ So the two instances answer different questions:
 | exact counting | **5.2 s** for all 1344 | **does not finish** |
 | max-term | dominated — slower *and* 0.145 mean error | **the only method that returns anything** |
 
+### Exact MaxSAT back ends compared
+
+`max-term` needs a solver that proves optimality. Two are available; on the
+recognition instance above, all 450 atoms:
+
+| solver | wall | agreement |
+|---|---|---|
+| `rc2-maxsat.py` (PySAT RC2, Python) | **39.2 s** | — |
+| `wmaxcdcl` (native C++, MSE 2023) | **95.0 s** | identical on all 450 |
+
+Both prove every optimum and produce bit-identical marginals, so this is purely a
+speed result — and it is the opposite of what the implementation languages
+suggest. RC2 is **2.4× faster** than the native solver here.
+
+The plausible reason is the shape of the workload rather than the solvers'
+quality: `max-term` issues `1 + n` solves against one instance, each differing
+from the last by a single unit clause, so per-invocation startup and the cost of
+re-reading the wcnf dominate, and core-guided search suits these small clamped
+problems. That is a hypothesis; a single large hard instance is a different
+question and might well reverse the order. It is also the workload that
+incremental MaxSAT (IPAMIR) exists for, which would change the comparison
+entirely.
+
+`rc2-maxsat.py` is therefore the default, on measurement rather than on the
+assumption that C++ beats Python.
+
 ### Reading both halves together
 
 `max-term` is not a general-purpose substitute for counting. On instances that

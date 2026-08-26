@@ -11,7 +11,10 @@
 (defvar *solver-abbreviations*
   '(("tt-glucose" "tt-open-wbo-inc-Glucose4_1")
     ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")
-    ("nuwls" "nuwls-c")))
+    ("nuwls" "nuwls-c")
+    ;; Exact (complete) MaxSAT: unlike the anytime solvers above, these prove
+    ;; optimality and print "s OPTIMUM FOUND".
+    ("evalmaxsat" "EvalMaxSAT_bin")))
 
 ;; Wall-clock limit in seconds for a single solver run.  NIL, 0 or -1 all mean
 ;; "no limit".

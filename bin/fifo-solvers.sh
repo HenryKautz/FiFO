@@ -27,7 +27,7 @@
 _FIFO_SAT_PATTERNS='kissat cadical minisat glucose lingeling cryptominisat picosat mallob painless march plingeling treengeling'
 
 # Known-MaxSAT patterns: weighted CNF input, minimize the total weight.
-_FIFO_MAXSAT_PATTERNS='tt-open-wbo open-wbo tt-glucose tt-intelsat nuwls spb-maxsat maxhs uwrmaxsat evalmaxsat cashwmaxsat loandra rc2 maxino qmaxsat'
+_FIFO_MAXSAT_PATTERNS='tt-open-wbo open-wbo tt-glucose tt-intelsat nuwls spb-maxsat maxhs uwrmaxsat evalmaxsat wmaxcdcl maxcdcl cashwmaxsat loandra rc2 maxino qmaxsat'
 
 # _fifo_resolve_solver <name> -> the executable NAME actually refers to.
 # Mirrors *solver-abbreviations* in lisp/FiFO.lisp, which the Lisp side resolves
@@ -38,6 +38,7 @@ _fifo_resolve_solver() {
     tt-glucose)  echo "tt-open-wbo-inc-Glucose4_1" ;;
     tt-intelsat) echo "tt-open-wbo-inc-IntelSATSolver" ;;
     nuwls)       echo "nuwls-c" ;;
+    evalmaxsat)  echo "EvalMaxSAT_bin" ;;
     *)           echo "${1:-}" ;;
   esac
 }

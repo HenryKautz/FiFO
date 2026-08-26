@@ -32,7 +32,7 @@ SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
 LOG_DIR="$SRC_ROOT/logs"
 BINDIR="$HOME/bin"
 
-ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat addmc d4 walksat maxpre)
+ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl addmc d4 walksat maxpre)
 
 FORCE=0
 DRY=0
@@ -92,6 +92,7 @@ solver_desc() {
     tt-open-wbo-inc)  echo "anytime weighted MaxSAT -- cost minimization (MAP inference)" ;;
     nuwls-c)          echo "anytime weighted MaxSAT -- NuWLS local search over tt-open-wbo-inc" ;;
     evalmaxsat)       echo "EXACT weighted MaxSAT -- core-guided, terminates with a proof of optimality" ;;
+    wmaxcdcl)         echo "EXACT weighted MaxSAT -- branch-and-bound with clause learning (MSE 2023)" ;;
     maxpre)           echo "MaxPre 2 -- WCNF preprocessor (run in front of any MaxSAT solver)" ;;
     addmc)            echo "ADD-based weighted model counter -- exact marginals and Z" ;;
     d4)               echo "d4v2 decision-DNNF compiler -- exact marginals on structured instances" ;;
@@ -105,6 +106,7 @@ solver_repo() {
     tt-open-wbo-inc)  echo "https://github.com/HenryKautz/tt-open-wbo-inc.git" ;;
     nuwls-c)          echo "https://github.com/shaowei-cai-group/NuWLS-c.git" ;;
     evalmaxsat)       echo "https://github.com/FlorentAvellaneda/EvalMaxSAT.git" ;;
+    wmaxcdcl)         echo "https://github.com/jordicollcaballero/WMaxCDCL_Paper.git" ;;
     maxpre)           echo "https://bitbucket.org/coreo-group/maxpre2.git" ;;
     addmc)            echo "https://github.com/HenryKautz/ADDMC.git" ;;
     d4)               echo "https://github.com/HenryKautz/d4v2.git" ;;
@@ -132,6 +134,7 @@ solver_dir() {
     tt-open-wbo-inc)  echo "tt-open-wbo-inc" ;;
     nuwls-c)          echo "NuWLS-c" ;;
     evalmaxsat)       echo "EvalMaxSAT" ;;
+    wmaxcdcl)         echo "WMaxCDCL" ;;
     maxpre)           echo "maxpre2" ;;
     addmc)            echo "ADDMC" ;;
     d4)               echo "d4v2" ;;
@@ -146,6 +149,7 @@ solver_bins() {
     tt-open-wbo-inc)  echo "tt-open-wbo-inc-Glucose4_1 tt-open-wbo-inc-IntelSATSolver" ;;
     nuwls-c)          echo "nuwls-c" ;;
     evalmaxsat)       echo "EvalMaxSAT_bin" ;;
+    wmaxcdcl)         echo "wmaxcdcl" ;;
     maxpre)           echo "maxpre" ;;
     addmc)            echo "addmc" ;;
     d4)               echo "d4" ;;
@@ -196,6 +200,8 @@ solver_prereq() {
     evalmaxsat)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
+    wmaxcdcl)
+      command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
     addmc)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
@@ -251,6 +257,18 @@ solver_build() {
       # out-of-source cmake build with nothing to fetch.
       ( cd "$dir" && mkdir -p build && cd build && brew_env cmake .. && brew_env make -j ) || return 1
       install_bin "$dir/build/main/EvalMaxSAT_bin" EvalMaxSAT_bin ;;
+
+    wmaxcdcl)
+      # Build the MaxSAT-Evaluation-2023 submission under WMaxCDCL/code, not the
+      # WMaxCDCL-flags tree, which is the same solver with ablation switches for
+      # the paper's experiments.
+      #
+      # The README says "make rs".  That is the STATIC target, and macOS ships no
+      # static libc, so it cannot link there -- use the dynamic release target
+      # instead and rename the result.  On Linux either works; "r" is used on both
+      # so the build is the same everywhere.
+      ( cd "$dir/WMaxCDCL/code/simp" && brew_env make r ) || return 1
+      install_bin "$dir/WMaxCDCL/code/simp/wmaxcdcl_release" wmaxcdcl ;;
 
     maxpre)
       # Same treatment: main.cpp includes boost/iostreams/filter/gzip.hpp.

@@ -123,7 +123,7 @@ in the install directory, since FiFO does not search `PATH` for it.
 | Option | Meaning |
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
-| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `addmc`, `d4`, `walksat`, `maxpre`. |
+| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `addmc`, `d4`, `walksat`, `maxpre`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -781,6 +781,32 @@ On LogisticsCosts pb1 it is also *faster* than the anytime solver (12.4 s agains
 *Installation:* `pip install python-sat`. No build step; `make install` copies the
 wrapper along with the other scripts.
 
+**WMaxCDCL** — *native, exact, and the fastest of the exact options here*
+
+- Source: https://github.com/jordicollcaballero/WMaxCDCL_Paper (the MaxSAT
+  Evaluation 2023 submission, under `WMaxCDCL/code`)
+- `install-solvers.sh --only wmaxcdcl`, installed as `wmaxcdcl`
+
+Branch-and-bound with clause learning, from Coll et al., *Solving Weighted
+Maximum Satisfiability with Branch and Bound and Clause Learning*. Complete, so
+it prints `s OPTIMUM FOUND` alongside `o` and a bit-string `v` line — exactly the
+three lines FiFO parses.
+
+*Measured against `rc2-maxsat.py`* on 450 max-term solves: identical marginals,
+but **2.4× slower** (95.0 s against 39.2 s), so RC2 remains the default. The
+likely cause is the workload — `1 + n` solves of one instance differing by a
+single unit clause, where per-invocation startup dominates — rather than solver
+quality; a single large hard instance could well reverse it. See
+[benchmarks.md](benchmarks.md#exact-maxsat-back-ends-compared).
+
+*Installation note, and it differs from the README:* the README says `make rs`,
+which is the **static** target. macOS ships no static libc, so that cannot link
+there; `install-solvers.sh` uses `make r` (dynamic release) instead and renames
+the result. The repository also ships prebuilt binaries, but they are
+`ELF x86-64 GNU/Linux` and unusable on macOS — the source build is the only route.
+The `WMaxCDCL-flags/` tree in the same repository is the same solver with ablation
+switches for the paper's experiments; the installer builds the plain submission.
+
 **EvalMaxSAT**
 
 - Source: https://github.com/FlorentAvellaneda/EvalMaxSAT
@@ -959,7 +985,7 @@ wrong, not merely noisy. Details in
 | Component | Query | Solver |
 |---|---|---|
 | `solve.sh` | satisfiability | SAT — `kissat` |
-| `map.sh` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` |
+| `map.sh` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` (anytime); `wmaxcdcl`, `EvalMaxSAT_bin`, `rc2-maxsat.py` (exact) |
 | `solve` (plain `.wff`) | satisfiability | SAT — `kissat` |
 | `solve` with `(option *cnf-format* WCNF)` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*` |
 | `planner.sh` horizon search | satisfiability | SAT — `kissat` |
@@ -972,7 +998,7 @@ wrong, not merely noisy. Details in
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
 | `marginals.sh --solver d4` | exact marginals | d4 (structure) + FiFO circuit evaluation |
 | `marginals.sh --solver mc-sat` | approximate marginals | WalkSAT v58 `-mcsat` (+ `kissat` to seed) |
-| `marginals.sh --solver max-term` | max-term pseudo-marginals | **exact** MaxSAT — `rc2-maxsat.py` (default); an anytime solver is selectable but unproven |
+| `marginals.sh --solver max-term` | max-term pseudo-marginals | **exact** MaxSAT — `rc2-maxsat.py` (default) or `wmaxcdcl`; an anytime solver is selectable but unproven |
 | `wmc.sh` | partition function `Z` | ADDMC |
 | `learn.sh --method log-odds` | closed-form fit | none |
 | `learn.sh --method maxent` | exact iterative fit | none — built-in enumeration |
