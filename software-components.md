@@ -263,8 +263,9 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--pddl-evidence <form>` | Evidence in the PDDL modal language — `always`, `at-end`, `hold-during`, `occur-sometime`, `never`, `at`, `occur-in-order` — over PDDL predicate/action names, translated by `pddl2fifo`. Repeatable. PDDL input only. |
 | `--pddl-evidence-file <f>` | A file of such PDDL modal forms. |
 | `--marginals` | Run weighted model counting instead of planning: print `P(atom \| evidence)` at the working horizon, with no plan search. |
-| `--counter <name>` | With `--marginals`: `maxent` (default, exact enumeration), `addmc` (the ADDMC counter, located via `$ADDMC` else `addmc` on `PATH`, exactly as `marginals.sh --solver addmc` does), `mc-sat` (approximate sampling), or an explicit ADDMC binary path. |
-| `--addmc-bin <path>` | The ADDMC binary; implies `--counter addmc`. Mirrors `marginals.sh`. |
+| `--counter <name>` | With `--marginals`: the same back ends `marginals.sh --solver` offers — `maxent` (default, exact enumeration), `addmc`, `ddnnf`, `d4` (the other exact counters), `mc-sat` (approximate sampling). Binaries are located exactly as in `marginals.sh`: `$ADDMC` / `$D4` else `PATH`. An unrecognised name is an error; a path is still accepted as an ADDMC binary, deprecated in favour of `--addmc-bin`. |
+| `--addmc-bin <path>` | The ADDMC binary; implies `--counter addmc`. |
+| `--d4-bin <path>` | The d4 compiler binary; implies `--counter d4`. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 

@@ -49,10 +49,13 @@ usage() {
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
   echo "               exact enumeration), 'addmc' (the ADDMC weighted model counter, found" >&2
   echo "               via \$ADDMC else on PATH, same as marginals.sh --solver addmc)," >&2
+  echo "               'ddnnf' (FiFO's own d-DNNF compiler) or 'd4' (the external d4" >&2
+  echo "               compiler, same circuit machinery)," >&2
   echo "               'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT v58 -- one run for" >&2
   echo "               all marginals, for horizons where exact counting times out; watch the" >&2
-  echo "               reported sampling efficiency), or an explicit ADDMC binary path." >&2
+  echo "               reported sampling efficiency).  An unknown name is an error." >&2
   echo "  --addmc-bin <path>  the ADDMC binary; implies --counter addmc." >&2
+  echo "  --d4-bin <path>     the d4 compiler binary; implies --counter d4." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -93,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     --addmc-bin) [[ $# -ge 2 ]] || usage; export ADDMC="$2"; COUNTER="addmc"; shift 2 ;;
+    --d4-bin)    [[ $# -ge 2 ]] || usage; export D4="$2";    COUNTER="d4";    shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -146,6 +150,7 @@ PLANNER="$FIFO_LISP/planner.lisp"
 MAXENT="$FIFO_LISP/maxent.lisp"      # loaded only for --marginals (weighted model counting)
 WMC="$FIFO_LISP/wmc.lisp"            #   "
 MCSAT="$FIFO_LISP/mcsat.lisp"        #   "  (--counter mc-sat)
+DDNNF="$FIFO_LISP/ddnnf.lisp"        #   "  (--counter ddnnf | d4)
 SATPLAN="$FIFO_LISP/satplan.wff"
 
 # The (include ...) path written into a generated wff is computed relative to the
@@ -180,7 +185,7 @@ COUNTER_KW=""
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
 [[ "$MARGINALS" -eq 1 ]] && EVALS+=( --eval "(load \"$MAXENT\")" --eval "(load \"$WMC\")" \
-                                     --eval "(load \"$MCSAT\")" )
+                                     --eval "(load \"$MCSAT\")" --eval "(load \"$DDNNF\")" )
 EVALS+=( --eval "(load \"$PLANNER\")" )
 EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"

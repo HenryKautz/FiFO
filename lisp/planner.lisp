@@ -157,10 +157,12 @@ MARGINALS switches from planning to inference: instead of searching for a plan,
 the problem (conjoined with any evidence) is instantiated once at the working
 horizon and handed to weighted model counting, printing P(atom | evidence) for
 each atom.  COUNTER names the model counter: \"maxent\" (default) is the built-in
-exact enumeration; \"mc-sat\" is APPROXIMATE MC-SAT sampling (one WalkSAT v58 run
-for all the marginals -- for horizons where exact counting times out; check the
-reported sampling efficiency); any other value is the ADDMC binary (name or path)
-to shell out to.
+exact enumeration; \"addmc\", \"ddnnf\" and \"d4\" are the other exact counters
+(ADDMC, FiFO's own d-DNNF compiler, and the external d4 compiler); \"mc-sat\" is
+APPROXIMATE MC-SAT sampling (one WalkSAT v58 run for all the marginals -- for
+horizons where exact counting times out; check the reported sampling efficiency).
+An unrecognised name is an error; a path is still taken as an ADDMC binary, for
+which --addmc-bin is the clearer spelling.
 
 STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
 PDDL translation, or the input itself for a .wff), and :SCNF returns after
@@ -245,9 +247,20 @@ wff/scnf.  Progress is printed to STREAM."
                       ;; "addmc" names the configured binary -- *addmc*, which is
                       ;; the ADDMC environment variable else "addmc" on PATH --
                       ;; so it behaves like --solver addmc does everywhere else.
-                      ;; Any other value is taken as a path or binary name.
+                      ;; The exact circuit counters need ddnnf.lisp, loaded by planner.sh.
                       ((string-equal counter "addmc") (marginals-addmc msc))
-                      (t (marginals-addmc msc :addmc counter)))
+                      ((string-equal counter "ddnnf") (ddnnf-marginals msc))
+                      ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4))
+                      ;; A path is still taken as an ADDMC binary, which is how
+                      ;; this option used to select ADDMC at all.  Kept working,
+                      ;; but --addmc-bin says what it means.
+                      ((find #\/ counter) (marginals-addmc msc :addmc counter))
+                      ;; Anything else is a mistake, not a binary.  The old
+                      ;; catch-all sent it to ADDMC, so "--counter d4" tried to
+                      ;; run d4 AS an ADDMC and a typo became "no such binary".
+                      (t (error "unknown counter ~S -- expected maxent, addmc, ddnnf, d4 or mc-sat~@
+                                 (a path is still accepted as an ADDMC binary; --addmc-bin is clearer)"
+                                counter)))
                 (return-from plan (values :marginals lo msc))))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).
             (loop for n from lo to hi until found do
