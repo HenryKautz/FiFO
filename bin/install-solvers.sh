@@ -32,7 +32,7 @@ SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
 LOG_DIR="$SRC_ROOT/logs"
 BINDIR="$HOME/bin"
 
-ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl addmc d4 walksat maxpre)
+ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl rc2 addmc d4 walksat maxpre)
 
 FORCE=0
 DRY=0
@@ -73,10 +73,14 @@ Prerequisites: git, make, and a C/C++ compiler for all of them; cmake for addmc
 and d4.  On macOS, d4 additionally needs Homebrew with 'brew install gcc gmp
 boost cmake' -- its build uses the GNU toolchain, not Apple clang.
 
+Most entries are a git clone plus a build; 'rc2' is instead 'pip install
+python-sat', since bin/rc2-maxsat.py ships with FiFO and only the library it
+wraps can be missing.  It is included because it is the DEFAULT solver for
+marginals.sh --solver max-term.
+
 Not covered here: the alternative solvers listed in software-components.md that
-FiFO does not drive directly (Mallob, Painless, MaxHS) or that install through a
-package manager (RC2 via 'pip install python-sat', CP-SAT via 'pip install
-ortools').
+FiFO does not drive directly (Mallob, Painless, MaxHS, CP-SAT via
+'pip install ortools').
 EOF
 }
 
@@ -93,6 +97,7 @@ solver_desc() {
     nuwls-c)          echo "anytime weighted MaxSAT -- NuWLS local search over tt-open-wbo-inc" ;;
     evalmaxsat)       echo "EXACT weighted MaxSAT -- core-guided, terminates with a proof of optimality" ;;
     wmaxcdcl)         echo "EXACT weighted MaxSAT -- branch-and-bound with clause learning (MSE 2023)" ;;
+    rc2)              echo "EXACT weighted MaxSAT -- PySAT's RC2, the DEFAULT for --solver max-term" ;;
     maxpre)           echo "MaxPre 2 -- WCNF preprocessor (run in front of any MaxSAT solver)" ;;
     addmc)            echo "ADD-based weighted model counter -- exact marginals and Z" ;;
     d4)               echo "d4v2 decision-DNNF compiler -- exact marginals on structured instances" ;;
@@ -107,6 +112,7 @@ solver_repo() {
     nuwls-c)          echo "https://github.com/shaowei-cai-group/NuWLS-c.git" ;;
     evalmaxsat)       echo "https://github.com/FlorentAvellaneda/EvalMaxSAT.git" ;;
     wmaxcdcl)         echo "https://github.com/jordicollcaballero/WMaxCDCL_Paper.git" ;;
+    rc2)              echo "(pip) python-sat" ;;
     maxpre)           echo "https://bitbucket.org/coreo-group/maxpre2.git" ;;
     addmc)            echo "https://github.com/HenryKautz/ADDMC.git" ;;
     d4)               echo "https://github.com/HenryKautz/d4v2.git" ;;
@@ -135,6 +141,7 @@ solver_dir() {
     nuwls-c)          echo "NuWLS-c" ;;
     evalmaxsat)       echo "EvalMaxSAT" ;;
     wmaxcdcl)         echo "WMaxCDCL" ;;
+    rc2)              echo "" ;;
     maxpre)           echo "maxpre2" ;;
     addmc)            echo "ADDMC" ;;
     d4)               echo "d4v2" ;;
@@ -150,6 +157,7 @@ solver_bins() {
     nuwls-c)          echo "nuwls-c" ;;
     evalmaxsat)       echo "EvalMaxSAT_bin" ;;
     wmaxcdcl)         echo "wmaxcdcl" ;;
+    rc2)              echo "" ;;
     maxpre)           echo "maxpre" ;;
     addmc)            echo "addmc" ;;
     d4)               echo "d4" ;;
@@ -172,6 +180,14 @@ solver_have() {
       help="$("$bin" -help </dev/null 2>&1 || true)"
       case "$help" in *-mcsat*) return 0 ;; esac
       HAVE_NOTE="$bin has no -mcsat (v57 or earlier)"
+      return 1 ;;
+    rc2)
+      # bin/rc2-maxsat.py ships with FiFO; what can be missing is the library it
+      # wraps.  This is the default solver for --solver max-term, so a plain
+      # "install all the solvers" run has to cover it or that back end is broken
+      # out of the box.
+      python3 -c "import pysat.examples.rc2" >/dev/null 2>&1 && return 0
+      HAVE_NOTE="python-sat is not installed (bin/rc2-maxsat.py cannot run)"
       return 1 ;;
     d4)
       # *d4* has no PATH fallback: it reads $D4, else a sibling d4v2 checkout.
@@ -202,6 +218,10 @@ solver_prereq() {
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
     wmaxcdcl)
       command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
+    rc2)
+      command -v python3 >/dev/null 2>&1 || missing="$missing python3"
+      command -v pip3 >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1 \
+        || missing="$missing pip3" ;;
     addmc)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
@@ -257,6 +277,12 @@ solver_build() {
       # out-of-source cmake build with nothing to fetch.
       ( cd "$dir" && mkdir -p build && cd build && brew_env cmake .. && brew_env make -j ) || return 1
       install_bin "$dir/build/main/EvalMaxSAT_bin" EvalMaxSAT_bin ;;
+
+    rc2)
+      # A pip package rather than a build; nothing is cloned.
+      ( python3 -m pip install --quiet python-sat ) || return 1
+      python3 -c "import pysat.examples.rc2" >/dev/null 2>&1 \
+        || { echo "python-sat installed but pysat.examples.rc2 will not import" >&2; return 1; } ;;
 
     wmaxcdcl)
       # Build the MaxSAT-Evaluation-2023 submission under WMaxCDCL/code, not the
@@ -432,7 +458,9 @@ for s in "${SELECTED[@]}"; do
   fi
 
   dir="$SRC_ROOT/$(solver_dir "$s")"
-  if ! clone_or_update "$(solver_repo "$s")" "$dir" "$(solver_branch "$s")"; then
+  if [[ -z "$(solver_dir "$s")" ]]; then
+    dir=""                      # pip package: nothing to clone
+  elif ! clone_or_update "$(solver_repo "$s")" "$dir" "$(solver_branch "$s")"; then
     warn "clone failed"
     record "$s" failed "clone failed"
     continue
@@ -449,6 +477,9 @@ for s in "${SELECTED[@]}"; do
   if solver_build "$s" "$dir" >"$log" 2>&1; then
     installed=""
     for b in $(solver_bins "$s"); do installed="$installed $BINDIR/$b"; done
+    # A pip entry installs no binary of its own -- name the package instead of
+    # printing an empty list.
+    [[ -z "$installed" ]] && installed=" $(solver_repo "$s")"
     info "${G}installed:${N}${installed}"
     record "$s" installed "${installed# }"
   else

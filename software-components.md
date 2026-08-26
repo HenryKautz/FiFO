@@ -123,7 +123,7 @@ in the install directory, since FiFO does not search `PATH` for it.
 | Option | Meaning |
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
-| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `addmc`, `d4`, `walksat`, `maxpre`. |
+| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `rc2`, `addmc`, `d4`, `walksat`, `maxpre`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -148,7 +148,7 @@ failed.
 
 Prerequisites are checked *before* cloning, so a missing tool is reported as a
 one-line "missing build prerequisites: cmake" rather than a wall of compiler
-errors. All of them need `git`, `make`, and a C/C++ compiler; `addmc` and `d4`
+errors. All of them need `git`, `make`, and a C/C++ compiler, except `rc2`, which needs `python3` and `pip`; `addmc` and `d4`
 also need `cmake`; `nuwls-c` needs GMP and `maxpre` needs Boost (both found via
 the Homebrew prefix, which the script puts on `CPATH`/`LIBRARY_PATH`); on macOS `d4` additionally needs Homebrew with
 `brew install gcc gmp boost cmake`, because its build uses the GNU toolchain
@@ -778,8 +778,11 @@ their difference is meaningless. `marginals.sh` counts unproven solves and warns
 On LogisticsCosts pb1 it is also *faster* than the anytime solver (12.4 s against
 33.8 s for the same 15 atoms), since it stops once it has a proof.
 
-*Installation:* `pip install python-sat`. No build step; `make install` copies the
-wrapper along with the other scripts.
+*Installation:* `install-solvers.sh --only rc2`, which runs `pip install
+python-sat` — the one entry that is a package rather than a clone-and-build, since
+the wrapper itself ships with FiFO and only the library it wraps can be missing.
+It is in the installer precisely because it is max-term's default: a run that
+installed everything else and skipped this one would leave that back end broken.
 
 **WMaxCDCL** — *native, exact, and the fastest of the exact options here*
 
