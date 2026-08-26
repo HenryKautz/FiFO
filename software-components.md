@@ -35,12 +35,17 @@
 FiFO is a finite-domain first-order language that compiles to propositional CNF.
 Everything in the system is a stage of one pipeline. The front half is shared;
 after the `.scnf` it forks three ways, according to which of three questions is
-being asked of the theory.
+being asked of the theory. One arm runs backwards: weight learning consumes a
+`.scnf` and produces source, so it loops over the top of the pipeline rather
+than down it.
 
 ```
-  .pddl ──pddl2fifo──▶ .wff ──instantiate──▶ .scnf
-                                             │
-    ┌────────────────────────┬───────────────┴───────────────┐
+                        ┌──────────────────────┬─── learn ◀───────┐
+                        │ weighted .wff        │ reweighted .scnf │ fit weights to match
+                        ▼                      ▼                  │ the (PROBABILITY ...)
+  .pddl ──pddl2fifo──▶ .wff ──instantiate──▶ .scnf ───────────────┘
+                                               │
+    ┌────────────────────────┬─────────────────┴─────────────┐
     │ SATISFIABILITY         │ MAP / minimum cost            │ PROBABILITIES
     │ is there a model?      │ which model is best?          │ how likely is an atom?
     ▼                        ▼                               ▼
@@ -76,6 +81,14 @@ defines it.
 
 (The solver names in the diagram are the common choices, not the whole list —
 [Solvers and external tools](#solvers-and-external-tools) has them all.)
+
+The loop across the top is `learn.sh`. It reads a `.scnf` whose
+`(PROBABILITY literal p gid)` lines state what the marginals *should* be, fits
+costs that hit those targets, and writes the result back **upstream**: a
+reweighted `.scnf`, and with `--wff` a weighted copy of the source `.wff` too.
+Both re-enter the pipeline at the stage they name, so a learned theory is solved,
+optimized, and queried by exactly the machinery above — learning changes the
+numbers on the clauses, never the shape of the pipeline.
 
 ### The files
 
