@@ -13,6 +13,7 @@
 ## Table of Contents
 
 - [What the pieces are](#what-the-pieces-are)
+  - [The files](#the-files) · [Which script runs which part](#which-script-runs-which-part)
 - [Conventions shared by every script](#conventions-shared-by-every-script)
 - [The scripts](#the-scripts)
   - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [fifo-answer.sh](#fifo-answersh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
@@ -32,34 +33,85 @@
 ## What the pieces are
 
 FiFO is a finite-domain first-order language that compiles to propositional CNF.
-Everything in the system is a stage of one pipeline, and every script is a driver
-that runs some prefix of it:
+Everything in the system is a stage of one pipeline. The front half is shared;
+after the `.scnf` it forks three ways, according to which of three questions is
+being asked of the theory.
 
 ```
- .pddl ──pddl2fifo──▶ .wff ──instantiate──▶ .scnf ──propositionalize──▶ .cnf / .wcnf
-                                              │                              │
-                                              │                          solver
-                                              │                              │
-                    marginals / wmc / learn ◀─┘                          .satout
-                    (read the .scnf directly)                                │
-                                                                     interpret ──▶ .answer
+  .pddl ──pddl2fifo──▶ .wff ──instantiate──▶ .scnf
+                                             │
+    ┌────────────────────────┬───────────────┴───────────────┐
+    │ SATISFIABILITY         │ MAP / minimum cost            │ PROBABILITIES
+    │ is there a model?      │ which model is best?          │ how likely is an atom?
+    ▼                        ▼                               ▼
+    propositionalize         propositionalize                the back ends read the .scnf
+    *cnf-format* CNF         *cnf-format* WCNF               directly -- no DIMACS stage,
+    │                        │                               no propositionalize
+    ▼                        ▼                               │
+    .cnf + .map              .wcnf + .map                    ├─ maxent    exact, in Lisp
+    │                        │    ▲                          ├─ ddnnf     exact, in Lisp
+    │                        │    └─ MaxPre 2 (optional)     ├─ addmc     exact, external
+    │                        │       preprocess/reconstruct  ├─ d4        exact, external
+    ▼                        ▼                               ├─ mc-sat    sampling
+    SAT solver               MaxSAT solver                   └─ max-term  1+n MaxSAT runs
+    kissat                   anytime  tt-open-wbo-inc,       │
+    │                                 nuwls-c                │
+    │                        exact    wmaxcdcl, rc2          ▼
+    │                        │                               (MARGINAL <atom> <p>)  or
+    └───▶ .satout ◀──────────┘                               (MAXTERM-MARGINAL <atom> <p>)
+               │
+           interpret
+               │
+               ▼
+       .soln / .answer
 ```
+
+The middle lane is the one that is easy to get wrong, because the fork is not
+automatic: `solve` chooses the format from `*cnf-format*` and the solver from
+`*solver*`, with nothing cross-checking them, so a weighted theory left at the
+default `CNF` writes its weights as `cw` comment lines that a SAT solver ignores
+— and returns a valid but **non-optimal** model. That is what `solve.sh` and
+`map.sh` exist to prevent: one driver per question, each fixing the format that
+defines it.
+
+(The solver names in the diagram are the common choices, not the whole list —
+[Solvers and external tools](#solvers-and-external-tools) has them all.)
+
+### The files
 
 - **`.wff`** — FiFO source: options, domain declarations, formulas, `weight` /
   `probability` forms.
 - **`.scnf`** — *symbolic* CNF: ground `(OR ...)` clauses plus `(WEIGHT literal w)`
-  and `(PROBABILITY literal p gid)` lines. This is the interchange format the
-  probabilistic tools read.
+  and `(PROBABILITY literal p gid)` lines. The interchange format the
+  probabilistic tools read, and the last stage that still names atoms.
 - **`.cnf` / `.wcnf`** — DIMACS for an external solver, plus a `.map` file giving
-  the integer ↔ symbolic-atom correspondence.
+  the integer ↔ symbolic-atom correspondence. The weighted forms also carry
+  `c weights scaled by S` / `c weight shift offset M` comments, since DIMACS
+  requires positive integer weights and the true cost is `objective / S + M`.
 - **`.satout` → `.soln` / `.answer`** — raw solver output, then its translation
   back into symbolic literals.
 
-Three questions can be asked of a weighted theory, and they use different solvers:
-**satisfiability** (SAT), **the most probable model** (MaxSAT — see
+### Which script runs which part
+
+| Script | Stages it runs | Produces |
+|---|---|---|
+| [`solve.sh`](#solvesh) | instantiate → propositionalize (**CNF**) → SAT solver → interpret | `.answer`: `SAT` + true atoms, `UNSAT`, or for a `prove` form `PROVEN` + bindings / `NOANSWER` / `COUNTEREXAMPLE`. Printed with `;` commentary; strip those and it is the file verbatim |
+| [`map.sh`](#mapsh) | instantiate → propositionalize (**WCNF**) → *[MaxPre preprocess]* → MaxSAT solver → *[reconstruct]* → interpret | `.answer` with `(*OBJECTIVE* N)` and the minimum-cost model; also prints the **true cost** `N / scale + offset` |
+| [`planner.sh`](#plannersh) | pddl2fifo → *(per horizon)* instantiate → propositionalize → SAT; then re-solve the smallest feasible horizon in WCNF if the domain has costs | the plan and its cost, plus `.wff`, `.scnf`, `.cnf`/`.wcnf`, `.map`, `.satout`, `.answer` beside the problem. With `--marginals`, marginals at the working horizon instead of a plan |
+| [`recognize.sh`](#recognizesh) | drives `planner.sh` `2n` times (comply / not-comply per hypothesis) | `summary.tsv` — costs, likelihood, prior, posterior per hypothesis — and the argmax on stdout |
+| [`marginals.sh`](#marginalssh) | reads the `.scnf` **directly**; no DIMACS stage except inside `max-term`, which writes its own wcnf | `(MARGINAL <atom> <p>)` lines, or `(MAXTERM-MARGINAL ...)` for `--solver max-term`; `--out` also writes them to a file |
+| [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC | `(WMC <Z>)`, the partition function |
+| [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
+| [`learn-pddl.sh`](#learn-pddlsh) | pddl2fifo → instantiate → learn → rewrite the domain | a `.pddl` domain with each `:probability` replaced by the learned `:cost` (and a problem file when preferences or fluent costs carry targets) |
+| [`install-solvers.sh`](#install-solverssh) | none — bootstrap | solver binaries in `~/bin`; checkouts under `Solvers/` |
+| [`cleanupfifo.sh`](#cleanupfifosh) | none — housekeeping | deletes `.scnf .cnf .wcnf .map .satout .soln .answer` |
+
+Three questions, three solver families: **satisfiability** (SAT), **the most
+probable model** (MaxSAT — see
 [MAP inference](Probability/probability.md#map-inference-the-most-probable-model)),
-and **probabilities** (weighted model counting, or sampling). The
-[Solvers](#solvers-and-external-tools) section below catalogs all of them.
+and **probabilities** (weighted model counting, sampling, or the max-term
+approximation). The [Solvers](#solvers-and-external-tools) section catalogs all of
+them.
 
 ------
 
@@ -986,6 +1038,9 @@ wrong, not merely noisy. Details in
 ------
 
 ### Which component uses which solver
+
+[Which script runs which part](#which-script-runs-which-part) gives the same
+scripts by pipeline stage and output; this table gives them by solver.
 
 | Component | Query | Solver |
 |---|---|---|
