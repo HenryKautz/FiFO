@@ -123,7 +123,7 @@ in the install directory, since FiFO does not search `PATH` for it.
 | Option | Meaning |
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
-| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `addmc`, `d4`, `walksat`, `maxpre`. |
+| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `addmc`, `d4`, `walksat`, `maxpre`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -354,6 +354,7 @@ marginals.sh <file.scnf> [options]
 | `--prior <atom>=<p>` | *(max-term)* Log-odds prior. **Replaces** that atom's own weight rather than stacking on it, and costs no re-solving. Repeatable. |
 | `--priors <file>` | *(max-term)* A file of `atom = p` lines. |
 | `--groups auto\|none` | *(max-term)* Detect groups of queried atoms the **theory** makes mutually exclusive and renormalise over each. Default `auto`. |
+| `--maxsat-bin <path>` | *(max-term)* The MaxSAT solver. Default `bin/rc2-maxsat.py`, which is **exact** and terminates with a proof. An anytime solver may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
 | `--verify-groups` | *(max-term)* Additionally *prove* each group by SAT entailment, catching encodings the syntactic scan misses. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
@@ -764,6 +765,37 @@ on `CPATH`/`LIBRARY_PATH` for the build.
 solver meant to be stopped with `SIGTERM`, on which it prints its best solution.
 See `*solver-timeout*` in the [README](README.md#solver-time-limits).
 
+**rc2-maxsat.py** — *FiFO's exact MaxSAT wrapper, and the default for `max-term`*
+
+A thirty-line wrapper in `bin/` around PySAT's RC2, giving it the plain
+command-line interface the rest of FiFO expects: one wcnf path in, `o` / `s` / `v`
+lines out. RC2 is **core-guided and complete**, so it prints `s OPTIMUM FOUND` —
+which the anytime solvers never do.
+
+That guarantee is not decoration for `--solver max-term`: the estimator is a
+*difference* of two minimum costs, so two unproven upper bounds do not cancel and
+their difference is meaningless. `marginals.sh` counts unproven solves and warns.
+On LogisticsCosts pb1 it is also *faster* than the anytime solver (12.4 s against
+33.8 s for the same 15 atoms), since it stops once it has a proof.
+
+*Installation:* `pip install python-sat`. No build step; `make install` copies the
+wrapper along with the other scripts.
+
+**EvalMaxSAT**
+
+- Source: https://github.com/FlorentAvellaneda/EvalMaxSAT
+- `install-solvers.sh --only evalmaxsat`
+
+Core-guided exact MaxSAT (OLL over CaDiCaL), top-three in the weighted exact
+category of recent MaxSAT Evaluations. All dependencies are vendored, so it is a
+plain out-of-source `cmake` build with nothing to fetch.
+
+*Caveat, measured:* the resulting binary **segfaults on macOS** — on a
+three-clause weighted instance, and on a real FiFO wcnf after printing several
+improving `o` lines. The build reports no errors. It is kept in the installer
+because it is likely fine on Linux, but `rc2-maxsat.py` is the exact solver FiFO
+defaults to.
+
 **RC2 via PySAT**
 
 - Install: `pip install python-sat` (PyPI: https://pypi.org/project/python-sat/)
@@ -940,7 +972,7 @@ wrong, not merely noisy. Details in
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
 | `marginals.sh --solver d4` | exact marginals | d4 (structure) + FiFO circuit evaluation |
 | `marginals.sh --solver mc-sat` | approximate marginals | WalkSAT v58 `-mcsat` (+ `kissat` to seed) |
-| `marginals.sh --solver max-term` | max-term pseudo-marginals | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` |
+| `marginals.sh --solver max-term` | max-term pseudo-marginals | **exact** MaxSAT — `rc2-maxsat.py` (default); an anytime solver is selectable but unproven |
 | `wmc.sh` | partition function `Z` | ADDMC |
 | `learn.sh --method log-odds` | closed-form fit | none |
 | `learn.sh --method maxent` | exact iterative fit | none — built-in enumeration |

@@ -14,6 +14,7 @@
 
 set -euo pipefail
 
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
 
 print_usage() {
@@ -121,6 +122,13 @@ reach of exact counting.
                       plus the pairwise at-most-one clauses -- and renormalise
                       over each.  Exclusivity is a property of the theory, so it
                       is detected, not declared.  Default: auto
+  --maxsat-bin <p>    (max-term only) the MaxSAT solver.  Default: bin/rc2-maxsat.py,
+                      which is EXACT (core-guided RC2) and terminates with a proof
+                      of optimality.  An anytime solver such as
+                      tt-open-wbo-inc-Glucose4_1 may be given instead, but it
+                      offers NO optimality guarantee -- and because max-term is a
+                      DIFFERENCE of two minimum costs, two unproven upper bounds
+                      do not cancel.  Unproven solves are counted and warned about
   --verify-groups     (max-term only) additionally PROVE each group's exclusivity
                       by SAT entailment, catching encodings the syntactic scan
                       misses (auxiliary-variable at-most-one, or exclusivity that
@@ -185,6 +193,7 @@ PRIORS_FILE=""
 # NB: not GROUPS -- bash owns that name (the user's group ids) and silently
 # ignores assignments to it, which made every run see "20" here.
 GROUP_MODE="auto"
+MAXSAT_BIN=""
 VERIFY_GROUPS=0
 SCALE=""
 EPSILON=""
@@ -220,6 +229,7 @@ while [[ $# -gt 0 ]]; do
     --priors)         [[ $# -ge 2 ]] || die "--priors needs an argument"; PRIORS_FILE="$2"; shift 2 ;;
     --groups)         [[ $# -ge 2 ]] || die "--groups needs auto or none"; GROUP_MODE="$2"; shift 2 ;;
     --verify-groups)  VERIFY_GROUPS=1; shift ;;
+    --maxsat-bin)     [[ $# -ge 2 ]] || die "--maxsat-bin needs an argument"; MAXSAT_BIN="$2"; SOLVER="max-term"; shift 2 ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
@@ -333,12 +343,17 @@ if [[ "$SOLVER" == "max-term" ]]; then
   Each atom costs one MaxSAT solve, so the query set is not optional."
   [[ "$GROUP_MODE" == "auto" || "$GROUP_MODE" == "none" ]] || die "--groups must be auto or none, got: $GROUP_MODE"
   # max-term asks for minimum COSTS, so it needs a weighted solver.
-  MT_SOLVER="${MAXTERM_SOLVER:-tt-open-wbo-inc-Glucose4_1}"
+  # An EXACT solver is the right default here.  max-term is a difference of two
+  # minima, so an anytime solver's upper bounds do not cancel; rc2-maxsat.py
+  # proves optimality, tt-open-wbo-inc does not.  Both remain selectable.
+  MT_SOLVER="${MAXSAT_BIN:-${MAXTERM_SOLVER:-$SELF_DIR/rc2-maxsat.py}}"
   if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
     die "MaxSAT solver not found: '$MT_SOLVER'
-  max-term computes minimum costs, so it needs a weighted solver, not a SAT one.
-  Install one with:  bin/install-solvers.sh --only tt-open-wbo-inc
-  or set MAXTERM_SOLVER to the binary you want."
+  max-term computes minimum costs, so it needs a weighted solver, not a SAT one,
+  and one that PROVES optimality -- a difference of two upper bounds is not an
+  upper bound on anything.
+  The default, bin/rc2-maxsat.py, needs:  pip install python-sat
+  Or pass --maxsat-bin <path> to choose another."
   fi
   KW=":solver \"$MT_SOLVER\""
   ALLQ=0

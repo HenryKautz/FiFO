@@ -32,7 +32,7 @@ SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
 LOG_DIR="$SRC_ROOT/logs"
 BINDIR="$HOME/bin"
 
-ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c addmc d4 walksat maxpre)
+ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat addmc d4 walksat maxpre)
 
 FORCE=0
 DRY=0
@@ -91,6 +91,7 @@ solver_desc() {
     kissat)           echo "CDCL SAT solver -- feasibility for solve/ and the planner's horizon search" ;;
     tt-open-wbo-inc)  echo "anytime weighted MaxSAT -- cost minimization (MAP inference)" ;;
     nuwls-c)          echo "anytime weighted MaxSAT -- NuWLS local search over tt-open-wbo-inc" ;;
+    evalmaxsat)       echo "EXACT weighted MaxSAT -- core-guided, terminates with a proof of optimality" ;;
     maxpre)           echo "MaxPre 2 -- WCNF preprocessor (run in front of any MaxSAT solver)" ;;
     addmc)            echo "ADD-based weighted model counter -- exact marginals and Z" ;;
     d4)               echo "d4v2 decision-DNNF compiler -- exact marginals on structured instances" ;;
@@ -103,6 +104,7 @@ solver_repo() {
     kissat)           echo "https://github.com/arminbiere/kissat.git" ;;
     tt-open-wbo-inc)  echo "https://github.com/HenryKautz/tt-open-wbo-inc.git" ;;
     nuwls-c)          echo "https://github.com/shaowei-cai-group/NuWLS-c.git" ;;
+    evalmaxsat)       echo "https://github.com/FlorentAvellaneda/EvalMaxSAT.git" ;;
     maxpre)           echo "https://bitbucket.org/coreo-group/maxpre2.git" ;;
     addmc)            echo "https://github.com/HenryKautz/ADDMC.git" ;;
     d4)               echo "https://github.com/HenryKautz/d4v2.git" ;;
@@ -129,6 +131,7 @@ solver_dir() {
     kissat)           echo "kissat" ;;
     tt-open-wbo-inc)  echo "tt-open-wbo-inc" ;;
     nuwls-c)          echo "NuWLS-c" ;;
+    evalmaxsat)       echo "EvalMaxSAT" ;;
     maxpre)           echo "maxpre2" ;;
     addmc)            echo "ADDMC" ;;
     d4)               echo "d4v2" ;;
@@ -142,6 +145,7 @@ solver_bins() {
     kissat)           echo "kissat" ;;
     tt-open-wbo-inc)  echo "tt-open-wbo-inc-Glucose4_1 tt-open-wbo-inc-IntelSATSolver" ;;
     nuwls-c)          echo "nuwls-c" ;;
+    evalmaxsat)       echo "EvalMaxSAT_bin" ;;
     maxpre)           echo "maxpre" ;;
     addmc)            echo "addmc" ;;
     d4)               echo "d4" ;;
@@ -189,6 +193,9 @@ solver_prereq() {
       command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || missing="$missing cc/gcc" ;;
     tt-open-wbo-inc|nuwls-c|maxpre)
       command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
+    evalmaxsat)
+      command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
+      command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
     addmc)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
@@ -238,6 +245,12 @@ solver_build() {
       ( cd "$dir/code" && brew_env make ) || return 1
       # The Makefile already writes to ../bin/nuwls-c.
       install_bin "$dir/bin/nuwls-c" nuwls-c ;;
+
+    evalmaxsat)
+      # All dependencies (CaDiCaL, MCQD, CLI11) are vendored, so this is a plain
+      # out-of-source cmake build with nothing to fetch.
+      ( cd "$dir" && mkdir -p build && cd build && brew_env cmake .. && brew_env make -j ) || return 1
+      install_bin "$dir/build/main/EvalMaxSAT_bin" EvalMaxSAT_bin ;;
 
     maxpre)
       # Same treatment: main.cpp includes boost/iostreams/filter/gzip.hpp.

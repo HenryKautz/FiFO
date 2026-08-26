@@ -92,16 +92,24 @@ short by *solver-timeout*, so COST is an upper bound), or :UNSAT (COST is NIL)."
         (run-program-to-file solver (list wcnf) out :timeout *solver-timeout*)
       (declare (ignore code))
       (let ((verdict (solver-verdict out))
-            (obj (mt--objective out)))
+            (obj (mt--objective out))
+            (status (solution-lines out)))
         (cond ((eq verdict 'unsat) (values nil :unsat))
               ((null obj)
                (error "solver ~A produced no objective for ~A~@[ (timed out)~]~%~
                        -- is it a MaxSAT solver?  max-term needs minimum costs, not just models."
                       solver wcnf timed-out))
               (t
-               (when (and timed-out verbose)
-                 (format t "; ~A: solver stopped at the time limit; cost is an upper bound~%" root))
-               (values (+ (/ obj scale) offset) (if timed-out :best :optimum)))))))))
+               ;; An ANYTIME solver reports its best assignment, not the minimum.
+               ;; That matters more here than for map.sh: max-term is a
+               ;; DIFFERENCE of two minima, so two upper bounds do not cancel and
+               ;; the difference is meaningless.  Only "s OPTIMUM FOUND" is a
+               ;; proof; tt-open-wbo-inc and nuwls-c never print it.
+               (let* ((proved (and status (search "OPTIMUM" status)))
+                      (st (cond (timed-out :best) (proved :optimum) (t :unproved))))
+                 (when (and timed-out verbose)
+                   (format t "; ~A: solver stopped at the time limit; cost is an upper bound~%" root))
+                 (values (+ (/ obj scale) offset) st)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Exclusive groups
@@ -288,6 +296,7 @@ Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
                                (all-atoms (remove-if #'reified-formula-atom-p theory-atoms))
                                (t (error "max-term needs a query: pass :query, :all-atoms or :weighted-only"))))
                  (root (format nil "~A-maxterm" (replace-suffix-with-regex scnf-file "\\..*?$" "")))
+                 (unproved 0)
                  (results '()))
             (dolist (a qatoms)
               (unless (gethash a a2i)
@@ -320,8 +329,21 @@ Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
                              (delta0 (if prior (+ delta theta) delta))
                              (z (+ (* b delta0) (if prior (mt--logit prior) 0)))
                              (p (mt--sigmoid z)))
-                        (push (list a p proved (or (eq st1 :best) (eq status0 :best))) results)))))))
+                        (when (or (eq st1 :unproved) (eq status0 :unproved))
+                          (incf unproved))
+                        (push (list a p proved
+                                    (or (member st1 '(:best :unproved))
+                                        (member status0 '(:best :unproved))))
+                              results)))))))
             (setq results (nreverse results))
+            (when (plusp unproved)
+              (format t "; ~%; WARNING: ~D of the ~D solves did not prove optimality -- the solver~%~
+                         ; returned its best assignment, not the minimum.  max-term is a DIFFERENCE~%~
+                         ; of two minima, so two upper bounds do NOT cancel and these numbers are~%~
+                         ; not trustworthy.  The anytime solvers (tt-open-wbo-inc, nuwls-c) never~%~
+                         ; prove optimality; use an exact solver instead, e.g.~%~
+                         ;     marginals.sh ... --solver max-term --maxsat-bin rc2-maxsat.py~%; ~%"
+                      unproved (1+ (length qatoms))))
             ;; 2. exclusive groups
             (let ((gs (unless (eq groups :none)
                         (mt--detect-groups all-clauses qatoms))))

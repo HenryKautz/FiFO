@@ -171,8 +171,13 @@ at this size every exact back end finishes instantly.
 | | wall | atoms |
 |---|---|---|
 | `d4` (exact), `--weighted-only` | **5.2 s** | all 1344 |
-| `max-term`, 15 atoms | 33.8 s | 15 |
-| `max-term`, extrapolated to all 1344 | **≈ 50 min** | 1344 |
+| `max-term` with `rc2-maxsat.py` (exact), 15 atoms | 12.4 s | 15 |
+| `max-term` with `tt-open-wbo-inc` (anytime), 15 atoms | 33.8 s | 15 |
+| `max-term`, extrapolated to all 1344 | **≈ 18 min** | 1344 |
+
+The exact solver is also the *faster* one here — 12.4 s against 33.8 s — because
+core-guided search stops as soon as it has a proof, while the anytime solver keeps
+improving until its own strategy is exhausted.
 
 Accuracy on a sample of 15 atoms whose exact marginal is strictly between 0 and
 1 — that is, on the only atoms where the answer is not already obvious:
@@ -185,6 +190,17 @@ Accuracy on a sample of 15 atoms whose exact marginal is strictly between 0 and
 Individual cases: an atom whose true marginal is `0.236` is reported as `1.000`;
 `0.253` is reported as `0.808`; `0.124` as `0.500`. Determined atoms (exactly 0
 or 1) are recovered exactly, as the method guarantees.
+
+**These figures were re-measured with a solver that proves optimality.** The first
+version of this table used `tt-open-wbo-inc`, which — like every anytime MaxSAT
+solver — reports its best assignment without proving it minimal: on this instance
+**15 of the 16 solves returned an unproven bound**. That matters more for
+`max-term` than for `map.sh`, because the estimator is a *difference* of two
+minima and two upper bounds do not cancel. Re-running with `rc2-maxsat.py`
+produced **identical** values to four decimal places, so the errors below are
+genuinely the dropped degeneracy term and not a solver artifact — but that was an
+assumption until it was checked, and `marginals.sh` now counts unproven solves and
+warns.
 
 ### Reading the results
 
@@ -205,7 +221,8 @@ Two honest qualifications:
   in 5.2 s. The case for `max-term` rests on instances where the exact back ends
   time out, and pb1 is not one of them, despite being a genuine SatPlan encoding
   of realistic size. Before reaching for `max-term`, try `d4` and find out.
-- **`1 + n` solves is the real cost driver**, at ~2.3 s per atom here. Querying a
+- **`1 + n` solves is the real cost driver**, at ~0.8 s per atom with the exact
+  solver. Querying a
   handful of atoms is affordable; querying thousands is not. `--weighted-only`
   narrows the set, and incremental MaxSAT (IPAMIR) is the structural fix, since
   the `n` instances differ by one unit clause.
