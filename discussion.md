@@ -277,11 +277,11 @@ of it, which is worth stating plainly because the numbers look alike.
 
 The exact identity behind both is
 
-```math
-P(a) = \sigma\!\big(\beta\,(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)
-```
+$$
+P(a) = \sigma\big(\beta (c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)
+$$
 
-with $`c_{\min}`$ the cheapest model of each polarity and $`\Omega`$ the
+with $c_{\min}$ the cheapest model of each polarity and $\Omega$ the
 degeneracy — the number of near-optimal models, weighted by how near-optimal they
 are. The counting back ends (`maxent`, `addmc`, `ddnnf`, `d4`) evaluate the whole
 thing. `max-term` keeps the first term and drops the second.
@@ -297,7 +297,7 @@ the true marginals are pure counts.
 
 At a fixed horizon, a planning encoding is *full* of degeneracy: parallel actions
 permute, irrelevant fluents float, and enormous numbers of plans share a cost.
-That is exactly the $`\Omega`$ term, and it is exactly what `max-term` discards.
+That is exactly the $\Omega$ term, and it is exactly what `max-term` discards.
 So the approximation is weakest on the instances FiFO most often produces. And
 the premise that would justify accepting that — "counting will not finish here" —
 has to be checked instance by instance, because it does not follow from problem
@@ -316,7 +316,7 @@ worse, and on one that does not it is the only thing that returns an answer.
 
 The sharper statement is that it suits **queries in which the degeneracy
 cancels**. A bare marginal over a planning atom keeps the full
-$`\Omega_a/\Omega_{\lnot a}`$ and is badly conditioned; `recognize.sh`'s
+$\Omega_a/\Omega_{\lnot a}$ and is badly conditioned; `recognize.sh`'s
 difference *within* a hypothesis puts both sides over the same goal's plan space,
 so the shared degeneracy cancels and only the asymmetry survives. That is why the
 differenced form was the right first application and the bare marginal is the
@@ -364,8 +364,8 @@ than pattern-matching. The query set supplies only the *candidates*.
 
 - **The degeneracy term is not estimated, only dropped.** `K`-best enumeration
   would interpolate: take the top `K` models per polarity with blocking clauses
-  and use $`Z_S \approx \sum_{i \le K} e^{-\beta c_i}`$. Since $`\Omega_S \ge 1`$,
-  every `K` gives a *lower bound* on $`Z_S`$, so this converts a biased point
+  and use $Z_S \approx \sum_{i \le K} e^{-\beta c_i}$. Since $\Omega_S \ge 1$,
+  every `K` gives a *lower bound* on $Z_S$, so this converts a biased point
   estimate into anytime bracketing. `K = 1` is what is implemented today.
 - **Cost is `1 + n` MaxSAT solves**, so a query over thousands of atoms is hours.
   `--weighted-only` helps; IPAMIR, the incremental MaxSAT interface, is the real

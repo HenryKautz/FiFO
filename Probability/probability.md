@@ -70,15 +70,15 @@ marginals at the working horizon. See
 
 FiFO's WCNF encoding defines a Gibbs distribution over the feasible set:
 
-```math
+$$
 P_\theta(x) = \frac{1}{Z(\theta)} \exp\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]
-```
+$$
 
 where $\mathcal{F}$ is the set of assignments satisfying all hard clauses, and $\theta_a$ are the weights (costs). The marginal probability of literal $L$ is:
 
-```math
-P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
-```
+$$
+P(L) = \sum_{x \in \mathcal{F} : L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+$$
 
 a ratio of two partition functions over $\mathcal{F}$, both restricted by the hard clauses. This is weighted model counting (#WMC), and it's #P-hard in general — so the practical question is which back end fits the instance.
 
@@ -107,9 +107,9 @@ The distribution above supports two quite different queries. Marginal inference
 (the next section) **sums**: `P(L) = Z_L / Z`. **MAP inference** **maximizes** — it
 returns the single most probable assignment,
 
-```math
-x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
-```
+$$
+x^\star \enspace=\enspace \arg\max_{x \in \mathcal{F}} P_\theta(x) \enspace=\enspace \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
+$$
 
 Because `exp(−·)` is monotone decreasing, *maximizing probability is minimizing
 cost*: MAP inference in FiFO is exactly **weighted MaxSAT** over the hard clauses
@@ -583,9 +583,9 @@ not count at all: it applies the maximum-term approximation
 ([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function))
 to each atom's two polarities,
 
-```math
-\mathrm{logit}\,P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
-```
+$$
+\mathrm{logit} P(a) \approx \beta \big(c_{\min}(\lnot a) - c_{\min}(a)\big)
+$$
 
 where each $c_{\min}$ is a MaxSAT solve with a unit clause clamping the atom.
 That is Ramírez & Geffner's recognizer with the hypothesis replaced by an atom —
@@ -697,11 +697,11 @@ For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.
 
 The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
 
-The instance is a costed domain whose hypotheses are nullary derived predicates `hyp0 … hypN` (as produced by `make-recognition-instance.lisp`, so the goal is `(or (hyp0) … (hypN))`), plus an observation sequence as an `(occur-in-order …)` evidence file. For each hypothesis `hypI` the script calls `planner.sh` twice at a fixed horizon `H` — the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`, cost $`c(\text{O})`$) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`, cost $`c(\lnot\text{O})`$) — and forms
+The instance is a costed domain whose hypotheses are nullary derived predicates `hyp0 … hypN` (as produced by `make-recognition-instance.lisp`, so the goal is `(or (hyp0) … (hypN))`), plus an observation sequence as an `(occur-in-order …)` evidence file. For each hypothesis `hypI` the script calls `planner.sh` twice at a fixed horizon `H` — the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`, cost $c(\text{O})$) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`, cost $c(\lnot\text{O})$) — and forms
 
-$`P(\text{hypI} \mid O) \;=\; \frac{\pi_I\,\sigma\!\big(\beta\,(c(\lnot\text{O}) - c(\text{O}))\big)}{\sum_J \pi_J\,\sigma\!\big(\beta\,(c_J(\lnot\text{O}) - c_J(\text{O}))\big)}`$
+$P(\text{hypI} \mid O) \enspace=\enspace \frac{\pi_I \sigma\big(\beta (c(\lnot\text{O}) - c(\text{O}))\big)}{\sum_J \pi_J \sigma\big(\beta (c_J(\lnot\text{O}) - c_J(\text{O}))\big)}$
 
-with priors $`\pi`$ (uniform by default) and $`\beta`$ the temperature (`--beta`, default 1). Because the difference $`c(\lnot\text{O}) - c(\text{O})`$ is taken *within* each hypothesis, the goal's intrinsic reachability cancels — this is the `Z_G` normalization that the raw disjunctive marginal omits, so a hypothesis wins for making the observations *purposeful*, not for being cheap to reach.
+with priors $\pi$ (uniform by default) and $\beta$ the temperature (`--beta`, default 1). Because the difference $c(\lnot\text{O}) - c(\text{O})$ is taken *within* each hypothesis, the goal's intrinsic reachability cancels — this is the `Z_G` normalization that the raw disjunctive marginal omits, so a hypothesis wins for making the observations *purposeful*, not for being cheap to reach.
 
 ```sh
 bin/recognize.sh \
