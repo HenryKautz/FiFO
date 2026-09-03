@@ -21,8 +21,8 @@
 - [SAT solvers](#sat-solvers)
 - [Constraint Satisfaction](#constraint-satisfaction)
 - [Answer Extraction for Deduction](#answer-extraction-for-deduction)
-- [Optimization (Weighted MaxSAT)](#optimization-weighted-maxsat)
 - [Common Binary Relationship Patterns](#common-binary-relationship-patterns)
+- [Optimization (Weighted MaxSAT)](#optimization-weighted-maxsat)
 - [Options](#options)
 - [Running FiFO](#running-fifo)
 - [Testing](#testing)
@@ -398,6 +398,54 @@ the size of the output CNF is $O(MLD^N)$.
 
 When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to a model of the output formula.
 
+## Common Binary Relationship Patterns
+
+Suppose R is a binary relation.  Properties of R can be asserted as follows.
+
+### R is a strict order
+
+Suppose R is a relation over pairs of domain E
+
+```
+;; R is a strict order
+(all (x y z) E true (implies (and (r x y) (r y z)) (r x z))))
+(all x E (not (R x x)))
+```
+
+### R is a strict total order
+
+```
+;; R is a strict total order
+(all (x y z) E true (implies (and (r x y) (r y z)) (r x z))))
+(all x E true (not (R x x)))
+(all (x y) E (neq x y) (or (R x y) (R y x)))
+```
+
+### R is functional
+
+We say that a relationship over domains E and V is functional if for every E there is exactly one V such that R holds.  Functional relations are often used when E is a set of entities and V is a set of possible values of some property of the entities.
+
+```
+;; R is functional
+(all x E true (exists y V true (R x y)))
+(all x E true (not (exists (y z) V (neq y z) (and (R x y) (R x z)))))
+```
+
+### R is a bijection
+
+We say that a relationship over domains E and V is a mapping if (1) R is functional (2) R is onto, meaning for every V there is some E related to it by R, and (3) R is one-to-one, meaning no two E are related to the same V.  Bijections are often used in representing matching problems where a set of entities must be matched to a set of unique values.
+
+```
+;; R is a bijection
+;; (1) R is functional
+(all x E true (exists y V true (R x y)))
+(all x E true (not (exists (y z) V (neq y z) (and (R x y) (R x z)))))
+;; (2) R is onto
+(all y V true (exists x E true (R x y)))
+;; (3) R is one to one
+(not (exists (x1 x2) E (neq x1 x2) (exists y V true (and (R x1 y) (R x2 y)))))
+```
+
 ## Optimization (Weighted MaxSAT)
 
 FiFO supports weighted optimization problems via the **weight** form:
@@ -570,68 +618,32 @@ bin/learn.sh myproblem.scnf --maxent --out learned.scnf
 
 ### Marginal Inference and Weighted Model Counting
 
-Weight learning runs in the *inverse* direction of inference: it turns target marginal probabilities into weights. Going forward — weights to marginals — is **marginal inference**, the probability that each atom is true under the weighted theory `P(x) ∝ exp(−(sum of the weights of the true literals))` over the feasible set. Two back ends compute this exactly:
+Weight learning runs in the *inverse* direction of inference: it turns target
+marginal probabilities into weights. Going forward — weights to marginals — is
+**marginal inference**: the probability that each atom is true under
+`P(x) ∝ exp(−(sum of the weights of the true literals))` over the feasible set.
+`bin/marginals.sh problem.scnf` computes it, and `bin/wmc.sh problem.scnf` prints
+just the partition function `Z`.
 
-- **`bin/marginals.sh problem.scnf`** — Lisp enumeration of the feasible set. Exact, simple, but exponential; intended for small instances. `--weighted-only` restricts it to the weighted atoms.
-- **`bin/marginals.sh problem.scnf --solver addmc`** — the same marginals via the **ADDMC** weighted model counter (algebraic decision diagrams), which scales far past brute enumeration. (`--solver maxent`, the enumeration above, is the default.) **`bin/wmc.sh problem.scnf`** prints just the partition function `Z` (a weighted model count).
+Six back ends are available behind `marginals.sh --solver`, and choosing between
+them is the whole practical question, so they are documented together in
+[Probability/probability.md](Probability/probability.md#marginal-inference-weights--probabilities):
+exact [enumeration](Probability/probability.md#exact-enumeration-small-instances),
+the [ADDMC](Probability/probability.md#weighted-model-counting-via-addmc) weighted
+model counter, and two d-DNNF circuit compilers
+([FiFO's own](Probability/probability.md#d-dnnf-compilation-fifos-own-no-external-binary)
+and the external [d4](Probability/probability.md#d-dnnf-via-the-external-d4-compiler));
+then, past the reach of exact counting,
+[MC-SAT sampling](Probability/probability.md#approximate-marginals-by-mc-sat-sampling)
+and the [max-term](Probability/probability.md#max-term-marginals-maxsat-instead-of-counting)
+MaxSAT approximation. Conditional probabilities (`--evidence`) are covered under
+[Conditioning on evidence](Probability/probability.md#conditioning-on-evidence).
 
-Two further exact back ends compile the theory into a d-DNNF circuit and read *all* marginals off it in two passes — `--solver ddnnf` (FiFO's own compiler, no external binary) and `--solver d4` (the same circuit machinery, with the Boolean structure compiled by the external d4 compiler). Past the reach of exact counting there is an **approximate** back end:
-
-- **`bin/marginals.sh problem.scnf --solver mc-sat`** — **MC-SAT** sampling (Poon & Domingos 2006), an MCMC chain whose stationary distribution is exactly the weighted theory's. One run yields every marginal, so it returns in seconds on instances the exact counters cannot finish; the results carry Monte-Carlo error, so fix `--seed` for reproducibility and raise `--samples` for accuracy. Each run also reports its effective sample size — MC-SAT mixes poorly on strongly coupled models, and a very low reported efficiency means the marginals are unreliable rather than merely noisy. This needs **WalkSAT version 58 or later** ([gitlab.com/HenryKautz/Walksat](https://gitlab.com/HenryKautz/Walksat), the `Walksat_v58_MC-SAT` directory), whose `-mcsat` mode carries the whole sampler in C; put it on `PATH` as `walksat`.
-
-ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it and put `addmc` on `PATH` (`bin/install-solvers.sh --only addmc` does both). A handy way to produce the `.scnf` input is `bin/planner.sh <problem.pddl> --stop-after scnf`. ADDMC counts at full double precision by default; `--epsilon <e>` exposes its CUDD terminal-merging tolerance to trade exactness for speed.
-
-For **conditional** probabilities, `--solver addmc` (and likewise `ddnnf`, `d4`, and `mc-sat`) accepts `--evidence '<ground formula>'` (repeatable) and `--evidence-file <f>`: the ground FiFO formula is clausified and conjoined with the theory as a hard constraint, so each reported marginal becomes `P(atom | evidence)` (and `wmc.sh` returns the conditioned partition function). Quantified evidence isn't ground, so it belongs at the `.wff` level (add the assertion and re-instantiate).
-
-Because the learning pipeline scales costs by an integer factor (100 by default, set with `learn.sh --scale`) to get integer MaxSAT weights — and the absolute scale, irrelevant to MaxSAT, completely changes a probability distribution — both tools divide the integer weights by the `scale: N` recorded in the `.scnf` header before exponentiating, so the marginals reflect the *real* learned costs (use `--scale 1` for the raw weights). For the encoding details (MCC weighted CNF), the cross-check against enumeration, the weight-scale issue, and the cost model, see [Probability/probability.md](Probability/probability.md).
-
-## Common Binary Relationship Patterns
-
-Suppose R is a binary relation.  Properties of R can be asserted as follows.
-
-### R is a strict order
-
-Suppose R is a relation over pairs of domain E
-
-```
-;; R is a strict order
-(all (x y z) E true (implies (and (r x y) (r y z)) (r x z))))
-(all x E (not (R x x)))
-```
-
-### R is a strict total order
-
-```
-;; R is a strict total order
-(all (x y z) E true (implies (and (r x y) (r y z)) (r x z))))
-(all x E true (not (R x x)))
-(all (x y) E (neq x y) (or (R x y) (R y x)))
-```
-
-### R is functional
-
-We say that a relationship over domains E and V is functional if for every E there is exactly one V such that R holds.  Functional relations are often used when E is a set of entities and V is a set of possible values of some property of the entities.
-
-```
-;; R is functional
-(all x E true (exists y V true (R x y)))
-(all x E true (not (exists (y z) V (neq y z) (and (R x y) (R x z)))))
-```
-
-### R is a bijection
-
-We say that a relationship over domains E and V is a mapping if (1) R is functional (2) R is onto, meaning for every V there is some E related to it by R, and (3) R is one-to-one, meaning no two E are related to the same V.  Bijections are often used in representing matching problems where a set of entities must be matched to a set of unique values.
-
-```
-;; R is a bijection
-;; (1) R is functional
-(all x E true (exists y V true (R x y)))
-(all x E true (not (exists (y z) V (neq y z) (and (R x y) (R x z)))))
-;; (2) R is onto
-(all y V true (exists x E true (R x y)))
-;; (3) R is one to one
-(not (exists (x1 x2) E (neq x1 x2) (exists y V true (and (R x1 y) (R x2 y)))))
-```
+One trap worth naming here: the learning pipeline scales costs by an integer
+factor to get integer MaxSAT weights, and while that scale is irrelevant to
+MaxSAT it is a *temperature* for every probability — so every back end divides
+the `scale: N` recorded in the `.scnf` header out before exponentiating. See
+[Weight scale](Probability/probability.md#weight-scale).
 
 ## Options
 
