@@ -210,7 +210,14 @@ solver_prereq() {
       command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
     evalmaxsat)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
-      command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
+      if [[ "$(uname)" == "Darwin" ]]; then
+        # Built with Apple clang it compiles cleanly and then SEGFAULTS on a
+        # four-line wcnf; built with Homebrew GCC it is correct.  So GCC is a
+        # hard requirement here, not a preference.
+        [[ -n "$(brew_gxx)" ]] || missing="$missing g++-N(brew install gcc)"
+      else
+        command -v g++ >/dev/null 2>&1 || missing="$missing g++"
+      fi ;;
     wmaxcdcl)
       command -v g++ >/dev/null 2>&1 || missing="$missing g++" ;;
     rc2)
@@ -269,8 +276,17 @@ solver_build() {
 
     evalmaxsat)
       # All dependencies (CaDiCaL, MCQD, CLI11) are vendored, so this is a plain
-      # out-of-source cmake build with nothing to fetch.
-      ( cd "$dir" && mkdir -p build && cd build && brew_env cmake .. && brew_env make -j ) || return 1
+      # out-of-source cmake build with nothing to fetch.  On macOS it must be
+      # built with real GCC: the Apple-clang build compiles without complaint and
+      # then segfaults immediately on any instance.
+      local ev_cc=()
+      if [[ "$(uname)" == "Darwin" ]]; then
+        local gxx; gxx="$(brew_gxx)"
+        [[ -n "$gxx" ]] || return 1
+        ev_cc=(-DCMAKE_CXX_COMPILER="$gxx" -DCMAKE_C_COMPILER="${gxx/g++-/gcc-}")
+      fi
+      ( cd "$dir" && mkdir -p build && cd build \
+        && brew_env cmake .. "${ev_cc[@]}" && brew_env make -j ) || return 1
       install_bin "$dir/build/main/EvalMaxSAT_bin" EvalMaxSAT_bin ;;
 
     rc2)
@@ -337,6 +353,18 @@ install_bin() {  # install_bin <built-path> <installed-name>
     return 1
   fi
   mkdir -p "$BINDIR" && cp -f "$src" "$BINDIR/$name" && chmod +x "$BINDIR/$name"
+}
+
+brew_gxx() {  # print the newest Homebrew g++-N on PATH, or nothing.
+              # Apple's /usr/bin/g++ is a clang shim, not GCC; where a build
+              # genuinely needs GNU (see evalmaxsat below) that shim silently
+              # produces a binary that misbehaves rather than failing to build.
+  local c best=""
+  for c in /opt/homebrew/bin/g++-[0-9]* /usr/local/bin/g++-[0-9]*; do
+    [[ -x "$c" ]] || continue
+    if [[ -z "$best" || "${c##*-}" -gt "${best##*-}" ]]; then best="$c"; fi
+  done
+  printf '%s' "$best"
 }
 
 brew_env() {  # brew_env <cmd>... : run CMD with the Homebrew prefix on the header

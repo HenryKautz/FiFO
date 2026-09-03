@@ -888,11 +888,21 @@ Core-guided exact MaxSAT (OLL over CaDiCaL), top-three in the weighted exact
 category of recent MaxSAT Evaluations. All dependencies are vendored, so it is a
 plain out-of-source `cmake` build with nothing to fetch.
 
-*Caveat, measured:* the resulting binary **segfaults on macOS** — on a
-three-clause weighted instance, and on a real FiFO wcnf after printing several
-improving `o` lines. The build reports no errors. It is kept in the installer
-because it is likely fine on Linux, but `rc2-maxsat.py` is the exact solver FiFO
-defaults to.
+*macOS: it must be built with real GCC.* Built with Apple clang the build
+reports no errors and the binary then **segfaults immediately** — on a four-line
+weighted instance, and on a real FiFO wcnf after printing several improving `o`
+lines. Built with Homebrew GCC (`brew install gcc`) the same source is correct:
+it prints `s OPTIMUM FOUND` and agrees with `wmaxcdcl`. `install-solvers.sh`
+therefore requires a Homebrew `g++-N` on macOS and passes it to `cmake`; note
+that `/usr/bin/g++` is a clang shim, not GCC, so a plain `cmake ..` picks the
+compiler that produces the broken binary. (This was diagnosed only after an
+unrelated toolchain repair; the earlier note here recorded the crash as an
+unexplained macOS failure.)
+
+EvalMaxSAT exits with status **30**, not 0, on a solved instance. That is its own
+convention and harmless here — FiFO reads the verdict from the DIMACS `s` line,
+never the exit code. `rc2-maxsat.py` remains the exact solver FiFO defaults to
+for `--solver max-term`.
 
 **RC2 via PySAT**
 
