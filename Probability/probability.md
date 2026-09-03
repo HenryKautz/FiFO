@@ -70,15 +70,15 @@ marginals at the working horizon. See
 
 FiFO's WCNF encoding defines a Gibbs distribution over the feasible set:
 
-$$
+```math
 P_\theta(x) = \frac{1}{Z(\theta)} \exp\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]
-$$
+```
 
 where $\mathcal{F}$ is the set of assignments satisfying all hard clauses, and $\theta_a$ are the weights (costs). The marginal probability of literal $L$ is:
 
-$$
-P(L) = \sum_{x \in \mathcal{F} \thinspace:\thinspace L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
-$$
+```math
+P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+```
 
 a ratio of two partition functions over $\mathcal{F}$, both restricted by the hard clauses. This is weighted model counting (#WMC), and it's #P-hard in general — so the practical question is which back end fits the instance.
 
@@ -107,9 +107,9 @@ The distribution above supports two quite different queries. Marginal inference
 (the next section) **sums**: `P(L) = Z_L / Z`. **MAP inference** **maximizes** — it
 returns the single most probable assignment,
 
-$$
-x^\star \thickspace=\thickspace \arg\max_{x \in \mathcal{F}} P_\theta(x) \thickspace=\thickspace \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
-$$
+```math
+x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
+```
 
 Because `exp(−·)` is monotone decreasing, *maximizing probability is minimizing
 cost*: MAP inference in FiFO is exactly **weighted MaxSAT** over the hard clauses
@@ -583,9 +583,9 @@ not count at all: it applies the maximum-term approximation
 ([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function))
 to each atom's two polarities,
 
-$$
-\mathrm{logit}\thinspaceP(a) \approx \beta\thinspace\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
-$$
+```math
+\mathrm{logit}\,P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
+```
 
 where each $c_{\min}$ is a MaxSAT solve with a unit clause clamping the atom.
 That is Ramírez & Geffner's recognizer with the hypothesis replaced by an atom —

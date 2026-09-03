@@ -90,9 +90,9 @@ atom, so all of the following applies with no change. See
 
 The objective the solver minimizes is **linear in the weights**:
 
-$$
+```math
 C_\theta(x) = \sum_a \theta_a N_a(x) = \theta^\top \Phi(x).
-$$
+```
 
 In planning terms $\Phi(x)$ is the histogram of action types in a plan (summed over
 groundings and time steps), and $`C_\theta`$ is the total plan cost.
@@ -100,18 +100,18 @@ groundings and time steps), and $`C_\theta`$ is the total plan cost.
 **The distribution.** That same cost function defines a Gibbs (Boltzmann)
 distribution over the feasible set — the object section 3 queries:
 
-$$
+```math
 P_\theta(x) = \frac{1}{Z(\theta)} \exp\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]
-$$
+```
 
 normalized by the **partition function**
 $`Z(\theta) = \sum_{x\in\mathcal{F}} e^{-\theta^\top\Phi(x)}`$. Low cost means high
 probability, so the minimum-cost assignment is the mode. The marginal probability
 of a literal $L$ is a ratio of two such sums,
 
-$$
-P(L) = \sum_{x \in \mathcal{F} \thinspace:\thinspace L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
-$$
+```math
+P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+```
 
 which is weighted model counting, $`\#P`$-hard in general. An inverse temperature
 $\beta$ can be written separately, $`P_\theta(x) \propto e^{-\beta\,C_\theta(x)}`$; it is
@@ -178,9 +178,9 @@ Two equivalent lenses organize everything below.
 
 **Regret (discriminative).** The optimality gap of demonstration $k$ under $\theta$,
 
-$$
-g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}} \thickspace-\thickspace \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
-$$
+```math
+g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}} \;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
+```
 
 is a linear term minus a concave term, hence **convex** in $\theta$. The first term
 is free (counting); the second is a MaxSAT solve.
@@ -203,9 +203,9 @@ log-sum-exp).
 Each example is a full assignment assumed feasible and cost-optimal. Feasibility is
 free; the content is optimality:
 
-$$
+```math
 \theta^\top \Phi(x^{(k)}) \le \theta^\top \Phi(x)\quad \forall x \in \mathcal{F}.
-$$
+```
 
 This is an (exponential) polyhedral cone in $\theta$, handled by **constraint
 generation / cutting planes** with the MaxSAT solver as the separation oracle, or by
@@ -250,9 +250,9 @@ When demonstrations are near-optimal but not optimal, the consistency cone is em
 the problem shifts from feasibility to **minimizing total regret**, which stays
 convex. The canonical objective is **Maximum Margin Planning** / structured SVM:
 
-$$
-\min_{\theta\ge0}\ \tfrac{\lambda}{2}\Vert\theta\Vert^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .
-$$
+```math
+\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .
+```
 
 A subgradient is $`\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)`$ with $`\hat x_k`$ the
 loss-augmented MaxSAT optimum — the perceptron update, now not driven to zero.
@@ -312,9 +312,9 @@ This is the **maximum-entropy** problem: the weights are the **Lagrange multipli
 enforcing your believed marginals. Convert beliefs to target expected counts
 $`\tau_a = \sum_{j\in a} p_j`$, and solve the moment-matching condition
 
-$$
+```math
 \mathbb{E}_\theta[\Phi] = \tau,
-$$
+```
 
 a low-dimensional convex program ($`\min_\theta \log Z(\theta) + \theta^\top\tau`$),
 solvable by iterative scaling or gradient descent. Each step needs $`\mathbb{E}_\theta[\Phi]`$
@@ -343,7 +343,7 @@ the beliefs; abundant data → empirical moments dominate; in between, a blend.
 
 1. Solve the marginal MaxEnt **once**, offline, on small instances → prior center $`\theta_0`$.
 2. Run the discriminative min-regret fit on the data with regularizer
-   $`\tfrac{\lambda}{2}\|\theta - \theta_0\|^2`$ instead of $\tfrac{\lambda}{2}\|\theta\|^2$.
+   $`\tfrac{\lambda}{2}\|\theta - \theta_0\|^2`$ instead of $`\tfrac{\lambda}{2}\|\theta\|^2`$.
 
 The costly probabilistic inference happens once (to set the prior); the cheap MaxSAT
 oracle does the data fitting. With no data this returns $`\theta_0`$; with data it moves
