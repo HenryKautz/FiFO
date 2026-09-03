@@ -183,7 +183,7 @@ The optimal plan runs the two deliveries in lockstep over five parallel action s
 
 ### Translating PDDL to FiFO with pddl2fifo
 
-The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:quantified-preconditions` (equivalently `:universal-preconditions` / `:existential-preconditions` — quantifiers are supported in the problem `:goal`, `:constraints`, and preference bodies, but not in action preconditions), `:constraints`, `:preferences`, and `:action-costs`. Action costs must be simple static numbers. They may be given either as an effect `(increase (total-cost) <number>)` or, more directly, as a `:cost <number>` slot on the action (a FiFO-specific convenience):
+The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL (the standard Planning Domain Definition Language) into a FiFO wff file in the form described above. It supports the PDDL requirements `:strips`, `:typing`, `:negative-preconditions`, `:disjunctive-preconditions`, `:quantified-preconditions` (equivalently `:universal-preconditions` / `:existential-preconditions` — quantifiers are supported in the problem `:goal`, `:constraints`, and preference bodies, but not in action preconditions), `:constraints`, `:preferences`, and `:action-costs`. Action costs must be static — no action may change one — but they need not be written into the domain. A cost may be given either as an effect `(increase (total-cost) <amount>)` or, more directly, as a `:cost <amount>` slot on the action (a FiFO-specific convenience), and in both cases `<amount>` is either a literal number or a **function whose value the problem supplies** (see [Costs set by the problem file](#costs-set-by-the-problem-file) below):
 
 ```lisp
 (:action turn-off
@@ -193,7 +193,49 @@ The program `lisp/pddl2fifo.lisp` translates a planning problem written in PDDL 
    :cost 2)
 ```
 
-The two forms are equivalent; giving both on the same action is an error. The cost must be a constant number (a cost that varies with the action's parameters is not supported by either form).
+The two forms are equivalent; giving both on the same action is an error.
+
+#### Costs set by the problem file
+
+Writing costs as literals bakes them into the domain, so changing one means editing the domain — awkward when the same domain is reused across problems that should price actions differently. The standard PDDL remedy is to declare a **function** in the domain and give it a value in each problem's `:init`; FiFO implements it.
+
+Declare the function alongside `total-cost`, and refer to it where a number would go:
+
+```lisp
+;; domain -- no costs written here
+(:functions (total-cost) (move-cost))
+
+(:action move
+   :parameters (?from ?to - loc)
+   :precondition (at ?from)
+   :effect (and (not (at ?from)) (at ?to)
+                (increase (total-cost) (move-cost))))
+```
+```lisp
+;; problem -- the cost lives here
+(:init (at a) (= (total-cost) 0) (= (move-cost) 7))
+```
+
+A second problem can set `(= (move-cost) 42)` against the same domain file. The `:cost` slot accepts a function too: `:cost (move-cost)`.
+
+**Costs that vary per grounding.** The function may take the action's own parameters, which is how the IPC domains express a distance matrix:
+
+```lisp
+(:functions (total-cost) (road-length ?a ?b - loc))
+;; ... (increase (total-cost) (road-length ?from ?to))
+```
+```lisp
+(:init (= (road-length a b) 3) (= (road-length b a) 11) ...)
+```
+
+A function of no arguments (or of constants only) is one number for the whole action schema, so it folds into the schema's `(cost (move from to) 7)`. A function of the parameters differs per grounding, so instead of one schema-level cost the translator emits a ground fact for each: `(cost (move a b) 3)`, `(cost (move b a) 11)`, and so on. Both end up in the `costs` domain and are weighted identically; the difference is only in how the wff is written.
+
+**Restrictions**, each reported as an error rather than silently assumed:
+
+- Every function except `total-cost` must be **static** — no action may `increase`, `decrease`, `assign`, or scale it. FiFO's encoding is propositional and carries no numeric state, so a cost that changes as the plan runs cannot be represented. (`total-cost` itself is the objective accumulator, not state.)
+- A function used as a cost must have a value in `:init` for **every** grounding the action has; a missing one is an error naming the action and the term, never a silent zero.
+- `(= (total-cost) n)` must be `0` if present.
+- `:init` may not assign a function the domain never declared, nor give one the wrong number of arguments.
 
 #### Trajectory constraints
 

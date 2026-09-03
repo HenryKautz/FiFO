@@ -14,8 +14,17 @@
 ;;;;                            modals always / at-end / hold-during /
 ;;;;                            occur-sometime, whose bodies are full goal
 ;;;;                            descriptions (and/or/not/imply/forall/exists)
-;;;;   :action-costs            simple static costs only, i.e. effects of the
-;;;;                            form (increase (total-cost) <number>)
+;;;;   :action-costs            static costs: an effect (increase (total-cost)
+;;;;                            <amount>) or a :cost <amount> slot, where
+;;;;                            <amount> is a literal number OR a function
+;;;;                            declared in the domain's (:functions ...) and
+;;;;                            valued in the problem's :init, as
+;;;;                            (= (drive-cost a b) 3).  A function of no
+;;;;                            arguments is one cost for the whole schema; a
+;;;;                            function of the action's parameters gives a
+;;;;                            different cost per grounding.  Every function
+;;;;                            except total-cost must be static -- no action
+;;;;                            may write one, since FiFO has no numeric state
 ;;;;   :derived-predicates      NON-RECURSIVE derived predicates (axioms):
 ;;;;                            (:derived (P ?args) <goal-description>), reified
 ;;;;                            as a per-slice biconditional
@@ -1105,12 +1114,177 @@ preconditions, so these are rejected with an explanatory error."
     (or (complex-head p)
         (and (negation-p p) (complex-head (second p))))))
 
-(defun translate-action (action-form forbidden effect-preds &optional (cost-scale 1))
+;;; Numeric functions (:action-costs).
+;;;
+;;; A domain declares cost functions in (:functions ...) and refers to them in
+;;; action effects, e.g. (increase (total-cost) (drive-cost ?from ?to)); the
+;;; problem supplies their values in :init as (= (drive-cost a b) 3).  This is
+;;; the standard IPC-2008 :action-costs idiom, and it is what lets a domain be
+;;; written once with its costs set per problem.  Every function other than
+;;; total-cost must be STATIC -- never written by an action effect -- because
+;;; FiFO's encoding is propositional and carries no numeric state.
+
+(defun parse-functions (domain-def)
+  "Parse the domain's (:functions ...) section into an alist of (NAME . ARITY).
+Handles the optional PDDL type annotations, which apply to a function's return
+type: (:functions (total-cost) - number (road-length ?a ?b - location) - number)."
+  (let ((decls (rest (get-section domain-def :functions)))
+        (arities '()))
+    (loop while decls do
+      (let ((d (pop decls)))
+        (cond ((sym-name= d "-")            ; return type annotation: skip it
+               (pop decls))
+              ((consp d)
+               (let* ((name (first d))
+                      (params (parse-typed-list (rest d)
+                                                (format nil "function ~a" name))))
+                 (unless (symbolp name)
+                   (error "Malformed function declaration ~s in (:functions ...)" d))
+                 (when (assoc name arities :test #'sym-name=)
+                   (error "Function ~a is declared more than once in (:functions ...)" name))
+                 (push (cons name (length params)) arities)))
+              (t (error "Malformed entry ~s in (:functions ...)" d)))))
+    (nreverse arities)))
+
+(defun total-cost-function-p (name)
+  (sym-name= name "TOTAL-COST"))
+
+(defun function-term-p (x function-arities)
+  "True when X is (f a1 ... ak) or f naming a declared function other than
+total-cost -- i.e. a cost value to be looked up rather than a literal number."
+  (let ((name (if (consp x) (first x) x)))
+    (and (symbolp name)
+         (not (total-cost-function-p name))
+         (assoc name function-arities :test #'sym-name=))))
+
+(defun normalize-function-key (term)
+  "Canonical key for a ground function term: a list of upcased symbol names, so
+that (drive-cost a b) and (DRIVE-COST A B) name the same entry."
+  (mapcar (lambda (x) (if (symbolp x) (string-upcase (symbol-name x)) x))
+          (if (consp term) term (list term))))
+
+(defun parse-function-values (init-section function-arities)
+  "Collect the (= (f a1 ... ak) n) assignments of a problem's :init into an alist
+keyed by NORMALIZE-FUNCTION-KEY.  (= (total-cost) n) is ignored -- the accumulator
+starts at zero by definition -- but a non-zero initial total-cost is an error,
+since FiFO has nowhere to put the offset."
+  (let ((values '()))
+    (dolist (f init-section (nreverse values))
+      (when (and (consp f) (sym-name= (first f) "="))
+        (let ((term (second f)) (val (third f)))
+          (unless (and term (or (symbolp term) (consp term)))
+            (error "Malformed function assignment ~s in :init" f))
+          (let ((name (if (consp term) (first term) term)))
+            (cond ((total-cost-function-p name)
+                   (unless (and (numberp val) (zerop val))
+                     (error "(= (total-cost) ~s) in :init: total-cost must start at 0" val)))
+                  (t
+                   (let ((decl (assoc name function-arities :test #'sym-name=)))
+                     (unless decl
+                       (error "~s in :init assigns undeclared function ~a; ~
+                               declare it in the domain's (:functions ...) section"
+                              f name))
+                     (let ((args (if (consp term) (rest term) '())))
+                       (unless (= (length args) (cdr decl))
+                         (error "~s in :init gives ~a ~d argument~:p, but it is ~
+                                 declared with ~d" f name (length args) (cdr decl)))
+                       (unless (numberp val)
+                         (error "~s in :init must assign a number, got ~s" f val))
+                       (let ((key (normalize-function-key term)))
+                         (when (assoc key values :test #'equal)
+                           (error "Function term ~s is assigned more than once in :init" term))
+                         (push (cons key val) values))))))))))))
+
+(defun lookup-function-value (term function-values context)
+  "Value of the ground function TERM, or an error naming CONTEXT."
+  (let ((hit (assoc (normalize-function-key term) function-values :test #'equal)))
+    (unless hit
+      (error "The cost of ~a is ~s, but the problem's :init gives it no value.~@
+              Add (= ~(~s~) <number>) to :init." context term term))
+    (cdr hit)))
+
+(defun check-functions-static (domain-def)
+  "Reject a domain that writes a cost function other than total-cost.  FiFO has
+no numeric state, so only a static (problem-assigned) function can be encoded."
+  (dolist (s (define-sections domain-def))
+    (when (and (consp s) (eq (first s) :action))
+      (dolist (e (conjuncts (getf (cddr s) :effect)))
+        (when (consp e)
+          (let ((head (first e)))
+            (when (or (sym-name= head "INCREASE") (sym-name= head "DECREASE")
+                      (sym-name= head "ASSIGN")   (sym-name= head "SCALE-UP")
+                      (sym-name= head "SCALE-DOWN"))
+              (let* ((target (second e))
+                     (name (if (consp target) (first target) target)))
+                (unless (total-cost-function-p name)
+                  (error "Action ~a writes function ~a in ~s.~@
+                          Only total-cost may be written by an action; every other ~
+                          function must be static, with its value given in the ~
+                          problem's :init."
+                         (second s) name e))))))))))
+
+(defun term-mentions-parameters-p (term param-pairs)
+  "True when the function TERM uses any of the action's ?parameters, i.e. its
+value can differ between groundings of the schema."
+  (labels ((walk (x)
+             (cond ((consp x) (some #'walk x))
+                   ((pddl-variable-p x)
+                    (and (assoc x param-pairs :test #'eq) t))
+                   (t nil))))
+    (walk (if (consp term) (rest term) '()))))
+
+(defun parameter-object-tuples (param-pairs object-pairs type-table)
+  "Every tuple of objects the action's parameters can take, as a list of lists
+in parameter order."
+  (if (null param-pairs)
+      (list '())
+      (let ((rest-tuples (parameter-object-tuples (rest param-pairs)
+                                                  object-pairs type-table)))
+        (loop for obj in (reachability-param-objects (cdr (first param-pairs))
+                                                     object-pairs type-table)
+              nconc (mapcar (lambda (tail) (cons obj tail)) rest-tuples)))))
+
+(defun ground-parameterized-costs (name term param-pairs cost-scale
+                                   function-values object-pairs type-table)
+  "Ground (cost <action> <n>) facts for an action whose cost is a function of its
+own parameters.  One fact per grounding, each looking the function up in the
+problem's :init."
+  (unless object-pairs
+    (error "Action ~a has the parameterized cost ~s, but no objects are available ~
+            to ground it" name term))
+  (loop for tuple in (parameter-object-tuples param-pairs object-pairs type-table)
+        collect (let* ((subst (mapcar (lambda (p o) (cons (car p) o)) param-pairs tuple))
+                       (ground-term
+                         (cons (first term)
+                               (mapcar (lambda (arg)
+                                         (if (pddl-variable-p arg)
+                                             (or (cdr (assoc arg subst :test #'eq))
+                                                 (error "Variable ~s in the cost ~s of ~
+                                                         action ~a is not a parameter"
+                                                        arg term name))
+                                             arg))
+                                       (rest term))))
+                       (val (lookup-function-value
+                              ground-term function-values
+                              (format nil "action ~a applied to ~{~a~^ ~}" name tuple))))
+                  (list 'cost (cons name tuple) (* cost-scale val)))))
+
+(defun translate-action (action-form forbidden effect-preds &optional (cost-scale 1)
+                         function-arities function-values object-pairs type-table)
   "Translate one (:action ...) form into a static FiFO formula.  Preconditions
 on static predicates (those not in EFFECT-PREDS) become an (if ...) guard rather
 than Pre/PreNeg facts.  The action's cost (if any) is multiplied by COST-SCALE,
 the coefficient of (total-cost) in the :metric.
-Returns (values formula has-negative-preconditions-p parameter-types)."
+
+A cost may be a literal number or a declared function term whose value the
+problem's :init supplies (the standard :action-costs idiom).  A function of no
+arguments, or one whose arguments are all constants, is the same for every
+grounding and folds straight into the schema.  A function of the action's own
+parameters differs per grounding, so those costs cannot ride on the schema: they
+are emitted as ground (cost <action> <n>) facts, returned as a fifth value.
+
+Returns (values formula has-negative-preconditions-p parameter-types prob-form
+ground-cost-forms)."
   (destructuring-bind (key name &rest body) action-form
     (declare (ignore key))
     (let* ((param-pairs (parse-typed-list (getf body :parameters)
@@ -1132,7 +1306,8 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
            (vars (mapcar #'cdr bindings))
            (act (if vars (cons name vars) name))
            (action-context (format nil "action ~a" name))
-           (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil) (prob nil))
+           (pre+ '()) (pre- '()) (guard '()) (adds '()) (dels '()) (cost nil)
+           (cost-term nil) (prob nil))
       (dolist (p (conjuncts precondition))
         (cond ((preference-p p)
                (error "Action ~a has a precondition preference ~s.~@
@@ -1166,12 +1341,19 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
               (t (error "Cannot translate precondition ~s of action ~a" p name))))
       (dolist (e (conjuncts effect))
         (cond ((and (consp e) (sym-name= (first e) "INCREASE"))
-               (unless (numberp (third e))
-                 (error "Only simple static action costs are supported; got ~s in action ~a"
-                        e name))
-               (when cost
-                 (error "Action ~a has more than one cost effect" name))
-               (setq cost (third e)))
+               (let ((amount (third e)))
+                 (unless (or (numberp amount)
+                             (function-term-p amount function-arities))
+                   (error "Action ~a has cost effect ~s.~@
+                           The amount must be a number, or a function declared in ~
+                           the domain's (:functions ...) section and given a value ~
+                           in the problem's :init."
+                          name e))
+                 (when (or cost cost-term)
+                   (error "Action ~a has more than one cost effect" name))
+                 (if (numberp amount)
+                     (setq cost amount)
+                     (setq cost-term amount))))
               ((let ((atom (if (negation-p e) (second e) e)))
                  (and (consp atom) (derived-predicate-p (first atom))))
                (error "Action ~a has derived predicate ~a in its effect; a derived ~
@@ -1184,17 +1366,21 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
               (t (error "Cannot translate effect ~s of action ~a" e name))))
       ;; A :cost slot is an alternative to an (increase (total-cost) n) effect.
       (when cost-slot
-        (when cost
+        (when (or cost cost-term)
           (error "Action ~a has both a :cost slot and an (increase (total-cost) ...) effect"
                  name))
-        (unless (numberp cost-slot)
-          (error "The :cost of action ~a must be a number, got ~s" name cost-slot))
-        (setq cost cost-slot))
+        (unless (or (numberp cost-slot)
+                    (function-term-p cost-slot function-arities))
+          (error "The :cost of action ~a must be a number or a declared function, got ~s"
+                 name cost-slot))
+        (if (numberp cost-slot)
+            (setq cost cost-slot)
+            (setq cost-term cost-slot)))
       ;; A :probability slot is the learnable alternative to a cost: the action's
       ;; occurrence gets a target marginal that the learning pipeline turns into a
       ;; weight.  Mutually exclusive with a cost on the same action.
       (when prob-slot
-        (when cost
+        (when (or cost cost-term)
           (error "Action ~a has both a cost and a :probability; give it one or the other"
                  name))
         (unless (and (realp prob-slot) (< 0 prob-slot 1))
@@ -1203,7 +1389,20 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
         (setq prob prob-slot))
       (unless (or adds dels)
         (error "Action ~a has no add or delete effects" name))
+      ;; Resolve a function-valued cost.  If it does not mention any of the
+      ;; action's parameters its value is one number for the whole schema, so it
+      ;; folds into COST exactly like a literal.  Otherwise it must be evaluated
+      ;; per grounding, below.
+      (when (and cost-term (not (term-mentions-parameters-p cost-term param-pairs)))
+        (setq cost (lookup-function-value
+                     cost-term function-values (format nil "action ~a" name))
+              cost-term nil))
       (let* ((negp (consp pre-))
+             (ground-costs
+               (when cost-term
+                 (ground-parameterized-costs name cost-term param-pairs
+                                             cost-scale function-values
+                                             object-pairs type-table)))
              (rguard (nreverse guard))
              (facts (append
                       (mapcar (lambda (f) (list 'pre act f)) (nreverse pre+))
@@ -1232,7 +1431,8 @@ Returns (values formula has-negative-preconditions-p parameter-types)."
         (values (wrap-quantifiers quants conj)
                 negp
                 (mapcar #'cdr param-pairs)
-                prob-form)))))
+                prob-form
+                ground-costs)))))
 
 (defun reassemble-conjunction (forms)
   "Rebuild a goal/constraint formula from its top-level conjuncts: nil, the single
@@ -1244,7 +1444,9 @@ no preferences removed, so non-preference problems are unaffected."
 
 (defun parse-problem (problem-def)
   "Returns (values domain-name object-pairs init goal+ goal- goal constraints
-preferences).  object-pairs is an alist of (object . type).  goal+/goal- are
+preferences init-section).  object-pairs is an alist of (object . type).
+init-section is the raw :init list, kept so the caller can read its (= ...)
+function assignments.  goal+/goal- are
 filled only for a simple (conjunction-of-literals) hard goal; goal is the hard
 goal description (preferences removed).  constraints is the list of hard
 (:constraints ...) modal formulas.  preferences is a list of (name . body) for
@@ -1280,7 +1482,8 @@ the (preference ...) forms found in either section."
           (values domain-name object-pairs (nreverse init)
                   (nreverse goal+) (nreverse goal-) goal
                   constraint-hard
-                  (append goal-prefs constraint-prefs)))))))
+                  (append goal-prefs constraint-prefs)
+                  init-section))))))
 
 ;;; Output
 
@@ -1310,7 +1513,8 @@ lower bound on numslices, and the FiFO translation of PDDL-EVIDENCE (NIL when
 none)."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
-    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints preferences)
+    (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints
+                          preferences init-section)
         (parse-problem problem-def)
       (unless (or domain-file domain-name)
         (error "No domain file given and no (:domain ...) form in ~a" problem-path))
@@ -1334,6 +1538,9 @@ none)."
                 domain-name domain-path (define-name domain-def)))
         (let* ((all-object-pairs (append object-pairs constant-pairs))
                (all-objects (mapcar #'car all-object-pairs))
+               ;; Cost functions: declared in the domain, valued in the problem.
+               (function-arities (parse-functions domain-def))
+               (function-values (parse-function-values init-section function-arities))
                (forbidden (append all-objects
                                   (mapcar #'car type-table)
                                   *reserved-domain-names*
@@ -1481,11 +1688,15 @@ none)."
               (pushnew tp types-used :test #'string-equal)))
           (dolist (p type-table)
             (pushnew (car p) types-used :test #'string-equal))
+          (check-functions-static domain-def)
           (dolist (s (define-sections domain-def))
             (when (and (consp s) (eq (first s) :action))
-              (multiple-value-bind (form negp param-types prob-form)
-                  (translate-action s forbidden effect-preds cost-scale)
+              (multiple-value-bind (form negp param-types prob-form ground-costs)
+                  (translate-action s forbidden effect-preds cost-scale
+                                    function-arities function-values
+                                    all-object-pairs type-table)
                 (push form action-forms)
+                (dolist (c ground-costs) (push c action-forms))
                 (when prob-form (push prob-form prob-forms))
                 (when negp (setq any-neg-pre t))
                 (dolist (tp param-types)
