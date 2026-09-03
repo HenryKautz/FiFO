@@ -432,6 +432,38 @@ if [[ "$DRY" -eq 0 ]]; then
   mkdir -p "$SRC_ROOT" "$LOG_DIR" || { echo "cannot create $SRC_ROOT" >&2; exit 1; }
 fi
 
+# Every solver here but rc2 is a C++ build, so check the toolchain once rather
+# than letting each one fail the same way.  The failure worth naming is a stale
+# libc++ header directory: a Command Line Tools upgrade can leave a nearly empty
+# /Library/Developer/CommandLineTools/usr/include/c++/v1 behind, and because
+# clang searches that path before the SDK's, the directory EXISTING is enough to
+# shadow the real headers.  Every build then dies on "'vector' file not found",
+# which reads like a missing dependency rather than a broken install.
+check_cxx() {
+  local t out
+  [[ "$DRY" -eq 1 ]] && return 0
+  t="$(mktemp -d)"; printf '#include <vector>\nint main(){return 0;}\n' > "$t/probe.cpp"
+  if out="$( (cd "$t" && brew_env "${CXX:-g++}" -std=c++11 -c probe.cpp -o probe.o) 2>&1 )"; then
+    rm -rf "$t"; return 0
+  fi
+  rm -rf "$t"
+  warn "the C++ toolchain cannot compile a program that includes <vector>:"
+  printf '    %s\n' "$(printf '%s' "$out" | head -3)" >&2
+  local stale=/Library/Developer/CommandLineTools/usr/include/c++/v1
+  if [[ -d "$stale" && ! -e "$stale/vector" ]]; then
+    warn "cause: $stale exists but is empty of headers -- a leftover from an older"
+    warn "Command Line Tools.  clang searches it before the SDK, so it shadows the real"
+    warn "libc++.  Move it aside (reversible) and every C++ build here starts working:"
+    warn "    sudo mv $stale ${stale}.stale"
+  else
+    warn "try:  xcode-select --install   (or reinstall the Command Line Tools)"
+  fi
+  warn "continuing anyway -- the C++ builds below will very likely fail."
+  say ""
+  return 1
+}
+check_cxx || true
+
 for s in "${SELECTED[@]}"; do
   step "$s -- $(solver_desc "$s")"
 

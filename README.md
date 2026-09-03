@@ -696,12 +696,21 @@ Keeping them out of the `.wff` is what lets `solve.sh` and `map.sh` guarantee th
 
 **The `-techniques=` string.** FiFO passes `*preprocessor-techniques*` through to MaxPre unchanged and never inspects it, so the format is MaxPre's. It is a small schedule language, not a flag list:
 
-- each **letter** selects one simplification technique (`b`, `u`, `v`, `s`, `r`, `g`, … — MaxPre's own documentation gives the table);
-- letters written next to each other are applied **in that order**;
-- `[...]` makes a group a **loop**: repeat it until it stops changing the instance;
-- `#` starts the **next round**, and rounds run left to right.
+- each **letter** selects one technique, and each is applied **to its own fixpoint**;
+- `[...]` groups techniques: the group is repeated until *all* of them are simultaneously at fixpoint. Brackets nest;
+- `#` is not merely a separator. Everything before it runs **before group detection and label addition**, and only three techniques are available at that stage — blocked clause elimination (`b`), unit propagation (`u`) and subsumption elimination (`s`). Everything after it runs on the labelled instance.
 
-So `[bu]#[buvsrg]` reads as "loop `b` then `u` to a fixed point; then loop the larger group `buvsrg` to a fixed point" — a cheap pass first, then a more expensive one on the already-shrunk instance. Leave the option at `nil` to get MaxPre's own default schedule, which is the right choice unless you are deliberately tuning.
+The letters, from `maxpre --help`:
+
+| | | | |
+|---|---|---|---|
+| `b` blocked clause elimination | `u` unit propagation | `v` bounded variable elimination | `s` subsumption elimination |
+| `r` self-subsuming resolution | `l` subsumed label elimination | `c` binary core removal | `a` bounded variable addition |
+| `g` generalized subsumed label elimination | `e` equivalence elimination | `h` unhiding on the binary implication graph | `t` structure labeling |
+| `G` intrinsic at-most-one constraints | `T` TrimMaxSAT | `V` TrimMaxSAT-based backbone detection | `H` hardening |
+| `R` failed literal elimination + unhiding | | | |
+
+So `[bu]#[buvsrg]` means: loop blocked-clause elimination and unit propagation to a joint fixpoint on the raw instance, then add labels and loop the larger group. MaxPre's own default is `[bu]#[buvsrgc]` — the same schedule plus binary core removal — and leaving `*preprocessor-techniques*` at `nil` selects it, which is the right choice unless you are deliberately tuning.
 ### Example: setting several options from the command line
 
 To solve a problem with tracing enabled, a different solver, and weighted output in the new DIMACS format, chain the `setq` forms before the call to `solve`:

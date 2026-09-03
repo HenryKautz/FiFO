@@ -950,7 +950,17 @@ the model back into the original variable numbering.
 *Installation note:* plain `make`; `src/Makefile` moves the binary to `maxpre` at
 the repository root. It needs Boost's iostreams headers (`main.cpp` includes
 `boost/iostreams/filter/gzip.hpp`), which on macOS need the Homebrew prefix on
-`CPATH`/`LIBRARY_PATH` — `install-solvers.sh` handles that.
+`CPATH`/`LIBRARY_PATH` — `install-solvers.sh` handles that. Both sub-makefiles
+hardcode `CC = g++`, so a compiler override has to be passed as a command-line
+variable (`make CC=...`), not through the environment.
+
+*If the build dies on `'vector' file not found`*, the problem is the machine, not
+MaxPre: a Command Line Tools upgrade can leave a nearly empty
+`/Library/Developer/CommandLineTools/usr/include/c++/v1` behind, and clang
+searches that directory before the SDK's, so its mere existence shadows the real
+libc++. `install-solvers.sh` probes for this before building and names the fix
+(`sudo mv` the stale directory aside). It breaks every C++ solver here, not just
+MaxPre.
 
 *Reconstruction is mandatory.* MaxPre renumbers and eliminates variables, so a
 model of the preprocessed instance is meaningless against FiFO's `.map` file.
