@@ -252,8 +252,9 @@ giving back what made the approach attractive. WAPS, the modern replacement,
 compiles to d-DNNF — which is exactly what fails on the big instances.
 
 The one transferable idea: WeightGen takes an **independent support** `S`,
-because it "significantly reduce[s] the size of XOR constraints". That is §13 of
-`probability-background.md` — in a SatPlan encoding the `Occurs` atoms determine
+because it "significantly reduce[s] the size of XOR constraints". That is the
+projected-inference idea (then §13 of `probability-background.md`, since moved to
+`discussion.md`) — in a SatPlan encoding the `Occurs` atoms determine
 the `Holds` atoms by unit propagation, so the action variables are a natural,
 much smaller support. Orthogonal to the tilt problem, and still unexploited.
 
@@ -312,7 +313,7 @@ building anything.
 ## 5. Max-term marginals: generalising `recognize.sh` beyond planning
 
 `recognize.sh` computes a posterior using cheapest-plan (MaxSAT) calls only —
-the maximum-term approximation of §14, applied to a restricted set. The question
+the maximum-term approximation of §13 (then §14), applied to a restricted set. The question
 was whether the same move gives **marginals for FiFO generally**, not just goal
 posteriors for planning.
 
@@ -321,7 +322,7 @@ It does, with a clean derivation and two sharp limits.
 ### The formula
 
 A marginal is a ratio of partition functions over the two polarities of an atom,
-so substituting the §14 decomposition `log Z_S = −β·c_min(S) + log Ω_S`:
+so substituting the §13 decomposition `log Z_S = −β·c_min(S) + log Ω_S`:
 
 ```
 P(a) = σ( β·(c_min(¬a) − c_min(a))  +  log(Ω_a / Ω_¬a) )

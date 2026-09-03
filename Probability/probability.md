@@ -14,10 +14,15 @@
 
 - [The probability model](#the-probability-model)
 - [MAP inference: the most probable model](#map-inference-the-most-probable-model)
+  - [Running it](#running-it-solve-plus-two-settings) · [Reading the objective](#reading-the-objective) · [Conditional MAP](#conditional-map-evidence) · [Where MAP already runs for you](#where-map-already-runs-for-you) · [MAP vs. marginals](#map-and-marginals-are-different-questions)
 - [Marginal inference: weights → probabilities](#marginal-inference-weights--probabilities)
-- [Max-term marginals: MaxSAT instead of counting](#max-term-marginals-maxsat-instead-of-counting)
+  - [Weight scale](#weight-scale) — read this first; it applies to every back end
+  - Exact: [enumeration](#exact-enumeration-small-instances) · [ADDMC](#weighted-model-counting-via-addmc) · [FiFO's d-DNNF compiler](#d-dnnf-compilation-fifos-own-no-external-binary) · [the d4 compiler](#d-dnnf-via-the-external-d4-compiler)
+  - Approximate: [MC-SAT sampling](#approximate-marginals-by-mc-sat-sampling) · [max-term](#max-term-marginals-maxsat-instead-of-counting)
+  - [Conditioning on evidence](#conditioning-on-evidence) · [Plan recognition posteriors](#plan-recognition-posteriors-recognizesh)
 - [From inference to learning](#from-inference-to-learning)
 - [Weight learning: probabilities → weights](#weight-learning-probabilities--weights)
+  - [Two estimators](#two-estimators) · [Running it](#running-it) · [Input format](#input-format-example) · [Worked examples](#worked-examples-in-this-directory) · [Limitations](#limitations-current)
 - [References](#references)
 
 A FiFO theory with weighted literals defines a probability distribution over the
@@ -112,7 +117,7 @@ ends time out at the same horizons.
 probable *explanation*, an assignment to *every* variable. "Marginal MAP", which
 maximizes over a subset of variables and sums over the rest, is a strictly harder
 problem that FiFO does not implement. See
-[probability-background.md §15](probability-background.md#15-map-inference-the-mode-of-the-distribution).)
+[probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).)
 
 ### Running it: `solve` plus two settings
 
@@ -231,7 +236,7 @@ you drive MaxSAT yourself.
 Two further cautions. The optimum need not be **unique**: MaxSAT returns one
 minimum-cost model with no indication of how many others tie it, a blindness that
 matters for the approximation in
-[probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function).
+[probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function).
 And TT-Open-WBO-Inc is an **anytime** solver: it prints an `o <cost>` line each time
 it improves, and `interpret` takes the *last* one, so an interrupted run yields the
 best model found rather than a proven optimum.
@@ -285,11 +290,25 @@ not. Two practical consequences:
 
 The theory of the mode-vs-mean distinction, the zero-temperature limit that
 connects them, and MAP's role as the oracle inside weight learning are in
-[probability-background.md §15](probability-background.md#15-map-inference-the-mode-of-the-distribution).
+[probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).
 
 ------
 
 ## Marginal inference: weights → probabilities
+
+### Weight scale
+
+This matters more than it looks, and it applies to **every** back end below.
+The weight-learning pipeline writes *integer* weights, the real costs multiplied by a scale (default 100) so MaxSAT has integers to optimize, and records `scale: N` in the `.scnf` header. The absolute scale is irrelevant to MaxSAT — it only minimizes a sum — but it is *everything* to a probability: `P(x) ∝ exp(−cost(x))`, so weights of 69 versus 0.69 describe utterly different distributions. At the ×100 scale the distribution is essentially zero-temperature: it collapses onto the minimum-cost models, the partition function underflows toward `0`, and the marginals are pulled to the corners. On the 2-atom `(OR (P A) (P B))` example with learned weight 69, the marginals come out `0.50`; at the true weight `0.69` they are `0.60` — which is exactly the target the learner was fitting.
+
+So all of `marginals` (enumeration), `marginals-addmc`, `wmc`, and the circuit back ends divide the integer weights by the scale before exponentiating. By default they read `scale: N` from the header (1.0 if absent, e.g. hand-written or raw-SatPlan-cost scnfs); pass `:scale 1` / `--scale 1` to count with the raw integer weights, or `:scale n` to force a value. The shell flag is `--scale n` on `wmc.sh` and on `marginals.sh` for **all** solvers — so every back end agrees on the same file.
+
+MaxSAT is the exception, and for a reason worth keeping in mind: MAP is the
+zero-temperature limit of this same distribution, and `arg min` is invariant
+under a positive rescaling — so `map.sh` may ignore what every marginal depends
+on. See [probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).
+
+------
 
 ### Exact enumeration (small instances)
 
@@ -310,7 +329,7 @@ P(L) = acc_L / Z
 (marginals "file.scnf" &key out-file weighted-only scale (node-limit 5000000) (verbose t))
 ```
 
-which reads a weighted `.scnf` (hard `(OR ...)` clauses plus `(WEIGHT literal w)` costs), enumerates the feasible set, and computes the exact marginal `P(atom = true)` of **every** atom under the Gibbs distribution `P(x) ∝ exp(-Σ weights of true literals)` — weighted and unweighted atoms alike, so SatPlan `Holds` state atoms are reported alongside `Occurs` action atoms. It reuses the same feasible-set enumeration the MaxEnt fit uses, but tracks every variable rather than only the weighted ones. With no weights the distribution is uniform over the feasible set. It honors the same `scale` as the other back ends (auto-read from the `scale: N` header, `:scale 1` for raw weights — see "Weight scale" below), so all solvers report the same marginals on the same file. It prints one `(MARGINAL <atom> <probability>)` line per atom (sorted), and `:out-file` also writes them to a file. Being exact enumeration, it is for small instances (the `node-limit` caps the search) — the WMC and circuit back ends below are the path to scale, and the sampling methods described in [probability-background.md](probability-background.md) go beyond that.
+which reads a weighted `.scnf` (hard `(OR ...)` clauses plus `(WEIGHT literal w)` costs), enumerates the feasible set, and computes the exact marginal `P(atom = true)` of **every** atom under the Gibbs distribution `P(x) ∝ exp(-Σ weights of true literals)` — weighted and unweighted atoms alike, so SatPlan `Holds` state atoms are reported alongside `Occurs` action atoms. It reuses the same feasible-set enumeration the MaxEnt fit uses, but tracks every variable rather than only the weighted ones. With no weights the distribution is uniform over the feasible set. It honors the same `scale` as the other back ends (auto-read from the `scale: N` header, `:scale 1` for raw weights — see [Weight scale](#weight-scale) above), so all solvers report the same marginals on the same file. It prints one `(MARGINAL <atom> <probability>)` line per atom (sorted), and `:out-file` also writes them to a file. Being exact enumeration, it is for small instances (the `node-limit` caps the search) — the WMC and circuit back ends below are the path to scale, and the sampling methods described in [probability-background.md](probability-background.md) go beyond that.
 
 Pass `:weighted-only t` to report only the atoms that carry a weight; this also restricts the enumeration to those variables (unweighted ones collapse into a multiplicity), the same cheaper enumeration the MaxEnt fit uses — useful when the state-atom marginals aren't needed.
 
@@ -361,10 +380,6 @@ bin/marginals.sh problem.scnf --solver addmc
 bin/marginals.sh problem.scnf --solver addmc --weighted-only --out problem.marginals
 bin/marginals.sh problem.scnf --solver addmc --epsilon 1e-9   # faster, approximate
 ```
-
-**Weight scale.** This matters more than it looks. The weight-learning pipeline writes *integer* weights, the real costs multiplied by a scale (default 100) so MaxSAT has integers to optimize, and records `scale: N` in the `.scnf` header. The absolute scale is irrelevant to MaxSAT — it only minimizes a sum — but it is *everything* to a probability: `P(x) ∝ exp(−cost(x))`, so weights of 69 versus 0.69 describe utterly different distributions. At the ×100 scale the distribution is essentially zero-temperature: it collapses onto the minimum-cost models, the partition function underflows toward `0`, and the marginals are pulled to the corners. On the 2-atom `(OR (P A) (P B))` example with learned weight 69, the marginals come out `0.50`; at the true weight `0.69` they are `0.60` — which is exactly the target the learner was fitting.
-
-So all of `marginals` (enumeration), `marginals-addmc`, `wmc`, and the circuit back ends divide the integer weights by the scale before exponentiating. By default they read `scale: N` from the header (1.0 if absent, e.g. hand-written or raw-SatPlan-cost scnfs); pass `:scale 1` / `--scale 1` to count with the raw integer weights, or `:scale n` to force a value. The shell flag is `--scale n` on `wmc.sh` and on `marginals.sh` for **all** solvers — so every back end agrees on the same file.
 
 Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported atom, so `--weighted-only` (or a small atom set) keeps the run count down on instances with many state atoms.
 
@@ -559,7 +574,7 @@ detected and refused rather than silently ignoring `-mcsat`. Sampling parameters
 
 Every back end above *counts*, exactly or approximately. `--solver max-term` does
 not count at all: it applies the maximum-term approximation
-([probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function))
+([probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function))
 to each atom's two polarities,
 
 $$\operatorname{logit} P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)$$
@@ -620,6 +635,32 @@ Measured against exact enumeration on `test_marginals_reweighted.scnf`: the two
 determined atoms agree exactly (and are proved), and the largest error elsewhere
 is 0.035.
 
+**Interface & dependency.** `--solver max-term` is `marginals-maxterm` in
+`lisp/maxterm.lisp`:
+
+```lisp
+(marginals-maxterm "problem.scnf" :all-atoms t)            ; every atom (= --query all)
+(marginals-maxterm "problem.scnf"
+                   :query   '((occurs (turn-on s1) 1))     ; a list of ground atoms
+                   :priors  '(((occurs (turn-on s1) 1) . 0.3))   ; alist, atom . p
+                   :beta    1.0
+                   :groups  :none)                         ; omit for automatic detection
+```
+
+One of `:query`, `:all-atoms` or `:weighted-only` is required — each atom costs a
+MaxSAT solve, so there is no default query.
+
+Unlike every other back end this one needs an **exact** MaxSAT solver, because the
+estimate is a *difference* of two minima and two unproven upper bounds do not
+cancel. The default is `bin/rc2-maxsat.py` (PySAT's core-guided RC2, which prints
+`s OPTIMUM FOUND`), found beside the script rather than on `PATH` since FiFO ships
+it; `pip install python-sat` is its one requirement. `:solver` — `--maxsat-solver`
+from the shell — selects another, and `*maxterm-solver*` sets it globally (`nil`
+falls back to `*solver*`). An anytime solver is accepted but never proves
+optimality: `mt--solve` marks each such result `:unproved`, and the run counts them
+and warns. On `pb1`, 15 of 16 solves came back unproven with the anytime solver —
+and rc2 was 2.7x faster besides.
+
 ------
 
 ### Conditioning on evidence
@@ -646,7 +687,7 @@ For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.
 
 ### Plan recognition posteriors (recognize.sh)
 
-The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
+The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
 
 The instance is a costed domain whose hypotheses are nullary derived predicates `hyp0 … hypN` (as produced by `make-recognition-instance.lisp`, so the goal is `(or (hyp0) … (hypN))`), plus an observation sequence as an `(occur-in-order …)` evidence file. For each hypothesis `hypI` the script calls `planner.sh` twice at a fixed horizon `H` — the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`, cost $`c(\text{O})`$) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`, cost $`c(\lnot\text{O})`$) — and forms
 
@@ -661,7 +702,7 @@ bin/recognize.sh \
     SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt --horizon 6
 ```
 
-It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §14](probability-background.md#14-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
 
 ------
 
@@ -719,6 +760,18 @@ the learned costs back into copies of the PDDL files. See the README's
 "Learning costs and weights from probabilities".
 
 ### Two estimators
+
+**What this pipeline does and does not learn.** It fits weights to *stated target
+marginals* — beliefs about how often something should hold. That is one of the
+five data regimes
+[probability-background.md](probability-background.md) surveys (Case 4, and with a
+regularization centre Case 5); the estimators below are the two implementations of
+it. Learning from **demonstration data** — a corpus of plans or observed
+trajectories, fitted by structured perceptron, max-margin/cutting-plane, or
+CCCP/EM as in §§4–7 there — is **not implemented**. Those sections describe the
+target architecture, not something you can run today. If you have demonstrations
+rather than beliefs, the usable route is to summarise them as target marginals
+(the observed frequency of each tied feature) and fit those.
 
 | File | Function | Method | Use when |
 |---|---|---|---|

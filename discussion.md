@@ -16,6 +16,7 @@
 - [Handling Sequential Action Evidence](#handling-sequential-action-evidence)
 - [Goal Posteriors and the Per-Goal Normalization (Z_G) Issue](#goal-posteriors-and-the-per-goal-normalization-z_g-issue)
 - [Max-Term versus Counting](#max-term-versus-counting)
+- [Projected Inference over Action Variables](#projected-inference-over-action-variables)
 
 ## Mixing Probabilities and Utilities
 
@@ -249,7 +250,7 @@ routes, one still open and one now implemented:
   recognizer `P(O | G) ≈ σ(β·(c(G,¬O) − c(G,O)))`. **This route is implemented**,
   in `bin/recognize.sh`, and is the practical way to get the calibrated posterior
   on these benchmarks. The theory is in
-  [probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function),
+  [probability-background.md §13](Probability/probability-background.md#13-maximum-term-approximation-of-the-partition-function),
   the tool in
   [probability.md](Probability/probability.md#plan-recognition-posteriors-recognizesh),
   and the results in
@@ -430,9 +431,48 @@ would qualify. The cheapest useful one is the uniqueness probe of (2).
 
 ### References
 
-- See [Probability/probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function)
+- See [Probability/probability-background.md §13](Probability/probability-background.md#13-maximum-term-approximation-of-the-partition-function)
   for the derivation of the maximum-term approximation and its error, and
-  [§15](Probability/probability-background.md#15-map-inference-the-mode-of-the-distribution)
+  [§14](Probability/probability-background.md#14-map-inference-the-mode-of-the-distribution)
   for the mode-versus-marginals distinction it rests on.
 - [notes-from-claude-code.md §5](notes-from-claude-code.md) records the working
   discussion this section summarises, including the measurements.
+
+------
+
+## Projected Inference over Action Variables
+
+For SatPlan encodings there is important additional leverage. The variables partition into:
+
+- **Action variables**: `(Occurs a s)` — carry weights, are the decisions
+- **State variables**: `(Holds f s)` — unweighted, largely determined by the hard clauses given the action assignment
+
+The frame axioms, precondition/effect axioms, and initial/goal constraints are tight: given a complete action assignment, the state variables are almost entirely forced by unit propagation. The effective sampling space is over action sequences, not full assignments.
+
+This suggests a **projected inference** approach: sample over action variable assignments (using MC-SAT or random restarts), and derive state variable values deterministically via unit propagation after each action sample. Marginals of state variables are then computed as a function of action marginals rather than being sampled directly. This drastically reduces the effective dimension of the sampling problem.
+
+**Status: not implemented.** Nothing in the pipeline projects onto the action
+variables; every back end samples or counts over the full assignment. The idea is
+recorded here rather than in
+[probability-background.md](Probability/probability-background.md) because that
+document covers the machinery FiFO has, and this is a proposal.
+
+Two things make it more than a speculation. `--unitprop` already measures the
+effect the projection would exploit: on SatPlan encodings it reports 85–90% of
+variables fixed by propagation, which is the same observation that the action
+atoms carry the free dimensions. And the max-term back end already restricts
+attention to a queried subset of atoms, so a *counting* method that did the same
+would slot into the same interface.
+
+The open question is the completion step. Unit propagation determines the state
+atoms only when the action assignment leaves nothing free; where it does not, the
+residual has to be counted rather than propagated, and it is not obvious that the
+residuals are small enough — or independent enough across samples — for the
+projected marginals to be cheaper than the direct ones.
+
+### References
+
+- [Probability/probability-background.md §12](Probability/probability-background.md#12-sampling-based-marginal-inference-mc-sat)
+  for MC-SAT, the sampler this would sit on top of, and
+  [§14](Probability/probability-background.md#14-map-inference-the-mode-of-the-distribution)
+  for why this is a summing method rather than a marginal MAP.

@@ -427,7 +427,7 @@ read the **efficiency** and **mixing** lines before the numbers; see
 [Probability/probability.md](Probability/probability.md#approximate-marginals-by-mc-sat-sampling).
 
 **`--solver max-term` answers a different question.** It applies the maximum-term
-approximation ([probability-background.md §14](Probability/probability-background.md#14-maximum-term-approximation-of-the-partition-function))
+approximation ([probability-background.md §13](Probability/probability-background.md#13-maximum-term-approximation-of-the-partition-function))
 per atom:
 
 ```
