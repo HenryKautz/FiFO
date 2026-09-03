@@ -179,8 +179,7 @@ Two equivalent lenses organize everything below.
 **Regret (discriminative).** The optimality gap of demonstration $k$ under $\theta$,
 
 $$
-g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}}
-\;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
+g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}} \;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
 $$
 
 is a linear term minus a concave term, hence **convex** in $\theta$. The first term
