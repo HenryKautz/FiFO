@@ -655,6 +655,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
+| `tests/run-test-options.sh` | The `(option ...)` boundary: the six solving-policy options are refused in a `.wff` (with a refusal that names the replacement), the three generation options still work, and `propositionalize`'s `:cnf-format` override emits one `.scnf` in all three dialects. Needs no solver. |
 | `tests/run-test-weight-formula.sh` | Formula-valued `weight`/`probability`: the reified biconditional appears, illegal nesting errors, and maxent learns a formula's weight so `P(φ)` hits its target. |
 
 ------
@@ -725,17 +726,24 @@ is, where it comes from, and what its build needs.
 
 | Solver | Lisp variable | Environment variable | Command-line flag | Fallback |
 |---|---|---|---|---|
-| SAT (feasibility) | `*solver*` | — | `planner.sh --solver`, or `(option *solver* ...)` in a `.wff` | `kissat` on `PATH` |
-| MaxSAT (costs) | `*solver*` (rebound) | — | `WEIGHTED_SOLVER` at the top of `planner.sh`; `(option *solver* tt-glucose)` in a `.wff` | `tt-open-wbo-inc-Glucose4_1` on `PATH` |
+| SAT (feasibility) | `*solver*` | — | `solve.sh --solver`, `planner.sh --solver`, or `solve`'s `:solver` | `kissat` on `PATH` |
+| MaxSAT (costs) | `*solver*` (rebound) | — | `map.sh --solver`, `planner.sh --weighted-solver` (or `WEIGHTED_SOLVER` at its top), or `solve`'s `:solver` | `tt-open-wbo-inc-Glucose4_1` on `PATH` |
 | ADDMC | `*addmc*` | `ADDMC` | `--addmc-bin` (marginals.sh, wmc.sh, planner.sh) | `addmc` on `PATH` |
 | d4 | `*d4*` | `D4` | `marginals.sh --d4-bin` | a `d4v2` checkout beside the FiFO repo: `d4v2/demo/compiler/build/compiler` |
 | WalkSAT (MC-SAT) | `*walksat*` | `WALKSAT` | `marginals.sh --walksat-bin` | a `Walksat` checkout beside the FiFO repo: `Walksat/Walksat_v58_MC-SAT/walksat`; else `walksat` on `PATH` |
 
-Two solver-name abbreviations are built in and resolved by `(option *solver* ...)`:
-`tt-glucose` → `tt-open-wbo-inc-Glucose4_1` and `tt-intelsat` →
-`tt-open-wbo-inc-IntelSATSolver`. Note that they are resolved **only** by the
-`option` form — a bare `(setq *solver* ...)` needs the full binary name. Add your
-own with `(option *solver-abbreviations* (("ms" "minisat-2.2")))`.
+Four solver-name abbreviations are built in: `tt-glucose` →
+`tt-open-wbo-inc-Glucose4_1`, `tt-intelsat` → `tt-open-wbo-inc-IntelSATSolver`,
+`nuwls` → `nuwls-c`, and `evalmaxsat` → `EvalMaxSAT_bin`. They are resolved by
+`solve`'s `:solver` keyword and by the shell drivers (`_fifo_resolve_solver` in
+`bin/fifo-solvers.sh` mirrors the table) — a bare `(setq *solver* ...)` needs the
+full binary name. Add your own with
+`(setq *solver-abbreviations* '(("ms" "minisat-2.2")))`.
+
+A `.wff` cannot select a solver, a format, a timeout or a preprocessor: those say
+how to *solve* a problem rather than what it is, and letting a file set them
+defeated the very checks `solve.sh` and `map.sh` perform. See
+[Solving policy is the caller's](README.md#solving-policy-is-the-callers).
 
 ------
 
@@ -788,7 +796,7 @@ tracks.
 
 These minimize the total weight of the true weighted literals subject to the hard
 clauses — i.e. they compute the **most probable model**. They read one of the two
-weighted DIMACS formats FiFO emits (`(option *cnf-format* WCNF)` for the 2022
+weighted DIMACS formats FiFO emits (`:cnf-format 'WCNF` for the 2022
 format with `h` lines, `WCNF-OLD` for the classic `p wcnf` header). See
 [MAP inference](Probability/probability.md#map-inference-the-most-probable-model)
 for how to drive one end to end.
@@ -821,7 +829,7 @@ The winner of all four incomplete categories at MaxSAT Evaluation 2022, and the
 lineage that has topped the anytime tracks since. It is an Open-WBO derivative —
 the same family as TT-Open-WBO-Inc — with NuWLS as its stochastic-local-search
 component, so it reads the same WCNF and prints the same `s`/`o`/`v` output.
-Select it with `(option *solver* nuwls)` or `:solver "nuwls"`.
+Select it with `:solver "nuwls"`, or `--solver nuwls` from `map.sh`.
 
 *Installation note:* `cd code && make`; the Makefile already writes the binary to
 `bin/nuwls-c`. It needs `gmpxx.h` and `libgmpxx`, which on macOS live under the
@@ -1060,7 +1068,7 @@ scripts by pipeline stage and output; this table gives them by solver.
 | `solve.sh` | satisfiability | SAT — `kissat` |
 | `map.sh` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*`, `nuwls-c` (anytime); `wmaxcdcl`, `EvalMaxSAT_bin`, `rc2-maxsat.py` (exact) |
 | `solve` (plain `.wff`) | satisfiability | SAT — `kissat` |
-| `solve` with `(option *cnf-format* WCNF)` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*` |
+| `solve` with `:cnf-format 'WCNF` | MAP / most probable model | MaxSAT — `tt-open-wbo-inc-*` |
 | `planner.sh` horizon search | satisfiability | SAT — `kissat` |
 | `planner.sh` cost minimization | MAP | MaxSAT — `tt-open-wbo-inc-Glucose4_1` |
 | `recognize.sh` | `2n` conditional MAP queries | MaxSAT (via `planner.sh`) |

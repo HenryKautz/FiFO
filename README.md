@@ -295,7 +295,7 @@ Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* i
 
 ## SAT solvers
 
-The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected — with `(option *solver* <name>)` in a `.wff`, or the planner's `SAT_SOLVER` / `--solver` setting.
+The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected — with `(solve "problem.wff" :solver <name>)`, `(setq *solver* "<name>")`, `solve.sh --solver`, or the planner's `SAT_SOLVER` / `--solver` setting. A `.wff` cannot choose its own solver; see [Solving policy is the caller's](#solving-policy-is-the-callers).
 
 The catalog of solvers FiFO can use — SAT solvers, weighted MaxSAT solvers, model counters, knowledge compilers, and the MC-SAT sampler — with what each one does, where to get it, and installation notes, is in [software-components.md](software-components.md#solvers-and-external-tools).
 
@@ -479,7 +479,16 @@ A `.scnf` containing `(PROBABILITY ...)` forms carries *target probabilities, no
 
 ### Weighted CNF output formats
 
-The option `(option *cnf-format* <format>)` controls how weights appear in the DIMACS file produced by `propositionalize`. It has no effect when the problem contains no weights. (`instantiate` records the setting in the `.scnf` as a trailing `(OPTION WEIGHTS <format>)` line, which is how `propositionalize` learns of it; that internal marker is not a `.wff`-level option.)
+`*cnf-format*` controls how weights appear in the DIMACS file produced by `propositionalize`. It has no effect when the problem contains no weights. Set it with `(solve "problem.wff" :cnf-format <format>)`, `(setq *cnf-format* '<format>)`, or by choosing the right driver — `solve.sh` fixes `CNF` and `map.sh` fixes `WCNF`.
+
+`instantiate` reads `*cnf-format*` and records its decision in the `.scnf` as a trailing `(OPTION WEIGHTS <format>)` line, and that line — not the global — is what `propositionalize` reads back. To emit one existing `.scnf` in a different dialect, override the recorded line with `propositionalize`'s own `:cnf-format` argument:
+
+```lisp
+(propositionalize "problem.scnf" :cnf-format 'CNF   :cnffile "sat.cnf"  :mapfile "p.map")
+(propositionalize "problem.scnf" :cnf-format 'WCNF  :cnffile "map.wcnf" :mapfile "p.map")
+```
+
+Without the argument the file's own recorded format is used, so the round trip through a `.scnf` is faithful by default.
 
 **`cnf`** (the default) writes a standard `p cnf` file followed by one `cw <literal> <weight>` line per weight. Since these lines begin with the letter `c`, ordinary SAT solvers treat them as comments, so the file remains valid input for solvers like kissat (which simply ignore the weights).
 
@@ -492,7 +501,13 @@ In both wcnf formats, a weight *w* on literal *L* (the cost of making *L* true) 
 - **Shift**: for each atom, the minimum of its total weight when true and its total weight when false is subtracted from both, so at most one polarity retains a (positive) weight. This also eliminates negative weights: a reward for making a literal true becomes a cost for making it false. The discarded total is a constant offset on the objective, reported in a comment line `c weight shift offset <n>`.
 - **Scale**: all weights are multiplied by the smallest positive integer making them integral (e.g., weights 0.4 and 2 are scaled by 5 to 2 and 10), reported in a comment line `c weights scaled by <n>`.
 
-The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that `solve` runs whichever binary `*solver*` names, and the default (`kissat`) is an ordinary SAT solver that will not accept a wcnf file — so a weighted problem needs `(option *solver* tt-glucose)` (or another MaxSAT solver) alongside `(option *cnf-format* WCNF)`. With both set, `solve` performs MAP inference end to end and `interpret` reports the objective; see [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
+The true cost of a solution is the MaxSAT solver's reported cost divided by the scale, plus the offset. Note that `solve` runs whichever binary `*solver*` names, and the default (`kissat`) is an ordinary SAT solver that will not accept a wcnf file — so a weighted problem needs a MaxSAT solver alongside a weighted format. Both are the caller's to set, together:
+
+```lisp
+(solve "problem.wff" :cnf-format 'WCNF :solver "tt-glucose")
+```
+
+or simply `map.sh problem.wff`, which pins the pair for you and refuses a solver of the wrong kind. With both set, `solve` performs MAP inference end to end and `interpret` reports the objective; see [Probability/probability.md](Probability/probability.md#map-inference-the-most-probable-model).
 
 ### Weighted CNF solvers
 
@@ -631,28 +646,6 @@ The input to FiFO may include the following options, which should appear before 
 ; Disable tracing (default).
 (option *tracing* 0)
 
-; Format used for the DIMACS cnf file when the problem contains weighted literals (see
-; the Optimization section): CNF (default), WCNF-OLD, or WCNF.
-(option *cnf-format* CNF)
-(option *cnf-format* WCNF-OLD)
-(option *cnf-format* WCNF)
-
-; SAT solver to use (default: kissat).  Quotation marks may be omitted when the
-; solver name contains only letters, digits, hyphens, and underscores.
-(option *solver* kissat)
-(option *solver* "my-solver")
-
-; The solver name may also be an abbreviation, in which case the solver is set to
-; the corresponding full name.  Two abbreviations are predefined:
-;   tt-glucose   -> tt-open-wbo-inc-Glucose4_1
-;   tt-intelsat  -> tt-open-wbo-inc-IntelSATSolver
-(option *solver* tt-glucose)
-
-; Redefine the abbreviation table.  The value is a list of (abbreviation full-name)
-; pairs.  Full names must be written as strings to preserve their case, since the
-; Lisp reader uppercases bare symbols.  Abbreviations are matched case-insensitively.
-(option *solver-abbreviations* (("glu" "glucose-4.2.1") ("ms" "minisat-2.2")))
-
 ; Time horizon for SatPlan problems generated by pddl2fifo (see the Planning section).
 ; Must be an integer.  Set this before the (alias numslices ...) line that reads it.
 (option *satplan-numslices* 10)
@@ -669,24 +662,35 @@ The multiply trace is especially useful for diagnosing exponential clause blowup
 
 ### Summary of all options
 
-Every option is a Lisp global variable whose name is the same in both forms. There are two ways to set it:
+Every option is a Lisp global variable whose name is the same in both forms. There are two ways to set one:
 
 - **In a `.wff` file**, with an `(option <name> <value>)` form placed before any formulas.
 - **On the command line**, with an `--eval '(setq <name> <value>)'` form (or `(set ...)` for an unbound variable) given to `sbcl` after `--load FiFO.lisp`. A command-line setting persists for the whole Lisp session; an `(option ...)` form in a file overrides it when that file is processed.
 
 The two forms differ only in how some values are written: booleans use `1`/`0` in a file but `t`/`nil` on the command line, and list-valued options are written unquoted in a file but must be quoted (`(quote ...)`) for `setq`.
 
+Only the options below may appear in a `.wff`. They all shape *what problem gets generated*; anything that says *how to solve it* belongs to the caller (next section).
+
 | Option (variable) | Meaning | Default | In a `.wff` file | On the command line |
 |---|---|---|---|---|
 | `*compact-encoding*` | Introduce auxiliary (Tseitin) propositions to keep the instantiated formula small | `t` (on) | `(option *compact-encoding* 0)` | `--eval '(setq *compact-encoding* nil)'` |
 | `*tracing*` | Print `[TRACE]` diagnostics during instantiation | `nil` (off) | `(option *tracing* 1)` | `--eval '(setq *tracing* t)'` |
-| `*cnf-format*` | DIMACS output format for weighted problems: `CNF`, `WCNF-OLD`, or `WCNF` | `CNF` | `(option *cnf-format* WCNF)` | `--eval '(setq *cnf-format* (quote WCNF))'` |
-| `*solver*` | SAT solver executable invoked by `satisfy`/`solve`; abbreviations are resolved via `*solver-abbreviations*` | `"kissat"` | `(option *solver* tt-glucose)` | `--eval '(setq *solver* "kissat")'` |
-| `*solver-timeout*` | Seconds before the solver is stopped with `SIGTERM`. `0`, `-1` and `nil` all mean no limit. See [Solver time limits](#solver-time-limits) | `600` | `(option *solver-timeout* 60)` | `--eval '(setq *solver-timeout* 60)'` |
-| `*preprocessor*` | MaxPre 2 binary used to preprocess a weighted CNF before solving, reconstructing the model afterwards; `nil` for none. See [Preprocessing with MaxPre 2](#preprocessing-with-maxpre-2) | `nil` | `(option *preprocessor* maxpre)` | `--eval '(setq *preprocessor* "maxpre")'` |
-| `*preprocessor-techniques*` | MaxPre's `-techniques=` string; `nil` uses MaxPre's own default | `nil` | `(option *preprocessor-techniques* "[bu]#[buvsrg]")` | `--eval '(setq *preprocessor-techniques* "[bu]#[buvsrg]")'` |
-| `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`; full names must be strings | `tt-glucose`, `tt-intelsat` | `(option *solver-abbreviations* (("ms" "minisat-2.2")))` | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
 | `*satplan-numslices*` | SatPlan time horizon read by `pddl2fifo`-generated wff files | unbound (treated as `2`) | `(option *satplan-numslices* 10)` | `--eval '(setq *satplan-numslices* 10)'` |
+
+### Solving policy is the caller's
+
+The variables below say *how to attack* a problem rather than what the problem is, so a `.wff` may not set them — `(option *solver* ...)` and its relatives are rejected with an error naming the replacement. There are three places to say it instead: a `solve` keyword (which binds the variable for that call only), a `setq` for the whole session, or the matching flag on `solve.sh` / `map.sh` / `planner.sh`.
+
+Keeping them out of the `.wff` is what lets `solve.sh` and `map.sh` guarantee the format/solver pairing they exist to enforce, and what stops a file from silently overriding the planner's own choice at every horizon.
+
+| Variable | Meaning | Default | `solve` keyword | On the command line |
+|---|---|---|---|---|
+| `*cnf-format*` | DIMACS output format for weighted problems: `CNF`, `WCNF-OLD`, or `WCNF`. Also a `propositionalize` argument, which overrides the format recorded in a `.scnf` | `CNF` | `:cnf-format 'WCNF` | `--eval '(setq *cnf-format* (quote WCNF))'` |
+| `*solver*` | SAT or MaxSAT executable invoked by `satisfy`/`solve`; abbreviations are resolved via `*solver-abbreviations*` | `"kissat"` | `:solver "tt-glucose"` | `--eval '(setq *solver* "kissat")'` |
+| `*solver-timeout*` | Seconds before the solver is stopped with `SIGTERM`. `0`, `-1` and `nil` all mean no limit. See [Solver time limits](#solver-time-limits) | `600` | `:timeout 60` | `--eval '(setq *solver-timeout* 60)'` |
+| `*preprocessor*` | MaxPre 2 binary used to preprocess a weighted CNF before solving, reconstructing the model afterwards; `nil` for none. See [Preprocessing with MaxPre 2](#preprocessing-with-maxpre-2) | `nil` | `:preprocessor "maxpre"` | `--eval '(setq *preprocessor* "maxpre")'` |
+| `*preprocessor-techniques*` | MaxPre's `-techniques=` string; `nil` uses MaxPre's own default | `nil` | `:preprocessor-techniques "[bu]#[buvsrg]"` | `--eval '(setq *preprocessor-techniques* "[bu]#[buvsrg]")'` |
+| `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`; full names must be strings. Resolved by `solve`'s `:solver` | `tt-glucose`, `tt-intelsat`, `nuwls`, `evalmaxsat` | — | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
 
 ### Example: setting several options from the command line
 
@@ -703,7 +707,7 @@ sbcl --load FiFO.lisp \
 
 ## Running FiFO
 
-Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable via `(option *solver* <name>)` in a `.wff` file or `(setq *solver* "<name>")` on the command line).
+Requires SBCL and Quicklisp. The SAT solver defaults to `kissat` (configurable with `(solve "problem.wff" :solver "<name>")` or `(setq *solver* "<name>")` on the command line).
 
 Load the interpreter interactively:
 

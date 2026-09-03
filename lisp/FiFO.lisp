@@ -6,8 +6,9 @@
 (defvar *solver* "kissat")
 
 ;; Abbreviations for solver names: a list of (abbreviation full-name) pairs
-;; (binary lists, not an association list). When the *solver* option is given an
-;; abbreviation, the *solver* variable is set to the corresponding full name.
+;; (binary lists, not an association list).  SOLVE's :solver keyword resolves an
+;; abbreviation through this table; a .wff cannot set either (see
+;; *solve-policy-options*), so extend it with setq from the calling program.
 (defvar *solver-abbreviations*
   '(("tt-glucose" "tt-open-wbo-inc-Glucose4_1")
     ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")
@@ -278,7 +279,7 @@ FiFO's own SAT/UNSAT reading of the file intact."
       (when *preprocessor*
         (unless (member *cnf-format* '(WCNF WCNF-OLD))
           (error "*preprocessor* is a MaxSAT preprocessor, but *cnf-format* is ~S;~%~
-                  set (option *cnf-format* WCNF) or clear *preprocessor*"
+                  pass :cnf-format WCNF to SOLVE (or setq it) or clear *preprocessor*"
                  *cnf-format*))
         (let ((root (replace-suffix-with-regex CNFFILE "\\..*?$" "")))
           (setq solver-input (concatenate 'string root "-pre.wcnf")
@@ -392,9 +393,27 @@ banner."
               (format OUTS "(OPTION WEIGHTS ~S)~%" *cnf-format*))))))
     t))
 
-(defun propositionalize (SCNFFILE &key CNFFILE MAPFILE)
+(defun propositionalize (SCNFFILE &key CNFFILE MAPFILE (CNF-FORMAT nil cnf-format-p))
+  "Write the ground clauses in SCNFFILE out as DIMACS, with a MAPFILE giving the
+integer <-> symbolic-atom correspondence.
+
+The weighted dialect is normally the one recorded IN the scnf: INSTANTIATE
+stamps an (OPTION WEIGHTS <format>) line when it writes a weighted theory, and
+that line is what selects CNF (weights demoted to `cw' comments), WCNF (2022
+'h' format) or WCNF-OLD (classic \"p wcnf\" with a top weight).  A file with no
+such line is plain CNF.
+
+Passing :CNF-FORMAT overrides the file, so one .scnf can be emitted in several
+dialects without regenerating it -- e.g. plain CNF for a satisfiability run and
+WCNF for the MAP run over the same theory.  Note the GLOBAL *cnf-format* is NOT
+consulted here: it is an input to INSTANTIATE, which records its decision in the
+scnf, and silently overriding a file's recorded format from a global would be a
+trap.  Say so explicitly with this argument."
   (if (null (cl-ppcre:scan "\\.." SCNFFILE))
       (setq SCNFFILE (concatenate 'string SCNFFILE ".scnf")))
+  (when cnf-format-p
+    (unless (member CNF-FORMAT '(CNF WCNF WCNF-OLD))
+      (error "Unknown :cnf-format ~S; must be CNF, WCNF-OLD, or WCNF" CNF-FORMAT)))
   (with-clean-errors ("propositionalizing" SCNFFILE)
    ;; Read the scnf first so the weights format (and hence the default output
    ;; extension) is known before the output file is opened.
@@ -415,10 +434,14 @@ or maxent.lisp)."
                                collect clause))))
           (clauses (remove-if (lambda (f) (member (car f) '(weight option))) all-forms))
           (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms))
-          (wformat (or (loop for f in all-forms
-                             when (and (eql (car f) 'option) (eql (cadr f) 'weights))
-                               return (caddr f))
-                       'CNF))
+          ;; An explicit :cnf-format wins; otherwise the format the scnf records
+          ;; for itself; otherwise plain CNF.
+          (wformat (if cnf-format-p
+                       CNF-FORMAT
+                       (or (loop for f in all-forms
+                                 when (and (eql (car f) 'option) (eql (cadr f) 'weights))
+                                   return (caddr f))
+                           'CNF)))
           ;; WCNF-format files conventionally carry a .wcnf extension; plain and
           ;; cw-comment CNF use .cnf.
           (cnf-suffix (if (member wformat '(WCNF WCNF-OLD)) ".wcnf" ".cnf")))
@@ -544,8 +567,10 @@ duration of the call, so they need not be set globally:
                 for no limit); anytime MaxSAT solvers print their best solution
                 so far when stopped this way
 
-An (option ...) form inside the .wff is executed while the file is parsed and so
-still has the last word, exactly as it does over a prior setq."
+These are the caller's to choose: a .wff describes the problem, not how to
+attack it, and may no longer set any of them with an (option ...) form.  Each
+keyword binds the matching global for the duration of the call, so an explicit
+argument beats a prior setq and neither outlives SOLVE."
   ;; :obsfile is a deprecated synonym for :staticfile
   (setq STATICFILE (or STATICFILE OBSFILE))
   (let ((*solver*                  (if solver-p (resolve-solver-name SOLVER) *solver*))
@@ -1085,24 +1110,40 @@ the tie-group id assigned to this source form by assign-probability-gids."
              (setq Probabilities (append Probabilities (list (list 'PROBABILITY atom p gid))))
              clauses)))))
 
+(defvar *solve-policy-options*
+  ;; (option-name . the SOLVE keyword that replaces it), for the error message
+  ;; in PARSE-OPTION.  These name solving policy, which a .wff may not set.
+  '((*solver*                  . ":solver")
+    (*cnf-format*              . ":cnf-format")
+    (*solver-timeout*          . ":timeout")
+    (*preprocessor*            . ":preprocessor")
+    (*preprocessor-techniques* . ":preprocessor-techniques")
+    (*solver-abbreviations*    . nil)))
+
 (defun resolve-solver-name (NAME)
   (let ((pair (assoc (string-downcase NAME) *solver-abbreviations* :test #'string=)))
     (if pair (cadr pair) NAME)))
 
-(defun normalize-solver-abbreviations (PAIRS)
-  (mapcar (lambda (pair)
-            (list (string-downcase (string (car pair)))
-                  (string (cadr pair))))
-          PAIRS))
-
 (defun parse-option (ARGS)
-  (let ((opt (car ARGS)))
-    ;; *solver-abbreviations* takes a raw list of pairs, which must not be run
-    ;; through parse-expression, so handle it before computing val.
-    (when (eql opt '*solver-abbreviations*)
-      (setq *solver-abbreviations*
-            (normalize-solver-abbreviations (cadr ARGS)))
-      (return-from parse-option nil)))
+  (let* ((opt (car ARGS))
+         (moved (assoc opt *solve-policy-options*)))
+    ;; Solving policy -- which solver, which DIMACS dialect, what time limit,
+    ;; what preprocessing -- is the CALLER's business, not the theory's.  A .wff
+    ;; says what the problem IS; how to attack it belongs to whoever runs it.
+    ;;
+    ;; These were once settable here, and being settable here made them a trap:
+    ;; solve.sh and map.sh vet the solver against their own command line only, so
+    ;; a file could quietly pick a solver of the wrong kind for the format those
+    ;; drivers exist to pin; and PLANNER.LISP setqs *solver*/*cnf-format* and
+    ;; THEN parses the wff, so a file's option overrode the planner in both
+    ;; phases and, being a setq rather than a binding, kept overriding it at
+    ;; every later horizon.
+    (when moved
+      (error "(option ~(~S~) ...) is no longer supported -- it selects how to ~
+SOLVE the problem, not how to generate it.~%  Set it from the caller ~
+instead: ~@[(solve \"...\" ~A ...), ~](setq ~(~S~) ...), or the matching ~
+solve.sh / map.sh flag."
+             opt (cdr moved) opt)))
   (let ((opt (car ARGS))
         (val (parse-expression (cadr ARGS))))
     (if (eql val 0) (setq val nil))
@@ -1111,38 +1152,10 @@ the tie-group id assigned to this source form by assign-probability-gids."
           ((eql opt '*tracing*)
             (setq *tracing* val)
             (trace-message "[TRACE] Tracing enabled~%"))
-          ((eql opt '*cnf-format*)
-            (unless (member val '(CNF WCNF-OLD WCNF))
-              (error "Unknown *cnf-format* ~S; must be CNF, WCNF-OLD, or WCNF" val))
-            (setq *cnf-format* val))
-          ((eql opt '*solver*)
-            (setq *solver*
-                  (resolve-solver-name
-                    (cond ((stringp val) val)
-                          ((symbolp val) (string-downcase (symbol-name val)))
-                          (t (error "*solver* must be a symbol or string, not ~S" val))))))
           ((eql opt '*satplan-numslices*)
             (unless (integerp val)
               (error "*satplan-numslices* must be an integer, not ~S" val))
             (set '*satplan-numslices* val))
-          ((eql opt '*solver-timeout*)
-            ;; 0 and -1 both mean "no limit" (parse-option has already turned a
-            ;; literal 0 into NIL); solver-time-limit normalises all three.
-            (unless (or (null val) (realp val))
-              (error "*solver-timeout* must be a number of seconds, not ~S" val))
-            (setq *solver-timeout* (solver-time-limit val)))
-          ((eql opt '*preprocessor*)
-            (setq *preprocessor*
-                  (cond ((null val) nil)
-                        ((stringp val) val)
-                        ((symbolp val) (string-downcase (symbol-name val)))
-                        (t (error "*preprocessor* must be a symbol or string, not ~S" val)))))
-          ((eql opt '*preprocessor-techniques*)
-            (setq *preprocessor-techniques*
-                  (cond ((null val) nil)
-                        ((stringp val) val)
-                        ((symbolp val) (symbol-name val))
-                        (t (error "*preprocessor-techniques* must be a string, not ~S" val)))))
           (t (error "Unknown option ~S" opt)))
     nil))
 

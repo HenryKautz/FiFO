@@ -114,25 +114,30 @@ maximizes over a subset of variables and sums over the rest, is a strictly harde
 problem that FiFO does not implement. See
 [probability-background.md §15](probability-background.md#15-map-inference-the-mode-of-the-distribution).)
 
-### Running it: `solve` plus two options
+### Running it: `solve` plus two settings
 
-Two options switch the pipeline from satisfiability to optimization:
+Two settings switch the pipeline from satisfiability to optimization:
 
+```lisp
+(solve "problem.wff"
+       :cnf-format 'WCNF        ; write weighted CNF instead of plain CNF
+       :solver     "tt-glucose") ; a MaxSAT solver instead of the default kissat
 ```
-(option *cnf-format* WCNF)     ; write weighted CNF instead of plain CNF
-(option *solver* tt-glucose)   ; a MaxSAT solver instead of the default kissat
-```
+
+They belong to the caller, not to the theory: a `.wff` describes the problem, and
+`(option *solver* ...)` / `(option *cnf-format* ...)` are rejected if one tries to
+choose its own solver. `bin/map.sh` sets both for you and refuses a solver of the
+wrong kind, which is the shortest route to a MAP answer.
 
 `tt-glucose` and `tt-intelsat` are built-in abbreviations for
 `tt-open-wbo-inc-Glucose4_1` and `tt-open-wbo-inc-IntelSATSolver`; any binary that
 reads a wcnf file and prints its model on stdout works (the catalog, with sources
 and installation notes, is in
 [software-components.md](../software-components.md#weighted-maxsat-solvers)).
-A complete example, `groceries.wff`:
+A complete example, `groceries.wff` — note that nothing in the file mentions a
+solver:
 
 ```lisp
-(option *cnf-format* WCNF)
-(option *solver* tt-glucose)
 (domain item (set banana steak milk))
 (weight (buy banana) 1.25)
 (weight (buy steak) 15.50)
@@ -140,7 +145,8 @@ A complete example, `groceries.wff`:
 (or (buy steak) (buy milk))
 ```
 
-`(solve "groceries.wff")` writes `groceries.answer`:
+`(solve "groceries.wff" :cnf-format 'WCNF :solver "tt-glucose")` — or
+`map.sh groceries.wff` — writes `groceries.answer`:
 
 ```
 SAT
@@ -155,16 +161,25 @@ of a cost distribution turns everything off that it is not forced to turn on.
 The same thing step by step, when you want the intermediate files:
 
 ```lisp
-(instantiate "groceries.wff")        ; -> groceries.scnf
+(setq *cnf-format* 'WCNF *solver* "tt-open-wbo-inc-Glucose4_1")
+(instantiate "groceries.wff")        ; -> groceries.scnf, marked (OPTION WEIGHTS WCNF)
 (propositionalize "groceries.scnf")  ; -> groceries.wcnf (+ .map); returns the path
 (satisfy "groceries.wcnf")           ; -> groceries.satout
 (interpret "groceries.satout")       ; -> groceries.soln
 ```
 
+`instantiate` reads `*cnf-format*` and records it in the `.scnf`; `propositionalize`
+reads it back from there, so the two halves agree even in separate sessions. To
+emit that same `.scnf` in a different dialect — plain CNF for a satisfiability run,
+say — override the recorded format rather than regenerating:
+
+```lisp
+(propositionalize "groceries.scnf" :cnf-format 'CNF :cnffile "groceries-sat.cnf")
+```
+
 `propositionalize` chooses the `.wcnf` extension (rather than `.cnf`) whenever the
-format is `WCNF` or `WCNF-OLD`, and **returns** the pathname it chose, so a script
-never has to guess. From the shell the same two options can be set with `--eval`
-instead of editing the `.wff`:
+effective format is `WCNF` or `WCNF-OLD`, and **returns** the pathname it chose, so
+a script never has to guess. From the shell:
 
 ```sh
 sbcl --noinform --disable-debugger --load "$FIFO_LISP/FiFO.lisp" \
@@ -172,11 +187,12 @@ sbcl --noinform --disable-debugger --load "$FIFO_LISP/FiFO.lisp" \
      --eval '(progn (solve "groceries.wff") (sb-ext:exit))'
 ```
 
-Two traps on that route. Abbreviations are resolved only by `(option *solver* ...)`,
-so a `setq` needs the **full binary name**. And if you set the solver but forget
-`*cnf-format*`, the run silently stops being MAP: a plain `.cnf` carries its weights
-as `cw` comment lines, which every solver ignores, so you get an arbitrary feasible
-model with no objective line at all.
+Two traps on that route. Abbreviations are resolved by `solve`'s `:solver`
+keyword, so a bare `setq` needs the **full binary name**. And if you set the solver
+but forget `*cnf-format*`, the run silently stops being MAP: a plain `.cnf` carries
+its weights as `cw` comment lines, which every solver ignores, so you get an
+arbitrary feasible model with no objective line at all. `map.sh` exists to make
+both mistakes impossible.
 
 ### Reading the objective
 
