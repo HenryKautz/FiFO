@@ -18,6 +18,17 @@ Solvers/
 # directory the run started from, not only the repository root.
 scratch-*
 
+# Intermediates from the max-term back end: marginals-maxterm writes
+# "<scnf-root>-maxterm.{wcnf,satout}" (plus "-maxterm-v.{cnf,satout}" for
+# --verify-groups) beside the .scnf it was given, and -- unlike the ADDMC and
+# MC-SAT bridges, which delete theirs -- it leaves them there.  Regenerable, and
+# they land next to checked-in .scnf fixtures in Probability/, where they are easy
+# to commit by accident.  Unanchored: the .scnf may live anywhere.
+*-maxterm.wcnf
+*-maxterm.satout
+*-maxterm-v.cnf
+*-maxterm-v.satout
+
 # SatPlan/ is managed manually -- never ignore anything under it
 !SatPlan/**
 
@@ -26,3 +37,7 @@ scratch-*
 # AFTER the negation: git applies the last matching pattern.
 SatPlan/**/.DS_Store
 SatPlan/**/scratch-*
+SatPlan/**/*-maxterm.wcnf
+SatPlan/**/*-maxterm.satout
+SatPlan/**/*-maxterm-v.cnf
+SatPlan/**/*-maxterm-v.satout
