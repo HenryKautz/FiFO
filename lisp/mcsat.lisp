@@ -40,19 +40,11 @@
 
 (load (merge-pathnames "wmc.lisp" (or *load-pathname* *default-pathname-defaults*)))
 
-(defvar *walksat*
-  (or (uiop:getenv "WALKSAT")
-      ;; NB: strip name/type from the defaults -- merging onto "mcsat.lisp" would
-      ;; otherwise inherit its type and look for "walksat.lisp".
-      (let ((sibling (merge-pathnames "../../Walksat/Walksat_v58_MC-SAT/walksat"
-                                      (make-pathname :name nil :type nil :version nil
-                                                     :defaults (or *load-pathname*
-                                                                   *default-pathname-defaults*)))))
-        (if (probe-file sibling) (namestring (truename sibling)) "walksat")))
-  "Path or name of the WalkSAT binary providing MC-SAT mode.  Defaults to the
-WALKSAT environment variable, else a sibling Walksat_v58_MC-SAT checkout, else
-\"walksat\" on PATH.  Must be version 58 or later -- earlier releases have no
--mcsat option (they print their help text and ignore it).")
+(defvar *walksat* "walksat"
+  "Name of the WalkSAT binary providing MC-SAT mode, found on PATH.  Must be
+version 58 or later -- earlier releases have no -mcsat option (they print their
+help text and ignore it), which MCSAT--CHECK-VERSION detects and refuses, so an
+old walksat earlier on PATH fails loudly rather than quietly.")
 
 ;;; ----------------------------------------------------------------------------
 ;;; Emitting the MC-SAT weighted CNF
@@ -222,7 +214,7 @@ effective sample size, unit-propagation statistics)."
             (uiop:run-program args :output :string :error-output :string
                                    :ignore-error-status t)
           (error (c)
-            (error "could not run walksat (~A): ~A~%Set the WALKSAT environment variable or pass :walksat to point at a version 58 (MC-SAT) binary."
+            (error "could not run walksat (~A): ~A~%Put a version 58 (MC-SAT) 'walksat' on PATH (bin/install-solvers.sh --only walksat)."
                    walksat c)))
       (when (and code (not (zerop code)))
         ;; The common failure is an infeasible theory (often over-constraining

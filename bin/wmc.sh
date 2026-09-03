@@ -13,9 +13,8 @@
 # brute-force enumeration in marginals.sh, this scales via algebraic decision
 # diagrams.
 #
-# The FiFO lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).  The
-# ADDMC binary is found via --addmc-bin, else the ADDMC environment variable, else
-# 'addmc' on PATH.
+# The FiFO lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).  ADDMC
+# is found on PATH as 'addmc'.
 
 set -euo pipefail
 
@@ -29,7 +28,6 @@ Compute the exact weighted model count (partition function Z) of a weighted .scn
 via ADDMC, and print  (WMC <Z>).  Z is the sum over the feasible set of
 exp(-(sum of the weights of the true literals)).
 
-  --addmc-bin <p>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH)
   --scale <n>      divide integer weights by n (real cost = weight / n) before
                    exponentiating; default reads the 'scale: N' the weight-learning
                    pipeline records in the .scnf header (1 if absent).  Use
@@ -53,8 +51,8 @@ The FiFO lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 ADDMC is a separate executable (https://github.com/HenryKautz/ADDMC, a macOS
-fork of vardigroup/ADDMC).  Build it, then either put 'addmc' on your PATH, set
-ADDMC=/path/to/addmc, or pass --addmc-bin /path/to/addmc.
+fork of vardigroup/ADDMC), found on PATH as 'addmc'.  bin/install-solvers.sh
+builds and installs it; to use a different build, put it earlier on PATH.
 EOF
 }
 
@@ -77,9 +75,6 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)    print_usage; exit 0 ;;
-    # --addmc is the pre-1.0 spelling, kept working but no longer advertised.
-    --addmc-bin|--addmc)
-                  [[ $# -ge 2 ]] || die "$1 needs an argument"; export ADDMC="$2"; shift 2 ;;
     --scale)      [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)    [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
@@ -98,10 +93,11 @@ if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]];
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
-# Resolve the ADDMC binary up front for a clear error.
-ADDMC_BIN="${ADDMC:-addmc}"
-if ! command -v "$ADDMC_BIN" >/dev/null 2>&1 && [[ ! -x "$ADDMC_BIN" ]]; then
-  die "ADDMC binary not found: '$ADDMC_BIN' (set --addmc-bin, the ADDMC env var, or put 'addmc' on PATH)"
+# Check for ADDMC up front, so a missing binary is a clear error rather than a
+# lisp-level failure part way through.
+if ! command -v addmc >/dev/null 2>&1; then
+  die "addmc not found on PATH.
+  Install it with:  bin/install-solvers.sh --only addmc"
 fi
 
 KW=""

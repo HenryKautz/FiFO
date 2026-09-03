@@ -13,8 +13,8 @@
 # skips cleanly (exit 0), like the other optional-dependency back ends.
 #
 # Run from anywhere:  bash tests/run-test-mcsat.sh
-# Tests the working copy's lisp/ by default; set FIFO_LISP to override, and
-# WALKSAT to point at the v58 binary.
+# Tests the working copy's lisp/ by default; set FIFO_LISP to override.  The
+# walksat binary is whichever one is on PATH.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,19 +26,15 @@ cd "$TMP" || exit 2          # keep marginals scratch files out of the repo
 
 if ! command -v sbcl >/dev/null 2>&1; then echo "sbcl not found on PATH" >&2; exit 2; fi
 
-# --- locate the MC-SAT-capable binary, exactly as marginals.sh does -----------
-WS="${WALKSAT:-}"
-if [[ -z "$WS" ]]; then
-  SIBLING="$FIFO_LISP/../../Walksat/Walksat_v58_MC-SAT/walksat"
-  if [[ -x "$SIBLING" ]]; then WS="$SIBLING"; else WS="walksat"; fi
-fi
-if ! command -v "$WS" >/dev/null 2>&1 && [[ ! -x "$WS" ]]; then
-  echo "=== MC-SAT marginals: SKIPPED (no walksat binary found) ==="; exit 0
+# --- locate the MC-SAT-capable binary, exactly as marginals.sh does ----------
+# Both the script and lisp/mcsat.lisp resolve plain "walksat" on PATH, so that is
+# all there is to find.
+if ! WS="$(command -v walksat)"; then
+  echo "=== MC-SAT marginals: SKIPPED (no walksat on PATH) ==="; exit 0
 fi
 if ! grep -q -- "-mcsat" <<<"$("$WS" -help </dev/null 2>&1 || true)"; then
   echo "=== MC-SAT marginals: SKIPPED ('$WS' has no -mcsat; needs WalkSAT v58+) ==="; exit 0
 fi
-export WALKSAT="$WS"
 
 SEED=20260823
 SAMPLES=200000
@@ -252,15 +248,19 @@ else fail "misreported a determined theory"; fi
 #     ignored (v57 and earlier print their help text and exit).
 # ---------------------------------------------------------------------------
 printf '  %-52s ... ' "binary without -mcsat is refused"
-cat >"$TMP/fake-walksat" <<'FAKE'
+mkdir -p "$TMP/fakebin"
+cat >"$TMP/fakebin/walksat" <<'FAKE'
 #!/bin/bash
 echo "walksat version 57 November 2023"
 echo "  -cutoff N = bound on the number of flips per trial"
 exit 1
 FAKE
-chmod +x "$TMP/fake-walksat"
-if bash "$MARGINALS" "$REPO/Probability/test_coupled_reweighted.scnf" \
-        --walksat-bin "$TMP/fake-walksat" >"$TMP/v.out" 2>&1; then
+chmod +x "$TMP/fakebin/walksat"
+# Shadow the real one on PATH -- the same way an old build earlier on PATH would
+# be picked up in practice.
+if PATH="$TMP/fakebin:$PATH" bash "$MARGINALS" \
+        "$REPO/Probability/test_coupled_reweighted.scnf" \
+        --solver mc-sat >"$TMP/v.out" 2>&1; then
   fail "accepted a binary with no -mcsat option"
 elif grep -q "version 58" "$TMP/v.out"; then pass
 else fail "unhelpful message: $(head -1 "$TMP/v.out")"; fi

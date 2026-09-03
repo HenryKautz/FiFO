@@ -55,14 +55,12 @@ usage() {
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
   echo "               exact enumeration), 'addmc' (the ADDMC weighted model counter, found" >&2
-  echo "               via \$ADDMC else on PATH, same as marginals.sh --solver addmc)," >&2
+  echo "               on PATH as 'addmc', same as marginals.sh --solver addmc)," >&2
   echo "               'ddnnf' (FiFO's own d-DNNF compiler) or 'd4' (the external d4" >&2
   echo "               compiler, same circuit machinery)," >&2
   echo "               'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT v58 -- one run for" >&2
   echo "               all marginals, for horizons where exact counting times out; watch the" >&2
   echo "               reported sampling efficiency).  An unknown name is an error." >&2
-  echo "  --addmc-bin <path>  the ADDMC binary; implies --counter addmc." >&2
-  echo "  --d4-bin <path>     the d4 compiler binary; implies --counter d4." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -103,8 +101,6 @@ while [[ $# -gt 0 ]]; do
     --pddl-evidence-file) [[ $# -ge 2 ]] || usage; PDDL_EVFILE="$2"; shift 2 ;;
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
-    --addmc-bin) [[ $# -ge 2 ]] || usage; export ADDMC="$2"; COUNTER="addmc"; shift 2 ;;
-    --d4-bin)    [[ $# -ge 2 ]] || usage; export D4="$2";    COUNTER="d4";    shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;

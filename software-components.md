@@ -182,7 +182,7 @@ bin/install-solvers.sh [--all] [--only <solver>]... [--bindir <dir>] [--dry-run]
 
 A solver that is already usable is skipped. **Usable** is checked per solver
 rather than by mere presence on `PATH`: a `walksat` without `-mcsat` (v57 or
-earlier) counts as missing and gets replaced, and `d4` is looked for at `$D4` or
+earlier) counts as missing and gets replaced, and `d4` is looked for on `PATH` or
 in the install directory, since FiFO does not search `PATH` for it.
 
 | Option | Meaning |
@@ -329,9 +329,7 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--pddl-evidence <form>` | Evidence in the PDDL modal language — `always`, `at-end`, `hold-during`, `occur-sometime`, `never`, `at`, `occur-in-order` — over PDDL predicate/action names, translated by `pddl2fifo`. Repeatable. PDDL input only. |
 | `--pddl-evidence-file <f>` | A file of such PDDL modal forms. |
 | `--marginals` | Run weighted model counting instead of planning: print `P(atom \| evidence)` at the working horizon, with no plan search. |
-| `--counter <name>` | With `--marginals`: the same back ends `marginals.sh --solver` offers — `maxent` (default, exact enumeration), `addmc`, `ddnnf`, `d4` (the other exact counters), `mc-sat` (approximate sampling). Binaries are located exactly as in `marginals.sh`: `$ADDMC` / `$D4` else `PATH`. An unrecognised name is an error; a path is still accepted as an ADDMC binary, deprecated in favour of `--addmc-bin`. |
-| `--addmc-bin <path>` | The ADDMC binary; implies `--counter addmc`. |
-| `--d4-bin <path>` | The d4 compiler binary; implies `--counter d4`. |
+| `--counter <name>` | With `--marginals`: the same back ends `marginals.sh --solver` offers — `maxent` (default, exact enumeration), `addmc`, `ddnnf`, `d4` (the other exact counters), `mc-sat` (approximate sampling). A counter is **named, never a path**; each external one is found on `PATH` under its own name. An unrecognised name is an error. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 
@@ -399,9 +397,6 @@ marginals.sh <file.scnf> [options]
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header the learning pipeline records (1 if absent). `--scale 1` uses the raw weights. Applies to every back end. |
 | `--evidence <form>` | Condition on a **ground** FiFO formula, conjoined as a hard constraint, so the results become `P(atom \| form)`. Repeatable. `addmc`/`ddnnf`/`d4`/`mc-sat` only. |
 | `--evidence-file <f>` | A file of ground FiFO formulas, conjoined with any `--evidence`. |
-| `--addmc-bin <path>` | ADDMC binary (else `$ADDMC`, else `addmc` on `PATH`). Implies `--solver addmc`. |
-| `--d4-bin <path>` | d4 (d4v2) compiler binary (else `$D4`, else a sibling `d4v2` checkout). Implies `--solver d4`. |
-| `--walksat-bin <path>` | WalkSAT v58 binary (else `$WALKSAT`, else a sibling `Walksat_v58_MC-SAT` checkout, else `walksat` on `PATH`). Implies `--solver mc-sat`. |
 | `--epsilon <e>` | *(addmc)* ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. A positive value trades exactness for speed/memory. |
 | `--save-circuit <f>` | *(ddnnf/d4)* After compiling, persist the circuit to `<f>`; this run still reports marginals. |
 | `--circuit <f>` | *(ddnnf/d4)* Load a saved circuit and query it **without** recompiling — give this instead of a `.scnf`. Unit-literal `--evidence` reuses it; non-unit evidence recompiles from the stored clauses. `--scale` re-weights it for free. |
@@ -421,7 +416,7 @@ marginals.sh <file.scnf> [options]
 | `--prior <atom>=<p>` | *(max-term)* Log-odds prior. **Replaces** that atom's own weight rather than stacking on it, and costs no re-solving. Repeatable. |
 | `--priors <file>` | *(max-term)* A file of `atom = p` lines. |
 | `--groups auto\|none` | *(max-term)* Detect groups of queried atoms the **theory** makes mutually exclusive and renormalise over each. Default `auto`. |
-| `--maxsat-bin <path>` | *(max-term)* The MaxSAT solver. Default `bin/rc2-maxsat.py`, which is **exact** and terminates with a proof. An anytime solver may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
+| `--maxsat-solver <name>` | *(max-term)* The MaxSAT solver. Default `bin/rc2-maxsat.py`, which is **exact** and terminates with a proof. An anytime solver may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
 | `--verify-groups` | *(max-term)* Additionally *prove* each group by SAT entailment, catching encodings the syntactic scan misses. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
@@ -475,7 +470,6 @@ wmc.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
-| `--addmc-bin <path>` | ADDMC binary (else `$ADDMC`, else `addmc` on `PATH`), spelled as in `marginals.sh` and `planner.sh`. `--addmc` is accepted as a deprecated alias. |
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header (1 if absent). |
 | `--epsilon <e>` | ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. |
 | `--evidence <form>` | Condition on a ground FiFO formula, so `Z` becomes the conditioned count. Repeatable. |
@@ -724,13 +718,13 @@ is, where it comes from, and what its build needs.
 
 ### How FiFO finds a solver
 
-| Solver | Lisp variable | Environment variable | Command-line flag | Fallback |
-|---|---|---|---|---|
-| SAT (feasibility) | `*solver*` | — | `solve.sh --solver`, `planner.sh --solver`, or `solve`'s `:solver` | `kissat` on `PATH` |
-| MaxSAT (costs) | `*solver*` (rebound) | — | `map.sh --solver`, `planner.sh --weighted-solver` (or `WEIGHTED_SOLVER` at its top), or `solve`'s `:solver` | `tt-open-wbo-inc-Glucose4_1` on `PATH` |
-| ADDMC | `*addmc*` | `ADDMC` | `--addmc-bin` (marginals.sh, wmc.sh, planner.sh) | `addmc` on `PATH` |
-| d4 | `*d4*` | `D4` | `marginals.sh --d4-bin` | a `d4v2` checkout beside the FiFO repo: `d4v2/demo/compiler/build/compiler` |
-| WalkSAT (MC-SAT) | `*walksat*` | `WALKSAT` | `marginals.sh --walksat-bin` | a `Walksat` checkout beside the FiFO repo: `Walksat/Walksat_v58_MC-SAT/walksat`; else `walksat` on `PATH` |
+| Solver | Lisp variable | Found as |
+|---|---|---|
+| SAT (feasibility) | `*solver*` | `kissat` on `PATH`; choose another with `solve.sh --solver`, `planner.sh --solver`, or `solve`'s `:solver` |
+| MaxSAT (costs) | `*solver*` (rebound) | `tt-open-wbo-inc-Glucose4_1` on `PATH`; choose another with `map.sh --solver`, `planner.sh --weighted-solver`, or `solve`'s `:solver` |
+| ADDMC | `*addmc*` | `addmc` on `PATH` |
+| d4 | `*d4*` | `d4` on `PATH` (d4v2 builds it as `demo/compiler/build/compiler`; the installer renames it) |
+| WalkSAT (MC-SAT) | `*walksat*` | `walksat` on `PATH`, and it must have `-mcsat` (v58+) |
 
 Four solver-name abbreviations are built in: `tt-glucose` →
 `tt-open-wbo-inc-Glucose4_1`, `tt-intelsat` → `tt-open-wbo-inc-IntelSATSolver`,
@@ -996,8 +990,7 @@ instances only.
 
 - Source: https://github.com/HenryKautz/ADDMC — a macOS fork of
   [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)
-- Located via `*addmc*` / `ADDMC` / `--addmc-bin` (`marginals.sh`) or `--addmc`
-  (`wmc.sh`), else `addmc` on `PATH`.
+- Found on `PATH` as `addmc` (Lisp variable `*addmc*`)
 
 An algebraic-decision-diagram weighted model counter. Exact, and it scales far
 past enumeration. FiFO feeds it the MCC-2020 weighted CNF format, whose
@@ -1014,7 +1007,8 @@ zero.
 
 - Upstream: https://github.com/crillab/d4v2
 - macOS fork: https://github.com/HenryKautz/d4v2
-- Located via `*d4*` / `D4` / `--d4-bin`, else a sibling `d4v2` checkout.
+- Found on `PATH` as `d4` (Lisp variable `*d4*`). d4v2 builds it as
+  `demo/compiler/build/compiler`; `install-solvers.sh` installs that as `d4`.
 
 The state-of-the-art decision-DNNF knowledge compiler — years of work on branching
 heuristics, hypergraph-partition decomposition, and component caching — able to
@@ -1035,8 +1029,7 @@ with `--solver ddnnf`.
 
 - Source: https://gitlab.com/HenryKautz/Walksat — the `Walksat_v58_MC-SAT`
   directory
-- Located via `*walksat*` / `WALKSAT` / `--walksat-bin`, else a sibling checkout,
-  else `walksat` on `PATH`.
+- Found on `PATH` as `walksat` (Lisp variable `*walksat*`)
 
 The one **approximate** marginal back end. `-mcsat` runs the whole MC-SAT
 algorithm (Poon & Domingos 2006) in C — outer slice sampling plus the inner
@@ -1048,7 +1041,7 @@ distribution is exactly FiFO's Gibbs distribution.
 required** — `-mcsat` does not exist in v57 and earlier, which print their help
 and exit; both `marginals.sh` and the test suite probe `-help` for `-mcsat` and
 refuse rather than silently running the wrong thing. If `~/bin/walksat` is an
-older build, point `WALKSAT` at the v58 binary explicitly.
+older build, put the v58 one earlier on `PATH`.
 
 *Reading the output:* MC-SAT mixes poorly on strongly coupled models, so the run
 prints an effective-sample-size **efficiency** line and a **mixing** (Hamming

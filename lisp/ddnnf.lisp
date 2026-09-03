@@ -337,17 +337,10 @@ returned circuit across many queries with DDNNF-QUERY / DDNNF-MARGINALS-SETS."
 ;;; (dst, lits) denotes (conj of lits) AND (subtree at dst).
 ;;; ----------------------------------------------------------------------------
 
-(defvar *d4* (or (uiop:getenv "D4")
-                 ;; NB: strip name/type from the defaults -- merging onto
-                 ;; "ddnnf.lisp" would otherwise inherit its type and look for
-                 ;; "compiler.lisp".
-                 (namestring (merge-pathnames "../../d4v2/demo/compiler/build/compiler"
-                                              (make-pathname :name nil :type nil :version nil
-                                                             :defaults (or *load-pathname*
-                                                                           *default-pathname-defaults*)))))
-  "Path to the d4 (d4v2) d-DNNF compiler demo executable.  Defaults to the D4
-environment variable, else a sibling d4v2 checkout.  Optional -- only the d4
-producer needs it.")
+(defvar *d4* "d4"
+  "Name of the d4 (d4v2) d-DNNF compiler, found on PATH.  d4v2 builds it as
+demo/compiler/build/compiler; bin/install-solvers.sh installs that as \"d4\".
+Optional -- only the d4 producer needs it.")
 
 (defun ddnnf--write-dimacs-file (int-clauses nvars path)
   "Write hard INT-CLAUSES (over variables 1..NVARS) as DIMACS CNF to PATH."
@@ -366,7 +359,7 @@ variable still appears in the dump and our smoothing is correct)."
           (uiop:run-program (list d4 "-i" cnf-file "--dump-file" nnf-file)
                             :output :string :error-output :string :ignore-error-status t)
         (error (c)
-          (error "could not run the d4 compiler (~A): ~A~%Set the D4 environment variable or *d4* to the compiler binary."
+          (error "could not run the d4 compiler (~A): ~A~%Put a 'd4' on PATH (bin/install-solvers.sh --only d4)."
                  d4 c)))
     (declare (ignore out))
     (when (and code (not (zerop code)) (not (probe-file nnf-file)))

@@ -189,11 +189,6 @@ solver_have() {
       python3 -c "import pysat.examples.rc2" >/dev/null 2>&1 && return 0
       HAVE_NOTE="python-sat is not installed (bin/rc2-maxsat.py cannot run)"
       return 1 ;;
-    d4)
-      # *d4* has no PATH fallback: it reads $D4, else a sibling d4v2 checkout.
-      if [[ -n "${D4:-}" && -x "${D4:-}" ]]; then return 0; fi
-      [[ -x "$BINDIR/d4" ]] && return 0
-      return 1 ;;
     *)
       for bin in $(solver_bins "$1"); do
         command -v "$bin" >/dev/null 2>&1 || return 1
@@ -443,7 +438,6 @@ for s in "${SELECTED[@]}"; do
   HAVE_NOTE=""
   if [[ "$FORCE" -eq 0 ]] && solver_have "$s"; then
     where="$(command -v $(solver_bins "$s" | awk '{print $1}') 2>/dev/null)"
-    [[ -z "$where" && "$s" == "d4" ]] && where="${D4:-$BINDIR/d4}"
     info "already installed at ${where:-(found)} -- skipping (use --all to rebuild)"
     record "$s" skipped "${where:-already available}"
     continue
@@ -509,11 +503,6 @@ say "  $n_ok installed, $n_skip already present, $n_fail failed"
 # Post-install notes that are easy to miss.
 notes=()
 case ":$PATH:" in *":$BINDIR:"*) ;; *) notes+=("$BINDIR is not on your PATH -- add it.") ;; esac
-for i in "${!R_NAME[@]}"; do
-  if [[ "${R_NAME[$i]}" == "d4" && "${R_STATUS[$i]}" == "installed" ]]; then
-    notes+=("FiFO does not look for d4 on PATH: set  export D4=\"$BINDIR/d4\"  (or pass --d4-bin).")
-  fi
-done
 if [[ ${#notes[@]} -gt 0 ]]; then
   say ""
   say "${B}Notes${N}"

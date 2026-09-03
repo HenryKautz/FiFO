@@ -67,13 +67,6 @@ reach of exact counting.
                       of enumeration nodes (default 5000000); for ddnnf, the number
                       of circuit nodes (default 2000000).  A blowup means the
                       instance is too structured for that back end -- try addmc
-  --addmc-bin <path>  path to the ADDMC binary (else $ADDMC, else 'addmc' on PATH);
-                      implies --solver addmc
-  --d4-bin <path>     path to the d4 (d4v2) compiler binary (else $D4, else a sibling
-                      d4v2 checkout); implies --solver d4
-  --walksat-bin <p>   path to the WalkSAT v58 (MC-SAT) binary (else $WALKSAT, else a
-                      sibling Walksat_v58_MC-SAT checkout, else 'walksat' on PATH);
-                      implies --solver mc-sat
   --scale <n>         divide integer weights by n before exponentiating; default
                       reads the 'scale: N' the weight-learning pipeline records in
                       the header (1 if absent).  The pipeline scales costs by an
@@ -122,7 +115,7 @@ reach of exact counting.
                       plus the pairwise at-most-one clauses -- and renormalise
                       over each.  Exclusivity is a property of the theory, so it
                       is detected, not declared.  Default: auto
-  --maxsat-bin <p>    (max-term only) the MaxSAT solver.  Default: bin/rc2-maxsat.py,
+  --maxsat-solver <s> (max-term only) the MaxSAT solver.  Default: bin/rc2-maxsat.py,
                       which is EXACT (core-guided RC2) and terminates with a proof
                       of optimality.  An anytime solver such as
                       tt-open-wbo-inc-Glucose4_1 may be given instead, but it
@@ -168,13 +161,16 @@ rather than merely noisy, and the run says so explicitly.
 The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
-ADDMC is a separate executable (https://github.com/HenryKautz/ADDMC, a macOS
-fork of vardigroup/ADDMC); build it and put 'addmc' on PATH, set ADDMC, or pass
---addmc-bin.
+Every external back end is found on PATH under its own name -- 'addmc', 'd4',
+'walksat' -- so use a different build the way you would for any other program,
+by putting it earlier on PATH.  bin/install-solvers.sh builds and installs all
+three under those names.
 
-MC-SAT needs WalkSAT version 58 or later (https://gitlab.com/HenryKautz/Walksat,
-the Walksat_v58_MC-SAT directory); build it and set WALKSAT or pass --walksat-bin.
-Earlier releases have no -mcsat option.
+ADDMC is https://github.com/HenryKautz/ADDMC (a macOS fork of vardigroup/ADDMC).
+d4 is https://github.com/HenryKautz/d4v2, whose demo/compiler build is installed
+as 'd4'.  MC-SAT needs WalkSAT version 58 or later
+(https://gitlab.com/HenryKautz/Walksat, the Walksat_v58_MC-SAT directory);
+earlier releases have no -mcsat option and are refused.
 EOF
 }
 
@@ -193,7 +189,7 @@ PRIORS_FILE=""
 # NB: not GROUPS -- bash owns that name (the user's group ids) and silently
 # ignores assignments to it, which made every run see "20" here.
 GROUP_MODE="auto"
-MAXSAT_BIN=""
+MAXSAT_SOLVER=""
 VERIFY_GROUPS=0
 SCALE=""
 EPSILON=""
@@ -229,13 +225,10 @@ while [[ $# -gt 0 ]]; do
     --priors)         [[ $# -ge 2 ]] || die "--priors needs an argument"; PRIORS_FILE="$2"; shift 2 ;;
     --groups)         [[ $# -ge 2 ]] || die "--groups needs auto or none"; GROUP_MODE="$2"; shift 2 ;;
     --verify-groups)  VERIFY_GROUPS=1; shift ;;
-    --maxsat-bin)     [[ $# -ge 2 ]] || die "--maxsat-bin needs an argument"; MAXSAT_BIN="$2"; SOLVER="max-term"; shift 2 ;;
+    --maxsat-solver)  [[ $# -ge 2 ]] || die "--maxsat-solver needs an argument"; MAXSAT_SOLVER="$2"; SOLVER="max-term"; shift 2 ;;
     --weighted-only)  WEIGHTED_ONLY=1; shift ;;
     --out)            [[ $# -ge 2 ]] || die "--out needs an argument"; OUT="$2"; shift 2 ;;
     --node-limit)     [[ $# -ge 2 ]] || die "--node-limit needs an argument"; NODE_LIMIT="$2"; shift 2 ;;
-    --addmc-bin)      [[ $# -ge 2 ]] || die "--addmc-bin needs an argument"; export ADDMC="$2"; SOLVER="addmc"; shift 2 ;;
-    --d4-bin)         [[ $# -ge 2 ]] || die "--d4-bin needs an argument"; export D4="$2"; SOLVER="d4"; shift 2 ;;
-    --walksat-bin)    [[ $# -ge 2 ]] || die "--walksat-bin needs an argument"; export WALKSAT="$2"; SOLVER="mc-sat"; shift 2 ;;
     --samples)        [[ $# -ge 2 ]] || die "--samples needs an argument"; SAMPLES="$2"; shift 2 ;;
     --burnin)         [[ $# -ge 2 ]] || die "--burnin needs an argument"; BURNIN="$2"; shift 2 ;;
     --seed)           [[ $# -ge 2 ]] || die "--seed needs an argument"; SEED="$2"; shift 2 ;;
@@ -309,9 +302,10 @@ if [[ -n "$TEMP"      && ! "$TEMP"      =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--t
 if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   if [[ "$SOLVER" == "d4" ]]; then
     [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the ddnnf (home) compiler, not d4"
-    D4_BIN="${D4:-}"
-    if [[ -n "$D4_BIN" && ! -x "$D4_BIN" ]] && ! command -v "$D4_BIN" >/dev/null 2>&1; then
-      die "d4 compiler not found: '$D4_BIN' (set --d4-bin or the D4 env var; build d4v2's demo/compiler)"
+    if ! command -v d4 >/dev/null 2>&1; then
+      die "d4 not found on PATH.
+  Install it with:  bin/install-solvers.sh --only d4
+  (d4v2 builds it as demo/compiler/build/compiler; the installer puts it in ~/bin as 'd4'.)"
     fi
   fi
   KW=""
@@ -346,14 +340,14 @@ if [[ "$SOLVER" == "max-term" ]]; then
   # An EXACT solver is the right default here.  max-term is a difference of two
   # minima, so an anytime solver's upper bounds do not cancel; rc2-maxsat.py
   # proves optimality, tt-open-wbo-inc does not.  Both remain selectable.
-  MT_SOLVER="${MAXSAT_BIN:-${MAXTERM_SOLVER:-$SELF_DIR/rc2-maxsat.py}}"
+  MT_SOLVER="${MAXSAT_SOLVER:-$SELF_DIR/rc2-maxsat.py}"
   if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
     die "MaxSAT solver not found: '$MT_SOLVER'
   max-term computes minimum costs, so it needs a weighted solver, not a SAT one,
   and one that PROVES optimality -- a difference of two upper bounds is not an
   upper bound on anything.
   The default, bin/rc2-maxsat.py, needs:  pip install python-sat
-  Or pass --maxsat-bin <path> to choose another."
+  Or pass --maxsat-solver <name> to choose another."
   fi
   KW=":solver \"$MT_SOLVER\""
   ALLQ=0
@@ -404,24 +398,22 @@ fi
 
 if [[ "$SOLVER" == "mc-sat" ]]; then
   [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent and ddnnf solvers, not mc-sat"
-  # Resolve the binary the same way lisp/mcsat.lisp does, so the capability check
-  # below tests the binary that will actually run.
-  WALKSAT_BIN="${WALKSAT:-}"
-  if [[ -z "$WALKSAT_BIN" ]]; then
-    SIBLING="$FIFO_LISP/../../Walksat/Walksat_v58_MC-SAT/walksat"
-    if [[ -x "$SIBLING" ]]; then WALKSAT_BIN="$SIBLING"; else WALKSAT_BIN="walksat"; fi
-  fi
-  if ! command -v "$WALKSAT_BIN" >/dev/null 2>&1 && [[ ! -x "$WALKSAT_BIN" ]]; then
-    die "WalkSAT binary not found: '$WALKSAT_BIN' (set --walksat-bin, the WALKSAT env var, or put 'walksat' on PATH)"
+  # Check the binary that will actually run -- lisp/mcsat.lisp resolves 'walksat'
+  # on PATH, so this finds the same one.
+  WALKSAT_BIN=walksat
+  if ! command -v "$WALKSAT_BIN" >/dev/null 2>&1; then
+    die "walksat not found on PATH.
+  Install it with:  bin/install-solvers.sh --only walksat"
   fi
   # v57 and earlier print their help and silently ignore -mcsat, so check for it.
   # (Capture first rather than piping: walksat exits non-zero after printing help,
   # and under 'set -o pipefail' that would masquerade as a failed check.)
   WS_HELP="$("$WALKSAT_BIN" -help </dev/null 2>&1 || true)"
   if ! grep -q -- "-mcsat" <<<"$WS_HELP"; then
-    die "'$WALKSAT_BIN' has no -mcsat option -- MC-SAT needs WalkSAT version 58 or later (Walksat_v58_MC-SAT); set --walksat-bin or WALKSAT"
+    die "the walksat on PATH ($(command -v "$WALKSAT_BIN")) has no -mcsat option.
+  MC-SAT needs WalkSAT version 58 or later (Walksat_v58_MC-SAT); put a newer
+  build earlier on PATH, or run:  bin/install-solvers.sh --only walksat --all"
   fi
-  export WALKSAT="$WALKSAT_BIN"
   KW=""
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
@@ -449,9 +441,9 @@ fi
 
 if [[ "$SOLVER" == "addmc" ]]; then
   [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent solver, not addmc"
-  ADDMC_BIN="${ADDMC:-addmc}"
-  if ! command -v "$ADDMC_BIN" >/dev/null 2>&1 && [[ ! -x "$ADDMC_BIN" ]]; then
-    die "ADDMC binary not found: '$ADDMC_BIN' (set --addmc-bin, the ADDMC env var, or put 'addmc' on PATH)"
+  if ! command -v addmc >/dev/null 2>&1; then
+    die "addmc not found on PATH.
+  Install it with:  bin/install-solvers.sh --only addmc"
   fi
   KW=""
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""

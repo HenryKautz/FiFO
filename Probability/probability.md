@@ -346,7 +346,7 @@ Where the enumeration above is exact but exponential, **ADDMC** (the algebraic-d
 
 This was cross-checked against the enumeration back end: on the test instances the two agree to the last double-precision bit (max `|P_enum − P_addmc| = 0`).
 
-**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it, then put `addmc` on `PATH`, set the `ADDMC` environment variable, or pass `--addmc-bin`. The fork also defaults CUDD's terminal-merging epsilon to `0` — exposed as ADDMC's `--ep` option, surfaced here as `--epsilon` / `:epsilon` — instead of CUDD's flooring default of `1e-12`. CUDD merges ADD terminal values within epsilon of each other, including merging tiny values into the `0` terminal. FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the `1e-12` default would round down to `0`. With epsilon `0` the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits — and a user who wants to trade exactness for speed/memory can set a positive `--epsilon`.
+**The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it and put `addmc` on `PATH` (`bin/install-solvers.sh --only addmc` does both). The fork also defaults CUDD's terminal-merging epsilon to `0` — exposed as ADDMC's `--ep` option, surfaced here as `--epsilon` / `:epsilon` — instead of CUDD's flooring default of `1e-12`. CUDD merges ADD terminal values within epsilon of each other, including merging tiny values into the `0` terminal. FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the `1e-12` default would round down to `0`. With epsilon `0` the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits — and a user who wants to trade exactness for speed/memory can set a positive `--epsilon`.
 
 The shell wrappers:
 
@@ -360,7 +360,6 @@ bin/marginals.sh problem.scnf                                 # default: maxent
 bin/marginals.sh problem.scnf --solver addmc
 bin/marginals.sh problem.scnf --solver addmc --weighted-only --out problem.marginals
 bin/marginals.sh problem.scnf --solver addmc --epsilon 1e-9   # faster, approximate
-bin/marginals.sh problem.scnf --addmc-bin /path/to/addmc      # implies --solver addmc
 ```
 
 **Weight scale.** This matters more than it looks. The weight-learning pipeline writes *integer* weights, the real costs multiplied by a scale (default 100) so MaxSAT has integers to optimize, and records `scale: N` in the `.scnf` header. The absolute scale is irrelevant to MaxSAT — it only minimizes a sum — but it is *everything* to a probability: `P(x) ∝ exp(−cost(x))`, so weights of 69 versus 0.69 describe utterly different distributions. At the ×100 scale the distribution is essentially zero-temperature: it collapses onto the minimum-cost models, the partition function underflows toward `0`, and the marginals are pulled to the corners. On the 2-atom `(OR (P A) (P B))` example with learned weight 69, the marginals come out `0.50`; at the true weight `0.69` they are `0.60` — which is exactly the target the learner was fitting.
@@ -426,7 +425,7 @@ bin/marginals.sh problem.scnf --solver d4 --save-circuit problem.dnnf   # persis
 bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1))'
 ```
 
-**Interface & dependency.** `--solver d4` (and the Lisp `ddnnf-compile-d4`, or `ddnnf-marginals … :compiler :d4`) needs the d4 compiler binary — d4v2's `demo/compiler` executable — located via the `*d4*` Lisp variable, the `D4` environment variable, or `--d4-bin <path>`. Build it from a d4v2 checkout (a macOS fork is at [github.com/HenryKautz/d4v2](https://github.com/HenryKautz/d4v2)); it is entirely optional — only `--solver d4` uses it, and every other back end works without it.
+**Interface & dependency.** `--solver d4` (and the Lisp `ddnnf-compile-d4`, or `ddnnf-marginals … :compiler :d4`) needs the d4 compiler binary — d4v2's `demo/compiler` executable — found on `PATH` as `d4` (the `*d4*` Lisp variable). Build it from a d4v2 checkout (a macOS fork is at [github.com/HenryKautz/d4v2](https://github.com/HenryKautz/d4v2)); it is entirely optional — only `--solver d4` uses it, and every other back end works without it.
 
 Cross-checked against the enumeration back end: exact agreement (max `|P_enum − P_d4| = 0`) on the weighted test instances, including unit-evidence reuse and save→load of a d4-produced circuit.
 
@@ -548,9 +547,8 @@ integration), whose `-mcsat`
 mode carries the whole sampler — outer slice sampling and inner SampleSAT — in C,
 so FiFO writes one weighted CNF and reads the marginals back from a single
 process. Get it from [gitlab.com/HenryKautz/Walksat](https://gitlab.com/HenryKautz/Walksat)
-(the `Walksat_v58_MC-SAT` directory), and locate it via the `*walksat*` Lisp
-variable, the `WALKSAT` environment variable, or `--walksat-bin <path>`. It is
-optional — only `--solver mc-sat` uses it — and versions 57 and earlier are
+(the `Walksat_v58_MC-SAT` directory) and put it on `PATH` as `walksat` (the
+`*walksat*` Lisp variable names it). It is optional — only `--solver mc-sat` uses it — and versions 57 and earlier are
 detected and refused rather than silently ignoring `-mcsat`. Sampling parameters
 (`--samples`, `--burnin`, `--seed`, `--walk-prob`, `--temp`,
 `--samplesat-cutoff`) pass straight through; see `marginals.sh --help`.

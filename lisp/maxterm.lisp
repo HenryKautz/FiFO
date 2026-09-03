@@ -342,7 +342,7 @@ Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
                          ; of two minima, so two upper bounds do NOT cancel and these numbers are~%~
                          ; not trustworthy.  The anytime solvers (tt-open-wbo-inc, nuwls-c) never~%~
                          ; prove optimality; use an exact solver instead, e.g.~%~
-                         ;     marginals.sh ... --solver max-term --maxsat-bin rc2-maxsat.py~%; ~%"
+                         ;     marginals.sh ... --solver max-term --maxsat-solver rc2-maxsat.py~%; ~%"
                       unproved (1+ (length qatoms))))
             ;; 2. exclusive groups
             (let ((gs (unless (eq groups :none)

@@ -31,9 +31,10 @@
 
 (load (merge-pathnames "maxent.lisp" (or *load-pathname* *default-pathname-defaults*)))
 
-(defvar *addmc* (or (uiop:getenv "ADDMC") "addmc")
-  "Path or name of the ADDMC weighted-model-counter binary.  Defaults to the
-ADDMC environment variable, else \"addmc\" (found on PATH).")
+(defvar *addmc* "addmc"
+  "Name of the ADDMC weighted-model-counter binary, found on PATH.  Point at a
+different build the way you would for any other program -- by putting it earlier
+on PATH -- rather than through a FiFO-specific setting.")
 
 ;;; ----------------------------------------------------------------------------
 ;;; Emitting MCC-2020 weighted CNF
@@ -121,7 +122,7 @@ double precision)."
                             :output :string :error-output :string
                             :ignore-error-status t)
         (error (c)
-          (error "could not run ADDMC (~A): ~A~%Set the ADDMC environment variable or pass :addmc to point at the binary."
+          (error "could not run ADDMC (~A): ~A~%Put an 'addmc' on PATH (bin/install-solvers.sh --only addmc)."
                  addmc c)))
     (when (and code (not (zerop code)))
       (error "ADDMC (~A) exited with code ~A.~%--- stdout ---~%~A~%--- stderr ---~%~A"
