@@ -1,0 +1,28 @@
+arguments to ppgen.sh:
+--style <grid | clique>
+for clique style:
+--clique-size <N>   number places in each clique of roads
+--number-cliques <N>   number of cliques
+--trucks <N> default is same as number of cliques
+--packages <N> default is same as number of cliques
+--airplanes <N> default is same as number of cliques
+--drive-cost <R> default 1
+--fly-cost <R> default 3
+In the generated problems, each clique is a set of places with roads each pair in both directions.
+There is one airport place in each clique.
+In the initial state, packages are initially distributed randomly and evenly between cliques - the number of packages in a clique
+differs by at most 1.
+Airplanes are similarly distributed among the the airports.
+The goal state randomly distributes the packages to locations.
+
+for grid style:
+--dimensions <M> <N>  dimensions of the grid. There is a bidirectional road between adjacent places in the grid.
+--airports <N> Number of airports, default 2.
+--airplanes <N> Number of airplanes, default is number of airports.
+--trucks <N> Number of trucks, default is number of airports.
+--packages <N> Number of packages, default is same as number of airports.
+--drive-cost <R> default 1
+--fly-cost <R> default 3
+Airports are randomly placed on the grid so as to maximize the minimum pairwise distance between them.
+In the initial state, trucks are randomly placed on the grid as are packages.
+In the goal state, packages are randomly placed on the grid.

@@ -16,6 +16,7 @@
 - [Domain-Independent SatPlan Axioms](#domain-independent-satplan-axioms)
 - [Example: a small logistics problem](#example-a-small-logistics-problem)
 - [Translating PDDL to FiFO with pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo)
+- [Generating problems with ppgen](#generating-problems-with-ppgen)
 - [Learning and Inference](#learning-and-inference)
 - [References](#references)
 
@@ -379,6 +380,36 @@ Negative preconditions are translated into `PreNeg` static facts, which the axio
 `pddl2fifo` also runs a relaxed planning-graph reachability analysis on the problem and returns, as a second value, a lower bound on the number of time slices a plan needs (or `:unreachable` if the goals cannot be reached even in the relaxation). The planner uses this to choose its default horizon range; see *Running the planner* below.
 
 Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/switches.pddl` (domain) and `SatPlan/Examples/Switch/switchprob.pddl` (problem) exercises negative preconditions, negative goals, and action costs. The typed pair `SatPlan/Examples/TruckLog/trucklog.pddl` and `SatPlan/Examples/TruckLog/trucklogprob.pddl` is a logistics task using PDDL types, including a type hierarchy (`truck` is a subtype of `mobile`, and the drive action ranges over `mobile`).
+
+### Generating problems with ppgen
+
+`SatPlan/ppgen.sh` generates random problems for the `clara-logistics` domain (`SatPlan/clara-logistics.pddl`) — a logistics domain over places, trucks, airplanes, and packages, in which `road` and `route` carry the topology, `load`/`unload`/`transfer` are free, and `drive` and `fly` cost `(drive-cost)` and `(fly-cost)`. Both cost functions take no arguments, so a generated problem prices all travel with two lines in `:init`; see [Costs set by the problem file](#costs-set-by-the-problem-file).
+
+The generator writes to stdout, or to a file with `-o`:
+
+```sh
+SatPlan/ppgen.sh --style clique --clique-size 4 --number-cliques 3 --seed 1
+SatPlan/ppgen.sh --style grid --dimensions 5 5 --airports 3 -o pb2.pddl
+```
+
+There are two topologies.
+
+**`--style clique`** builds `--number-cliques` groups of `--clique-size` places, each group fully connected by two-way roads, with exactly one airport per group. Packages, trucks, and airplanes are spread *evenly* over the groups — any two groups differ by at most one — at a random place within the group; airplanes go to the airports. `--trucks`, `--packages`, and `--airplanes` each default to the number of cliques. Since roads never cross between groups, a package whose goal lies in another group must fly, which is what makes this shape useful: it forces multi-modal plans.
+
+**`--style grid`** builds an `M × N` grid of places with two-way roads between orthogonally adjacent cells. `--airports` (default 2) are placed to maximize the minimum distance between them, so flights are worth taking; trucks and packages are placed uniformly at random, and airplanes are spread evenly over the airports. `--airplanes`, `--trucks`, and `--packages` default to the number of airports.
+
+In both styles every pair of airports is joined by a two-way route, and each package's goal is a place other than the one it starts at, so no package is already where it needs to be.
+
+Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) set the two travel prices; `--seed <N>` makes a run reproducible; `--name` and `--domain` set the problem and domain names; `-o`/`--output` names an output file. `--help` lists them all.
+
+A generated problem feeds straight into the planner:
+
+```sh
+SatPlan/ppgen.sh --style grid --dimensions 4 4 --airports 2 --seed 7 -o pb.pddl
+bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl --maxslices 12
+```
+
+The generator is `SatPlan/ppgen.lisp`; the shell script is a thin argument-parsing wrapper around `(ppgen:ppgen ...)`, which takes the same settings as keyword arguments and writes to a stream. Both live under `SatPlan/` rather than `lisp/` and `bin/`, since they are specific to this domain rather than part of the installable library. `tests/run-test-ppgen.sh` is the regression suite.
 
 ### Learning and Inference
 
