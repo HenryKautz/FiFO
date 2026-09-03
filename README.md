@@ -35,7 +35,7 @@ henry.kautz@gmail.com
 
 [GitHub Repository](https://github.com/HenryKautz/Schema2)
 
-FiFO is a language for specifying logical theories using finite-domain first-order logic syntax. Because domains are finite, the language is a compact representation for propositional logic. The FiFO interpreter produces propositional CNF (conjunctive normal form) which can be input to any satisfiability testing program.
+FiFO is a language for specifying theories in finite-domain first-order logic, and — when weights or target probabilities are attached to its formulas — in Markov Logic. Because domains are finite, the language is a compact representation for propositional logic: the FiFO interpreter produces propositional CNF (conjunctive normal form) for a satisfiability testing program, or *weighted* CNF for a MaxSAT solver, a model counter, or a sampler.
 
 FiFO is a variant of Markov Logic (Richardson, M., & Domingos, P. (2006). Markov logic networks. *Machine Learning*, 62(1-2), 107-136). A weight or target probability may be attached to any formula (as in Markov Logic); a compound formula is reified into a fresh atom carrying the weight (see [Optimization](#optimization-weighted-maxsat)). Its main additions over Markov Logic are a richer set of operators for working with static predicates and domains.
 
@@ -84,19 +84,21 @@ Common Lisp API
 
 Invoke any implementation of Common Lisp, and load the file `lisp/FiFO.lisp` (or `~/lib/fifo/lisp/FiFO.lisp` once installed). The following Lisp functions are available. All arguments after the first are Common Lisp keyword arguments, so they are supplied by name, e.g. `(instantiate "test.wff" :scnfile "test.scnf")` or `(interpret "test.out" :sort-by-time nil)`.
 
-**(parse '(SCHEMA+) &key (static-list '(FACT+))) returns ((OR LITERAL+)\*)**  
+**(parse '(SCHEMA+) &key static-list) returns ((OR LITERAL+)\*)**  
 Parse a list of schemas (see BNF syntax below) and return a list of symbolic ground clauses. Each FACT is a positive ground literal or a static quantified formula as described below. When the schemas are expanded, they are simplified by replacing static atoms by true and all non-static atoms that employ the same predicates by false. (`:observation-list` is accepted as a deprecated synonym for `:static-list`.)
 
 **(instantiate "test.wff" &key scnfile staticfile)**  
 Reads the FiFO file "test.wff", instantiates it, and saves the result in symbolic conjunctive normal form in the file given by `:scnfile`. The `:staticfile` file contains a sequence of static ground atoms. (`:obsfile` is accepted as a deprecated synonym for `:staticfile`.)
 
-**(propositionalize "test.scnf" &key cnffile mapfile)**  
+**(propositionalize "test.scnf" &key cnffile mapfile cnf-format)**  
 Reads the symbolic conjunctive normal form file "test.scnf" and creates a DIMACS format CNF file3 "test.cnf". In DIMACS format (the standard input language for all modern SAT solvers), propositions are represented by positive and negative integers. The mapping from symbolic ground atoms to integers is written to the file "test.map". The file "test.cnf" may then be sent to a SAT solver. When the output file name is not given explicitly and the problem is written in one of the WCNF formats (see Optimization), the default extension is `.wcnf` instead of `.cnf`. `propositionalize` returns the pathname of the cnf/wcnf file it wrote.
+
+`:cnf-format` (`CNF`, `WCNF` or `WCNF-OLD`) overrides the dialect recorded in the `.scnf`, so one symbolic file can be emitted several ways without regenerating it; omitted, the file's own `(OPTION WEIGHTS ...)` line decides, and a file with no such line is plain CNF. The global `*cnf-format*` is **not** consulted here — it is an input to `instantiate`, which records its decision in the `.scnf`.
 
 **(satisfy "test.cnf" &key satoutfile)**
 The solver named by the variable **`*solver*`** (default `"kissat"`) is called on "test.cnf" and the output is captured in "test.out".  The run is bounded by **`*solver-timeout*`** (default 600 s; `0`, `-1` or `nil` for no limit), enforced with `SIGTERM` so an anytime MaxSAT solver still prints its best solution.  When **`*preprocessor*`** names a MaxPre 2 binary, the weighted CNF is preprocessed first and the model reconstructed afterwards.  Satisfy returns `'SAT`, `'UNSAT`, or `nil` when the solver gave no verdict.  The verdict is taken from the DIMACS `s` line first, falling back to a scan for the whole words SATISFIABLE / UNSATISFIABLE (or a line that is exactly SAT or UNSAT).  It deliberately does **not** look for the substring "SAT": every MaxSAT solver's banner contains it, so a run that printed a banner and no verdict would otherwise be read as satisfiable.
 
-**(interpret "test.out" &key mapfile solnfile (sort-by-time t))**  
+**(interpret "test.out" &key mapfile solnfile sort-by-time)**  
 Reads in the output of a SAT solver "test.out" and a mapping file (`:mapfile`), and creates an answer file (`:solnfile`) containing the positive literals in the satisfying assignment in symbolic form. The file "test.out" specifies a solution by a sequence of positive and negative integers. The format of the file can be flexible; it can simply be a sequence of integers; or be in official DIMACS solution format where lines containing the integers begin with the letter "v"; or free-form text where lines containing only integers are assumed to be the solution. If for some integer, neither the integer nor its complement appears, then it is assumed to be false (negative) for the assignment. By default (`:sort-by-time t`) the results are sorted by the last argument to each predicate, which is often used to specify a time index; pass `:sort-by-time nil` to sort alphabetically instead.
 
 The MaxSAT output format used by solvers such as `tt-open-wbo-inc` is also understood: the satisfiability status is taken from the `s` line, and the model is given as a single `v` line that is a bit string of length *numvar* (one `0`/`1` per variable) rather than a list of signed literals. When the output contains one or more `o <number>` (objective/cost) lines, the value from the last such line is written to "test.answer" as an atom of the form `(*objective* <number>)`, placed before the symbolic atoms.
@@ -108,7 +110,7 @@ Reads in the FiFO file "test.wff" and an optional static facts file (`:staticfil
   - Is satisfiable: SAT followed by the positive ground literals in a satisying model.
   - Is unsatisfiable: UNSAT.
 
-The solver keywords bind the corresponding globals for the call only, so they need not be set beforehand: `:solver` (abbreviations are resolved, so `:solver "nuwls"` works), `:cnf-format` (`CNF`, `WCNF` or `WCNF-OLD`), `:preprocessor`, `:preprocessor-techniques` and `:timeout`.  An `(option ...)` form inside the `.wff` runs while the file is parsed, so it still has the last word.
+The solver keywords bind the corresponding globals for the call only, so they need not be set beforehand: `:solver` (abbreviations are resolved, so `:solver "nuwls"` works), `:cnf-format` (`CNF`, `WCNF` or `WCNF-OLD`), `:preprocessor`, `:preprocessor-techniques` and `:timeout`.  These are the caller's to choose and a `.wff` may not set them with an `(option ...)` form — see [Options set only in Lisp](#options-set-only-in-lisp).
 
 - If the formula contains a prove form and
   - Is satisfiable: COUNTEREXAMPLE followed by the positive ground literals in a counterexample (satisfying model).
@@ -295,7 +297,7 @@ Note that the expression (and (smaller a b) (smaller b c)) appears as a *test* i
 
 ## SAT solvers
 
-The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected — with `(solve "problem.wff" :solver <name>)`, `(setq *solver* "<name>")`, `solve.sh --solver`, or the planner's `SAT_SOLVER` / `--solver` setting. A `.wff` cannot choose its own solver; see [Solving policy is the caller's](#solving-policy-is-the-callers).
+The `solve` pipeline and the planner's feasibility phase use a plain (non-weighted) SAT solver that reads DIMACS CNF. The default is `kissat`, but any solver with the same command-line behavior can be selected — with `(solve "problem.wff" :solver <name>)`, `(setq *solver* "<name>")`, `solve.sh --solver`, or the planner's `SAT_SOLVER` / `--solver` setting. A `.wff` cannot choose its own solver; see [Options set only in Lisp](#options-set-only-in-lisp).
 
 The catalog of solvers FiFO can use — SAT solvers, weighted MaxSAT solvers, model counters, knowledge compilers, and the MC-SAT sampler — with what each one does, where to get it, and installation notes, is in [software-components.md](software-components.md#solvers-and-external-tools).
 
@@ -660,7 +662,7 @@ When tracing is enabled, the interpreter prints diagnostic output to standard ou
 
 The multiply trace is especially useful for diagnosing exponential clause blowup. When compact encoding is disabled, each multiply step performs a full cross-product; the clause count shown will grow multiplicatively. With compact encoding enabled, auxiliary propositions are introduced and the count grows only linearly.
 
-### Summary of all options
+### Options set in wff files or Lisp
 
 Every option is a Lisp global variable whose name is the same in both forms. There are two ways to set one:
 
@@ -677,9 +679,9 @@ Only the options below may appear in a `.wff`. They all shape *what problem gets
 | `*tracing*` | Print `[TRACE]` diagnostics during instantiation | `nil` (off) | `(option *tracing* 1)` | `--eval '(setq *tracing* t)'` |
 | `*satplan-numslices*` | SatPlan time horizon read by `pddl2fifo`-generated wff files | unbound (treated as `2`) | `(option *satplan-numslices* 10)` | `--eval '(setq *satplan-numslices* 10)'` |
 
-### Solving policy is the caller's
+### Options set only in Lisp
 
-The variables below say *how to attack* a problem rather than what the problem is, so a `.wff` may not set them — `(option *solver* ...)` and its relatives are rejected with an error naming the replacement. There are three places to say it instead: a `solve` keyword (which binds the variable for that call only), a `setq` for the whole session, or the matching flag on `solve.sh` / `map.sh` / `planner.sh`.
+The variables below say *how to attack* a problem rather than what the problem is. They are the caller's, never the theory's, so a `.wff` may not set them — `(option *solver* ...)` and its relatives are rejected with an error naming the replacement. There are three places to say it instead: a `solve` keyword (which binds the variable for that call only), a `setq` for the whole session, or the matching flag on `solve.sh` / `map.sh` / `planner.sh`.
 
 Keeping them out of the `.wff` is what lets `solve.sh` and `map.sh` guarantee the format/solver pairing they exist to enforce, and what stops a file from silently overriding the planner's own choice at every horizon.
 
@@ -692,6 +694,14 @@ Keeping them out of the `.wff` is what lets `solve.sh` and `map.sh` guarantee th
 | `*preprocessor-techniques*` | MaxPre's `-techniques=` string; `nil` uses MaxPre's own default | `nil` | `:preprocessor-techniques "[bu]#[buvsrg]"` | `--eval '(setq *preprocessor-techniques* "[bu]#[buvsrg]")'` |
 | `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`; full names must be strings. Resolved by `solve`'s `:solver` | `tt-glucose`, `tt-intelsat`, `nuwls`, `evalmaxsat` | — | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
 
+**The `-techniques=` string.** FiFO passes `*preprocessor-techniques*` through to MaxPre unchanged and never inspects it, so the format is MaxPre's. It is a small schedule language, not a flag list:
+
+- each **letter** selects one simplification technique (`b`, `u`, `v`, `s`, `r`, `g`, … — MaxPre's own documentation gives the table);
+- letters written next to each other are applied **in that order**;
+- `[...]` makes a group a **loop**: repeat it until it stops changing the instance;
+- `#` starts the **next round**, and rounds run left to right.
+
+So `[bu]#[buvsrg]` reads as "loop `b` then `u` to a fixed point; then loop the larger group `buvsrg` to a fixed point" — a cheap pass first, then a more expensive one on the already-shrunk instance. Leave the option at `nil` to get MaxPre's own default schedule, which is the right choice unless you are deliberately tuning.
 ### Example: setting several options from the command line
 
 To solve a problem with tracing enabled, a different solver, and weighted output in the new DIMACS format, chain the `setq` forms before the call to `solve`:

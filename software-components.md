@@ -737,7 +737,7 @@ full binary name. Add your own with
 A `.wff` cannot select a solver, a format, a timeout or a preprocessor: those say
 how to *solve* a problem rather than what it is, and letting a file set them
 defeated the very checks `solve.sh` and `map.sh` perform. See
-[Solving policy is the caller's](README.md#solving-policy-is-the-callers).
+[Options set only in Lisp](README.md#options-set-only-in-lisp).
 
 ------
 
