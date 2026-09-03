@@ -70,11 +70,15 @@ marginals at the working horizon. See
 
 FiFO's WCNF encoding defines a Gibbs distribution over the feasible set:
 
-$$P_\theta(x) = \frac{1}{Z(\theta)} \exp!\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]$$
+$$
+P_\theta(x) = \frac{1}{Z(\theta)} \exp\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]
+$$
 
 where $\mathcal{F}$ is the set of assignments satisfying all hard clauses, and $\theta_a$ are the weights (costs). The marginal probability of literal $L$ is:
 
-$$P(L) = \sum_{x \in \mathcal{F}:, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}$$
+$$
+P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+$$
 
 a ratio of two partition functions over $\mathcal{F}$, both restricted by the hard clauses. This is weighted model counting (#WMC), and it's #P-hard in general — so the practical question is which back end fits the instance.
 
@@ -103,7 +107,9 @@ The distribution above supports two quite different queries. Marginal inference
 (the next section) **sums**: `P(L) = Z_L / Z`. **MAP inference** **maximizes** — it
 returns the single most probable assignment,
 
-$$x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)$$
+$$
+x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
+$$
 
 Because `exp(−·)` is monotone decreasing, *maximizing probability is minimizing
 cost*: MAP inference in FiFO is exactly **weighted MaxSAT** over the hard clauses
@@ -117,7 +123,7 @@ ends time out at the same horizons.
 probable *explanation*, an assignment to *every* variable. "Marginal MAP", which
 maximizes over a subset of variables and sums over the rest, is a strictly harder
 problem that FiFO does not implement. See
-[probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).)
+[probability-background.md §3.3](probability-background.md#33-map-inference-the-mode-of-the-distribution).)
 
 ### Running it: `solve` plus two settings
 
@@ -236,7 +242,7 @@ you drive MaxSAT yourself.
 Two further cautions. The optimum need not be **unique**: MaxSAT returns one
 minimum-cost model with no indication of how many others tie it, a blindness that
 matters for the approximation in
-[probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function).
+[probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function).
 And TT-Open-WBO-Inc is an **anytime** solver: it prints an `o <cost>` line each time
 it improves, and `interpret` takes the *last* one, so an interrupted run yields the
 best model found rather than a proven optimum.
@@ -290,7 +296,7 @@ not. Two practical consequences:
 
 The theory of the mode-vs-mean distinction, the zero-temperature limit that
 connects them, and MAP's role as the oracle inside weight learning are in
-[probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).
+[probability-background.md §3.3](probability-background.md#33-map-inference-the-mode-of-the-distribution).
 
 ------
 
@@ -306,7 +312,7 @@ So all of `marginals` (enumeration), `marginals-addmc`, `wmc`, and the circuit b
 MaxSAT is the exception, and for a reason worth keeping in mind: MAP is the
 zero-temperature limit of this same distribution, and `arg min` is invariant
 under a positive rescaling — so `map.sh` may ignore what every marginal depends
-on. See [probability-background.md §14](probability-background.md#14-map-inference-the-mode-of-the-distribution).
+on. See [probability-background.md §3.3](probability-background.md#33-map-inference-the-mode-of-the-distribution).
 
 ------
 
@@ -459,7 +465,7 @@ count per atom — so it returns in seconds on SatPlan instances the exact back 
 cannot finish. The price is Monte-Carlo error, and (more importantly) a mixing
 assumption that can fail. For the algorithm and why its inner loop is a SAT solve
 rather than a MaxSAT solve, see
-[probability-background.md §12](probability-background.md#12-sampling-based-marginal-inference-mc-sat).
+[probability-background.md §3.1](probability-background.md#31-sampling-based-marginal-inference-mc-sat).
 
 ```sh
 # every marginal from one sampling run; fix the seed for reproducibility
@@ -574,10 +580,12 @@ detected and refused rather than silently ignoring `-mcsat`. Sampling parameters
 
 Every back end above *counts*, exactly or approximately. `--solver max-term` does
 not count at all: it applies the maximum-term approximation
-([probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function))
+([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function))
 to each atom's two polarities,
 
-$$\operatorname{logit} P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)$$
+$$
+\mathrm{logit}\,P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
+$$
 
 where each $c_{\min}$ is a MaxSAT solve with a unit clause clamping the atom.
 That is Ramírez & Geffner's recognizer with the hypothesis replaced by an atom —
@@ -687,7 +695,7 @@ For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.
 
 ### Plan recognition posteriors (recognize.sh)
 
-The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
+The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
 
 The instance is a costed domain whose hypotheses are nullary derived predicates `hyp0 … hypN` (as produced by `make-recognition-instance.lisp`, so the goal is `(or (hyp0) … (hypN))`), plus an observation sequence as an `(occur-in-order …)` evidence file. For each hypothesis `hypI` the script calls `planner.sh` twice at a fixed horizon `H` — the cheapest plan that **complies** with the observations (`--pddl-evidence '(occur-in-order …)'`, cost $`c(\text{O})`$) and the cheapest that **does not** (`--pddl-evidence '(not (occur-in-order …))'`, cost $`c(\lnot\text{O})`$) — and forms
 
@@ -702,7 +710,7 @@ bin/recognize.sh \
     SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt --horizon 6
 ```
 
-It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §13](probability-background.md#13-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
 
 ------
 
@@ -735,7 +743,7 @@ The key difference from the MaxSAT oracle used in planning: the MaxSAT oracle re
 `gid` is a **tie-group id**: every ground instance of one source-`.wff`
 `(probability ...)` form shares a `gid`, and the pipeline fits **one** weight per
 group (parameter tying — see [probability-background.md](probability-background.md)
-§1–2). `instantiate` writes these forms automatically from a `.wff`; a hand-written
+§2.1). `instantiate` writes these forms automatically from a `.wff`; a hand-written
 `.scnf` may omit `gid`, in which case each line is its own untied group.
 
 `PROBABILITY` is a distinct keyword from FiFO's `(WEIGHT <literal> c)` cost form
@@ -768,7 +776,7 @@ five data regimes
 regularization centre Case 5); the estimators below are the two implementations of
 it. Learning from **demonstration data** — a corpus of plans or observed
 trajectories, fitted by structured perceptron, max-margin/cutting-plane, or
-CCCP/EM as in §§4–7 there — is **not implemented**. Those sections describe the
+CCCP/EM as in §§2.3–2.6 there — is **not implemented**. Those sections describe the
 target architecture, not something you can run today. If you have demonstrations
 rather than beliefs, the usable route is to summarise them as target marginals
 (the observed frequency of each tied feature) and fit those.
@@ -877,7 +885,7 @@ The intended end-to-end flow starts and ends at the **`.wff`** level:
    re-instantiating gives every grounding the same (tied) cost.
 3. Edit `source_weighted.wff` to enlarge the domains and re-instantiate at full
    size — schema tying carries the small-domain weights over (cf.
-   [probability-background.md](probability-background.md) §2, §10).
+   [probability-background.md](probability-background.md) §2.1, §2.9).
 
 Two well-formedness checks are enforced when grouping: a literal targeted by two
 different tie groups (**overlapping** forms) is an error, and the target `p` must

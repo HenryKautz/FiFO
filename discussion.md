@@ -250,7 +250,7 @@ routes, one still open and one now implemented:
   recognizer `P(O | G) ≈ σ(β·(c(G,¬O) − c(G,O)))`. **This route is implemented**,
   in `bin/recognize.sh`, and is the practical way to get the calibrated posterior
   on these benchmarks. The theory is in
-  [probability-background.md §13](Probability/probability-background.md#13-maximum-term-approximation-of-the-partition-function),
+  [probability-background.md §3.2](Probability/probability-background.md#32-maximum-term-approximation-of-the-partition-function),
   the tool in
   [probability.md](Probability/probability.md#plan-recognition-posteriors-recognizesh),
   and the results in
@@ -277,7 +277,9 @@ of it, which is worth stating plainly because the numbers look alike.
 
 The exact identity behind both is
 
-$$P(a) = \sigma\!\big(\beta\,(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)$$
+$$
+P(a) = \sigma\!\big(\beta\,(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)
+$$
 
 with $`c_{\min}`$ the cheapest model of each polarity and $`\Omega`$ the
 degeneracy — the number of near-optimal models, weighted by how near-optimal they
@@ -431,9 +433,9 @@ would qualify. The cheapest useful one is the uniqueness probe of (2).
 
 ### References
 
-- See [Probability/probability-background.md §13](Probability/probability-background.md#13-maximum-term-approximation-of-the-partition-function)
+- See [Probability/probability-background.md §3.2](Probability/probability-background.md#32-maximum-term-approximation-of-the-partition-function)
   for the derivation of the maximum-term approximation and its error, and
-  [§14](Probability/probability-background.md#14-map-inference-the-mode-of-the-distribution)
+  [§3.3](Probability/probability-background.md#33-map-inference-the-mode-of-the-distribution)
   for the mode-versus-marginals distinction it rests on.
 - [notes-from-claude-code.md §5](notes-from-claude-code.md) records the working
   discussion this section summarises, including the measurements.
@@ -472,7 +474,7 @@ projected marginals to be cheaper than the direct ones.
 
 ### References
 
-- [Probability/probability-background.md §12](Probability/probability-background.md#12-sampling-based-marginal-inference-mc-sat)
+- [Probability/probability-background.md §3.1](Probability/probability-background.md#31-sampling-based-marginal-inference-mc-sat)
   for MC-SAT, the sampler this would sit on top of, and
-  [§14](Probability/probability-background.md#14-map-inference-the-mode-of-the-distribution)
+  [§3.3](Probability/probability-background.md#33-map-inference-the-mode-of-the-distribution)
   for why this is a summing method rather than a marginal MAP.

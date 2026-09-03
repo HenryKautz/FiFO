@@ -38,16 +38,16 @@ Open questions / subtasks:
 - What the marginal *means* for a planning fluent/action (per time slice? over the
   whole plan?), and whether the feasible set for MaxEnt is the set of valid plans.
 - Tie into the planner's horizon search: learn on a small horizon, transfer.
-- Connect to Probability/probability-background.md §10 (domain-size dependence) — plan cost may
+- Connect to Probability/probability-background.md §2.9 (domain-size dependence) — plan cost may
   not be size-invariant; may need size-modulated features.
 
 ## Note: validating the small-domain → full-size transfer
 
 Both items hinge on **schema tying** — the assumption that weights learned on
-small domains transfer unchanged to larger ones. Probability/probability-background.md §10 warns
+small domains transfer unchanged to larger ones. Probability/probability-background.md §2.9 warns
 this can be **misspecified** when the true cost has size-dependent structure
 (congestion, economies of scale, fixed overheads). When we build and validate the
-transfer, keep the §10 diagnostic in mind: residual regret that **grows
+transfer, keep the §2.9 diagnostic in mind: residual regret that **grows
 systematically with instance size** signals misspecification (not noise), and the
 fix stays linear — `θ_a(d) = α_a + β_a·g(d)` for a size function `g(d)`, adding
 size-modulated features.

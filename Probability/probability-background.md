@@ -13,33 +13,43 @@
 ## Table of Contents
 
 - [1. Setup and notation](#1-setup-and-notation)
-- [2. Parameter tying and the feature space](#2-parameter-tying-and-the-feature-space)
-- [3. The unifying view](#3-the-unifying-view)
-- [4. Case 1 — Complete, optimal data](#4-case-1--complete-optimal-data)
-- [5. Why an oracle is needed even with complete data](#5-why-an-oracle-is-needed-even-with-complete-data)
-- [6. Case 2 — Complete but merely-good data](#6-case-2--complete-but-merely-good-data)
-- [7. Case 3 — Partial data](#7-case-3--partial-data)
-- [8. Case 4 — Beliefs about marginals, little or no data](#8-case-4--beliefs-about-marginals-little-or-no-data)
-- [9. Case 5 — Combining beliefs and data](#9-case-5--combining-beliefs-and-data)
-- [10. Domain-size dependence (a real caveat)](#10-domain-size-dependence-a-real-caveat)
-- [11. Practical recipe for the FiFO / MaxSAT stack](#11-practical-recipe-for-the-fifo--maxsat-stack)
-- [12. Sampling-based marginal inference: MC-SAT](#12-sampling-based-marginal-inference-mc-sat)
-- [13. Maximum-term approximation of the partition function](#13-maximum-term-approximation-of-the-partition-function)
-- [14. MAP inference: the mode of the distribution](#14-map-inference-the-mode-of-the-distribution)
-- [15. Provenance / related work](#15-provenance--related-work)
-- [16. Summary table](#16-summary-table)
+- [2. Learning weights across data regimes](#2-learning-weights-across-data-regimes)
+  - [2.1 Parameter tying and the feature space](#21-parameter-tying-and-the-feature-space)
+  - [2.2 The unifying view](#22-the-unifying-view)
+  - [2.3 Case 1 — Complete, optimal data](#23-case-1--complete-optimal-data)
+  - [2.4 Why an oracle is needed even with complete data](#24-why-an-oracle-is-needed-even-with-complete-data)
+  - [2.5 Case 2 — Complete but merely-good data](#25-case-2--complete-but-merely-good-data)
+  - [2.6 Case 3 — Partial data](#26-case-3--partial-data)
+  - [2.7 Case 4 — Beliefs about marginals, little or no data](#27-case-4--beliefs-about-marginals-little-or-no-data)
+  - [2.8 Case 5 — Combining beliefs and data](#28-case-5--combining-beliefs-and-data)
+  - [2.9 Domain-size dependence (a real caveat)](#29-domain-size-dependence-a-real-caveat)
+  - [2.10 Practical recipe for the FiFO / MaxSAT stack](#210-practical-recipe-for-the-fifo--maxsat-stack)
+- [3. Inference on the learned distribution](#3-inference-on-the-learned-distribution)
+  - [3.1 Sampling-based marginal inference: MC-SAT](#31-sampling-based-marginal-inference-mc-sat)
+  - [3.2 Maximum-term approximation of the partition function](#32-maximum-term-approximation-of-the-partition-function)
+  - [3.3 MAP inference: the mode of the distribution](#33-map-inference-the-mode-of-the-distribution)
+- [4. Related work and summary](#4-related-work-and-summary)
+  - [4.1 Provenance / related work](#41-provenance--related-work)
+  - [4.2 Summary table](#42-summary-table)
 - [References](#references)
 
-A working summary of how to learn the weights in a FiFO weighted-MaxSAT theory —
-i.e. the costs attached to weighted literals — across the full range of data
+The theory behind FiFO's probabilistic layer, in four parts.
+
+**Section 1** fixes the objects: the feasible set, the tied feature vector, and
+the linear cost function a MaxSAT solver minimizes.
+
+**Section 2** is the bulk: how to *learn* the weights of a FiFO weighted-MaxSAT
+theory — the costs attached to weighted literals — across the full range of data
 regimes, from complete optimal demonstrations down to nothing but prior beliefs
-about marginal probabilities. Section 12 covers the sampling end of the
-marginal-*inference* design space — MC-SAT, which is implemented
-(`--solver mc-sat`), and the theory behind it; section 13 covers the maximum-term
-approximation, which the plan-recognition pipeline (`recognize.sh`) *does*
-implement; section 14 covers MAP — the other query on the same distribution, the
-one every MaxSAT call in the stack is actually making. The implemented back ends
-of all of it are documented in [probability.md](probability.md).
+about marginal probabilities.
+
+**Section 3** turns to *inference* on the resulting distribution: MC-SAT sampling
+(3.1), implemented as `--solver mc-sat`; the maximum-term approximation (3.2),
+which the plan-recognition pipeline `recognize.sh` uses; and MAP (3.3), the query
+every MaxSAT call in the stack is actually making.
+
+**Section 4** places all of it in the literature and summarizes. The implemented
+back ends are documented in [probability.md](probability.md).
 
 Everything here is the theory behind machinery FiFO *has*, or the design space it
 was chosen from. Proposals for machinery it does not have belong in
@@ -50,10 +60,16 @@ variables now lives.
 
 ## 1. Setup and notation
 
+The objects the rest of this document refers to: the feasible set, the tied
+feature vector, the linear cost function a weighted-MaxSAT solver minimizes, and
+the Gibbs distribution that cost function induces. Section 2 (learning) and
+section 3 (inference) are both written in this notation.
+
 FiFO compiles a finite-domain FOL theory into hard CNF clauses plus a set of
 **weighted literals**. A weighted MaxSAT / PBO solver finds the minimum-cost
-feasible assignment. *Learning the weights* is the inverse problem: given
-assignments believed to be (near-)optimal, recover weights that make them so.
+feasible assignment. That forward direction is what section 3 queries; *learning
+the weights* (section 2) is the inverse problem, recovering weights that make
+given assignments optimal.
 
 (A weight or target marginal on a compound *formula* φ — a Markov-logic feature —
 is handled by reifying φ into a fresh determined atom `A ⇔ φ` and weighting `A`,
@@ -69,17 +85,74 @@ atom, so all of the following applies with no change. See
 | $\theta \in \mathbb{R}^A$ | the weights to learn (one per schema) |
 | $N_a(x)$ | number of true ground instances of schema $a$ in $x$ |
 | $\Phi(x) = (N_1,\dots,N_A)$ | feature / sufficient-statistic vector (schema counts) |
+| $`P_\theta(x)`$ | Gibbs distribution over $\mathcal{F}$ induced by the costs |
+| $Z(\theta)$ | partition function — the normalizer of $`P_\theta`$ |
 
 The objective the solver minimizes is **linear in the weights**:
 
-$$C_\theta(x) = \sum_a \theta_a N_a(x) = \theta^\top \Phi(x).$$
+$$
+C_\theta(x) = \sum_a \theta_a N_a(x) = \theta^\top \Phi(x).
+$$
 
 In planning terms $\Phi(x)$ is the histogram of action types in a plan (summed over
 groundings and time steps), and $`C_\theta`$ is the total plan cost.
 
+**The distribution.** That same cost function defines a Gibbs (Boltzmann)
+distribution over the feasible set — the object section 3 queries:
+
+$$
+P_\theta(x) = \frac{1}{Z(\theta)} \exp\left(-\sum_a \theta_a N_a(x)\right) \cdot \mathbf{1}[x \in \mathcal{F}]
+$$
+
+normalized by the **partition function**
+$`Z(\theta) = \sum_{x\in\mathcal{F}} e^{-\theta^\top\Phi(x)}`$. Low cost means high
+probability, so the minimum-cost assignment is the mode. The marginal probability
+of a literal $L$ is a ratio of two such sums,
+
+$$
+P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+$$
+
+which is weighted model counting, $`\#P`$-hard in general. An inverse temperature
+$\beta$ can be written separately, $`P_\theta(x) \propto e^{-\beta\,C_\theta(x)}`$; it is
+absorbed into $\theta$ here, and carried explicitly only where a section varies it —
+the Boltzmann-rationality model of 2.5, and the temperature arguments of 3.2 and 3.3.
+
+**Three questions, one distribution.** Everything that follows is one of:
+
+| Query | Asks for | Complexity | Where |
+|---|---|---|---|
+| **MAP / MPE** | $`\arg\min_{x\in\mathcal{F}} C_\theta(x)`$ — the mode | NP (weighted MaxSAT) | 3.3 |
+| **Marginals** | $`P(L) = Z_L/Z`$ — the sums | #P (counting or sampling) | 3.1, 3.2 |
+| **Learning** | $\theta$ itself, from data or beliefs | repeated MAP or counting | 2 |
+
+The first two are cheap and expensive versions of reading the *same* weights; the
+third produces them.
+
 ---
 
-## 2. Parameter tying and the feature space
+## 2. Learning weights across data regimes
+
+Learning the weights is the inverse of solving with them: given assignments
+believed to be (near-)optimal — or, at the other extreme, nothing but beliefs about
+marginal probabilities — recover costs that make those assignments optimal.
+
+Two preliminaries specific to learning come first: what parameter tying buys, and
+why it is mandatory once instances vary in size (2.1); and the two equivalent
+lenses — regret and moment matching — that every regime below can be read through
+(2.2). The five cases are then ordered by how much the data constrains the answer,
+from complete optimal demonstrations (2.3) down to prior beliefs alone (2.7),
+ending with the mixture of the two (2.8). Two sections cut across all of them: why
+a solver oracle is unavoidable even in the easiest case (2.4), and how the whole
+enterprise degrades when the training and deployment domains differ in size (2.9).
+Section 2.10 condenses the lot into a recipe for this stack.
+
+FiFO implements the Case 4 corner of this space, and Case 5 through a
+regularization centre; the other regimes describe the target architecture rather
+than something you can run today. See
+[probability.md § Two estimators](probability.md#two-estimators).
+
+### 2.1 Parameter tying and the feature space
 
 There is heavy tying: hundreds of ground weighted literals collapse to a few dozen
 schema weights, because all ground instances of a schema share one weight
@@ -99,22 +172,22 @@ a small instance and one in a large instance except through the schema. The payo
 is transfer — a $\theta$ fit on small instances predicts optimal plans for unseen
 sizes, and expensive inference can be done on small instances only.
 
----
-
-## 3. The unifying view
+### 2.2 The unifying view
 
 Two equivalent lenses organize everything below.
 
 **Regret (discriminative).** The optimality gap of demonstration $k$ under $\theta$,
 
-$$g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}}
-\;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},$$
+$$
+g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}}
+\;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
+$$
 
 is a linear term minus a concave term, hence **convex** in $\theta$. The first term
 is free (counting); the second is a MaxSAT solve.
 
-**Moment matching (probabilistic).** Adopt the Gibbs model
-$`P_\theta(x) \propto \exp(-\theta^\top\Phi(x))`$ on $\mathcal{F}$. Then learning is
+**Moment matching (probabilistic).** Read the Gibbs model $`P_\theta`$ of section 1
+as the learner's likelihood. Then learning is
 matching the model's expected features $`\mathbb{E}_\theta[\Phi]`$ to a target. Every
 regime below differs only in **where the target moments come from**:
 
@@ -125,14 +198,15 @@ regime below differs only in **where the target moments come from**:
 The two lenses are the high- and low-temperature ends of one spectrum (max replaces
 log-sum-exp).
 
----
 
-## 4. Case 1 — Complete, optimal data
+### 2.3 Case 1 — Complete, optimal data
 
 Each example is a full assignment assumed feasible and cost-optimal. Feasibility is
 free; the content is optimality:
 
-$$\theta^\top \Phi(x^{(k)}) \le \theta^\top \Phi(x)\quad \forall x \in \mathcal{F}.$$
+$$
+\theta^\top \Phi(x^{(k)}) \le \theta^\top \Phi(x)\quad \forall x \in \mathcal{F}.
+$$
 
 This is an (exponential) polyhedral cone in $\theta$, handled by **constraint
 generation / cutting planes** with the MaxSAT solver as the separation oracle, or by
@@ -146,9 +220,7 @@ Two things to fix:
   reference cost to 1, or normalize.
 - **Sign.** For action costs, impose $\theta \ge 0$ (correct and regularizing).
 
----
-
-## 5. Why an oracle is needed even with complete data
+### 2.4 Why an oracle is needed even with complete data
 
 > *"For Bayesian networks with complete data you just count — why not here?"*
 
@@ -173,15 +245,15 @@ The same lesson holds in the closest relative — generative MLN learning with c
 data is still not closed-form (hence pseudo-likelihood), and discriminative MLN
 learning puts MAP inference in the loop.
 
----
-
-## 6. Case 2 — Complete but merely-good data
+### 2.5 Case 2 — Complete but merely-good data
 
 When demonstrations are near-optimal but not optimal, the consistency cone is empty;
 the problem shifts from feasibility to **minimizing total regret**, which stays
 convex. The canonical objective is **Maximum Margin Planning** / structured SVM:
 
-$$\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .$$
+$$
+\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .
+$$
 
 A subgradient is $`\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)`$ with $`\hat x_k`$ the
 loss-augmented MaxSAT optimum — the perceptron update, now not driven to zero.
@@ -194,7 +266,7 @@ Practical points:
   sparsity).
 - **Validate by regret, not reproduction** — demos are suboptimal, so you *shouldn't*
   reproduce them. Watch the distribution of residual gaps $`g_k(\theta^*)`$; gaps that
-  grow with instance size signal misspecification (see §10), not noise.
+  grow with instance size signal misspecification (see §2.9), not noise.
 - **Solve the oracle to optimality** — an anytime/suboptimal solution under-estimates
   the min and gives a biased subgradient (relevant for anytime solvers like
   TT-Open-WBO-Inc).
@@ -204,9 +276,7 @@ $`P_\theta(x)\propto\exp(-\beta\,\theta^\top\Phi)`$ (temperature $1/\beta$ = rat
 $\beta$ shares the gauge with the cost scale). Principled but pays the
 partition-function cost — do the counting on small instances.
 
----
-
-## 7. Case 3 — Partial data
+### 2.6 Case 3 — Partial data
 
 Classify the **hidden** variables first; the regime depends entirely on whether they
 are weighted or unweighted (features depend only on the *weighted* variables).
@@ -237,15 +307,15 @@ identifiability degrades with the hidden fraction; the imputation can **self-rei
 (it fills in plans that look good under the current $\theta$). Observing only outcomes is
 the classic ill-posed IRL case — the cure is observing part of the plan itself.
 
----
-
-## 8. Case 4 — Beliefs about marginals, little or no data
+### 2.7 Case 4 — Beliefs about marginals, little or no data
 
 This is the **maximum-entropy** problem: the weights are the **Lagrange multipliers**
 enforcing your believed marginals. Convert beliefs to target expected counts
 $`\tau_a = \sum_{j\in a} p_j`$, and solve the moment-matching condition
 
-$$\mathbb{E}_\theta[\Phi] = \tau,$$
+$$
+\mathbb{E}_\theta[\Phi] = \tau,
+$$
 
 a low-dimensional convex program ($`\min_\theta \log Z(\theta) + \theta^\top\tau`$),
 solvable by iterative scaling or gradient descent. Each step needs $`\mathbb{E}_\theta[\Phi]`$
@@ -263,9 +333,7 @@ solvable by iterative scaling or gradient descent. Each step needs $`\mathbb{E}_
 With no data there is nothing to validate against — $\theta$ is only as good as the
 beliefs plus the MaxEnt assumption, which is the honest least-committal completion.
 
----
-
-## 9. Case 5 — Combining beliefs and data
+### 2.8 Case 5 — Combining beliefs and data
 
 Both enter through the **same channel**: constraints on $`\mathbb{E}_\theta[\Phi]`$. Combining
 them is combining target moments, weighted by confidence — beliefs act as **pseudo-data
@@ -283,15 +351,14 @@ oracle does the data fitting. With no data this returns $`\theta_0`$; with data 
 off as far as the evidence warrants. The beliefs also **supply the scale** that
 optimal-plan data leaves undetermined — the two sources are complementary.
 
----
-
-## 10. Domain-size dependence (a real caveat)
+### 2.9 Domain-size dependence (a real caveat)
 
 Schema tying assumes $`\theta_a`$ is constant across instance sizes. If the true cost has
 size-dependent structure (congestion, economies of scale, fixed overheads), pure tying
 is misspecified — diagnosable as residual regret that **grows systematically with size**.
-The fix stays linear: let $`\theta_a(d) = \alpha_a + \beta_a\,g(d)`$ for a size function
-$g(d)$, adding size-modulated features.
+The fix stays linear: let $`\theta_a(d) = \alpha_a + \gamma_a\,g(d)`$ for a size function
+$g(d)$, adding size-modulated features ($`\alpha_a, \gamma_a`$ are regression
+coefficients, unrelated to the inverse temperature $\beta$ of section 1).
 
 For the max-margin route, also **normalize the per-instance loss** (by plan length or
 variable count) so large instances don't dominate; regularization, living in the fixed
@@ -301,9 +368,7 @@ every schema (coverage).
 This connects to the **domain-size dependence / projectivity** literature in SRL — the
 one corner here that touches a genuinely open question rather than settled technique.
 
----
-
-## 11. Practical recipe for the FiFO / MaxSAT stack
+### 2.10 Practical recipe for the FiFO / MaxSAT stack
 
 - **Oracle**: weighted MaxSAT (RC2 / CP-SAT). Used free (competitor) and clamped
   (imputation); clamping = fixing literals as units.
@@ -316,7 +381,17 @@ one corner here that touches a genuinely open question rather than settled techn
 
 ---
 
-## 12. Sampling-based marginal inference: MC-SAT
+## 3. Inference on the learned distribution
+
+Learning produces weights; inference consumes them. The three sections below ask
+different questions of the same Gibbs distribution. Two concern the *sum* — the
+partition function $`Z`$ — reaching it by sampling (3.1), or by replacing it with
+its single largest term (3.2). The third asks instead for the *mode* (3.3), which
+is what every MaxSAT call in the stack is actually computing, and which doubles as
+the oracle the learning loops of section 2 invoke. The back ends that implement
+these queries are documented in [probability.md](probability.md).
+
+### 3.1 Sampling-based marginal inference: MC-SAT
 
 Four of the marginal-inference back ends ([probability.md](probability.md)) are
 *exact*: enumeration, ADDMC, and the two d-DNNF circuit compilers. Past their
@@ -401,9 +476,7 @@ themselves, so the implementation reports an effective-sample-size diagnostic
 alongside them; on the UAI-2014 MAR *Grids* benchmarks it correctly flagged badly
 wrong marginals (efficiency ≈ 0.02) before any ground truth was available.
 
----
-
-## 13. Maximum-term approximation of the partition function
+### 3.2 Maximum-term approximation of the partition function
 
 The inference back ends above compute a partition function
 $`Z_S = \sum_{x \in S} e^{-\beta\, \mathrm{cost}(x)}`$ — a weighted sum over a
@@ -447,7 +520,7 @@ approximation gives Ramírez & Geffner's recognizer,
 $`P(O\mid G) \approx \sigma\big(\beta\,(c(G,\lnot O) - c(G,O))\big)`$, where
 $`c(G,O)`$ / $`c(G,\lnot O)`$ are the cheapest plans for $G$ that do / do not
 comply with the observations. This is exactly the `Z_G`-normalized recognition
-posterior (§ [Case 4](#8-case-4--beliefs-about-marginals-little-or-no-data)-style
+posterior (§ [Case 4](#27-case-4--beliefs-about-marginals-little-or-no-data)-style
 normalization applied to goals) with **counting replaced by optimization** — the
 tractable stand-in for the exact weighted model count, which is intractable at
 useful planning horizons. It is realized by `bin/recognize.sh`
@@ -455,11 +528,9 @@ useful planning horizons. It is realized by `bin/recognize.sh`
 worked results are in
 [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
 
----
+### 3.3 MAP inference: the mode of the distribution
 
-## 14. MAP inference: the mode of the distribution
-
-Sections 12–14 are all concerned, one way or another, with the *sum*
+Sections 3.1–3.3 are all concerned, one way or another, with the *sum*
 $`Z = \sum_{x\in\mathcal F} e^{-\beta\,\mathrm{cost}(x)}`$ — exactly, approximately,
 or by sampling. The complementary query asks for the **mode**: the single most
 probable feasible assignment,
@@ -473,7 +544,7 @@ role at all. In FiFO's encoding this is literally weighted MaxSAT over the hard
 clauses and the `(WEIGHT ...)` costs; see
 [probability.md](probability.md#map-inference-the-most-probable-model) for how to run
 it. Every MaxSAT call in the stack — the planner's cost-minimization step, each of
-`recognize.sh`'s $`2n`$ solves, the oracle inside the learning loops of §§4–7 — is a
+`recognize.sh`'s $`2n`$ solves, the oracle inside the learning loops of §§2.3–2.6 — is a
 MAP query.
 
 **Terminology.** The graphical-models literature reserves **MPE** (most probable
@@ -499,7 +570,7 @@ $`Z`$ or a marginal is `#P`-hard, and marginal MAP is harder still, NP<sup>PP</s
 (Park & Darwiche 2004): it embeds a counting problem inside a search. That ordering
 is visible in FiFO's own measurements — on the plan-recognition benchmarks the
 exact weighted model counts time out at a 240 s cap while the corresponding MAP
-solves finish in seconds, which is precisely why §13's substitution of optimization
+solves finish in seconds, which is precisely why §3.2's substitution of optimization
 for counting is worth making
 ([benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)).
 
@@ -524,8 +595,8 @@ invariances worth stating because they explain an asymmetry in the implementatio
 
 Under the same limit, MAP is the leading term of the partition function:
 $`\log Z = -\beta\,c_{\min} + \log\Omega(\beta)`$ with $`\Omega \ge 1`$ the
-degeneracy factor of §13. So a MAP cost is always a bound, $`Z \ge e^{-\beta c_{\min}}`$,
-and §13's recognizer is nothing but this bound applied twice and differenced.
+degeneracy factor of §3.2. So a MAP cost is always a bound, $`Z \ge e^{-\beta c_{\min}}`$,
+and §3.2's recognizer is nothing but this bound applied twice and differenced.
 
 **Conditioning.** Evidence has probability 1, so conditioning is the same operation
 for MAP as for counting: the evidence joins the hard clauses and MaxSAT runs on the
@@ -548,32 +619,37 @@ of $`P_\theta`$; it generally is not, and the failure is not subtle:
   not.
 - *Degeneracy is invisible.* MaxSAT returns one minimum-cost model and says nothing
   about how many others tie it. That count is exactly the $`\Omega`$ dropped by the
-  max-term approximation, so the error §13 incurs is precisely the quantity a MAP
+  max-term approximation, so the error §3.2 incurs is precisely the quantity a MAP
   solve cannot report.
 - *The consequences are measurable.* On the recognition benchmarks the single
   cheapest plan identifies the hypothesis that is cheapest to *reach*, not the one
   best supported by the observations — a bias that is not fixed by better search,
   because it is a property of the query. The repair is to take a *ratio* of two MAP
-  costs within each hypothesis so the baseline cancels (§13), not to solve the
+  costs within each hypothesis so the baseline cancels (§3.2), not to solve the
   single MAP more accurately.
 
-**MAP as the learning oracle.** The learning cases of §§4–7 call MAP rather than a
+**MAP as the learning oracle.** The learning cases of §§2.3–2.6 call MAP rather than a
 counter, and the substitution is the same zero-temperature approximation seen in
-§13. The maximum-likelihood gradient is the moment-matching residual
+§3.2. The maximum-likelihood gradient is the moment-matching residual
 $`\Phi(x_{\text{data}}) - \mathbb{E}_\theta[\Phi]`$; replacing the expectation by
 the features of the current best model gives the (voted) perceptron update
 $`\theta \leftarrow \theta + \eta\,(\Phi(x_{\text{data}}) - \Phi(x^\star_\theta))`$,
 which is Viterbi training / hard EM — exact when the distribution is peaked on
 $`x^\star`$, biased by exactly the near-optimal mass it ignores when it is not. Max-margin
-training (§6) goes further and makes the oracle *loss-augmented* MAP, so the
+training (§2.5) goes further and makes the oracle *loss-augmented* MAP, so the
 approximation is built into the objective rather than into the gradient. This also
-draws the line the other way: the belief-driven MaxEnt fit of §8 constrains
+draws the line the other way: the belief-driven MaxEnt fit of §2.7 constrains
 $`\mathbb{E}_\theta[\Phi]`$ itself, which no MAP call can supply — that regime needs
 the counting or sampling back ends, and is why FiFO carries both kinds of machinery.
 
 ---
 
-## 15. Provenance / related work
+## 4. Related work and summary
+
+Where the material above sits in the existing literature, and a single table
+recapitulating the learning regimes of section 2.
+
+### 4.1 Provenance / related work
 
 Essentially all of the above is established, mostly within Markov Logic or its direct
 foundations:
@@ -604,9 +680,7 @@ principle. A defensible contribution would more likely be empirical, or in the
 domain-size corner, than in the methods. (Claim is about the components; not an
 exhaustive literature search of the exact combination.)
 
----
-
-## 16. Summary table
+### 4.2 Summary table
 
 | Data regime | Hidden vars | Objective | Convex? | Oracle / inference |
 |---|---|---|---|---|
@@ -626,29 +700,29 @@ half that defines the problem.
 
 ## References
 
-For §12 (sampling-based inference):
+For [§3.1](#31-sampling-based-marginal-inference-mc-sat) (sampling-based inference):
 
 - H. Poon & P. Domingos (2006). Sound and efficient inference with probabilistic and deterministic dependencies. *AAAI-06*, pp. 458–463. (MC-SAT.)
 - W. Wei, J. Erenrich & B. Selman (2004). Towards efficient sampling: Exploiting random walk strategies. *AAAI-04*, pp. 670–676. (SampleSAT.)
 - S. Chakraborty, K. S. Meel & M. Y. Vardi (2013). A scalable approximate model counter. *CP 2013*, LNCS 8124, pp. 200–216. (ApproxMC — the universal-hashing counter the UniGen samplers are built on.)
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2015). On parallel scalable uniform SAT witness generation. *TACAS 2015*, LNCS 9035, pp. 304–319. (UniGen.)
 - S. Chakraborty & K. S. Meel (2019). On testing of uniform samplers. *AAAI-19*, 33:7777–7784. (Barbarik — a grey-box tester that decides whether a sampler's distribution is close to uniform, which is what made the next entry possible.)
-- P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising a CDCL solver's polarity choices; see §12.)
+- P. Golia, M. Soos, S. Chakraborty & K. S. Meel (2021). Designing samplers is easy: The boon of testers. *FMCAD 2021*. (CMSGen — near-uniform sampling by randomising a CDCL solver's polarity choices; see [§3.1](#31-sampling-based-marginal-inference-mc-sat).)
 - S. Chakraborty, D. J. Fremont, K. S. Meel, S. A. Seshia & M. Y. Vardi (2014). Distribution-aware sampling and weighted model counting for SAT. *AAAI-14*. (WeightGen and WeightMC — the literal-weighted members of the hashing family.)
 - R. Gupta, S. Sharma, S. Roy & K. S. Meel (2019). WAPS: Weighted and projected sampling. *TACAS 2019*, LNCS 11427, pp. 59–76. (Supersedes WeightGen; compiles to d-DNNF, and its runtime is reported as agnostic to the weight distribution.)
 
-For §13 (maximum-term approximation):
+For [§3.2](#32-maximum-term-approximation-of-the-partition-function) (maximum-term approximation):
 
-- M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, pp. 1121–1126. (The `σ(β·(c(G,¬O) − c(G,O)))` recognizer — the max-term approximation to `Z_{G,O}/Z_G`.)
+- M. Ramírez & H. Geffner (2010). Probabilistic plan recognition using off-the-shelf classical planners. *AAAI-10*, pp. 1121–1126. (The $`\sigma\big(\beta\,(c(G,\lnot O) - c(G,O))\big)`$ recognizer — the max-term approximation to $`Z_{G,O}/Z_G`$.)
 
-For §14 (MAP inference):
+For [§3.3](#33-map-inference-the-mode-of-the-distribution) (MAP inference):
 
 - J. D. Park & A. Darwiche (2004). Complexity results and approximation strategies for MAP explanations. *Journal of Artificial Intelligence Research* 21:101–133. (MPE vs. marginal MAP; NP<sup>PP</sup>-completeness of the latter.)
 - D. Koller & N. Friedman (2009). *Probabilistic Graphical Models: Principles and Techniques*. MIT Press, ch. 13. (MAP inference and the mode-vs-marginals distinction.)
 - M. Collins (2002). Discriminative training methods for hidden Markov models: theory and experiments with perceptron algorithms. *EMNLP 2002*, pp. 1–8. (The perceptron update as a MAP-for-expectation substitution.)
 - M. J. Wainwright & M. I. Jordan (2008). Graphical models, exponential families, and variational inference. *Foundations and Trends in Machine Learning* 1(1–2):1–305. (The zero-temperature limit of an exponential family.)
 
-Full citations for the works named in §15 (Provenance / related work):
+Full citations for the works named in [§4.1](#41-provenance--related-work) (Provenance / related work):
 
 - M. Richardson & P. Domingos (2006). Markov logic networks. *Machine Learning* 62(1–2):107–136.
 - J. Besag (1975). Statistical analysis of non-lattice data. *The Statistician* 24(3):179–195. (Pseudo-likelihood.)
