@@ -620,30 +620,16 @@ bin/learn.sh myproblem.scnf --maxent --out learned.scnf
 
 Weight learning runs in the *inverse* direction of inference: it turns target
 marginal probabilities into weights. Going forward — weights to marginals — is
-**marginal inference**: the probability that each atom is true under
+**marginal inference**, the probability that each atom is true under
 `P(x) ∝ exp(−(sum of the weights of the true literals))` over the feasible set.
-`bin/marginals.sh problem.scnf` computes it, and `bin/wmc.sh problem.scnf` prints
-just the partition function `Z`.
+`bin/marginals.sh problem.scnf` computes it; `bin/wmc.sh problem.scnf` prints just
+the partition function `Z`.
 
-Six back ends are available behind `marginals.sh --solver`, and choosing between
-them is the whole practical question, so they are documented together in
-[Probability/probability.md](Probability/probability.md#marginal-inference-weights--probabilities):
-exact [enumeration](Probability/probability.md#exact-enumeration-small-instances),
-the [ADDMC](Probability/probability.md#weighted-model-counting-via-addmc) weighted
-model counter, and two d-DNNF circuit compilers
-([FiFO's own](Probability/probability.md#d-dnnf-compilation-fifos-own-no-external-binary)
-and the external [d4](Probability/probability.md#d-dnnf-via-the-external-d4-compiler));
-then, past the reach of exact counting,
-[MC-SAT sampling](Probability/probability.md#approximate-marginals-by-mc-sat-sampling)
-and the [max-term](Probability/probability.md#max-term-marginals-maxsat-instead-of-counting)
-MaxSAT approximation. Conditional probabilities (`--evidence`) are covered under
-[Conditioning on evidence](Probability/probability.md#conditioning-on-evidence).
-
-One trap worth naming here: the learning pipeline scales costs by an integer
-factor to get integer MaxSAT weights, and while that scale is irrelevant to
-MaxSAT it is a *temperature* for every probability — so every back end divides
-the `scale: N` recorded in the `.scnf` header out before exponentiating. See
-[Weight scale](Probability/probability.md#weight-scale).
+Six back ends sit behind `marginals.sh --solver` — four exact, one sampler, one
+MaxSAT approximation — and picking between them is the practical question. They
+are compared side by side, with evidence, the weight scale, and measured
+accuracy, in
+[Probability/probability.md](Probability/probability.md#marginal-inference-weights--probabilities).
 
 ## Options
 
