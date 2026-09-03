@@ -278,7 +278,7 @@ of it, which is worth stating plainly because the numbers look alike.
 The exact identity behind both is
 
 $$
-P(a) = \sigma\!\big(\beta\,(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)
+P(a) = \sigma\negthinspace\big(\beta\thinspace(c_{\min}(\lnot a) - c_{\min}(a)) + \log(\Omega_a / \Omega_{\lnot a})\big)
 $$
 
 with $`c_{\min}`$ the cheapest model of each polarity and $`\Omega`$ the

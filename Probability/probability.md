@@ -77,7 +77,7 @@ $$
 where $\mathcal{F}$ is the set of assignments satisfying all hard clauses, and $\theta_a$ are the weights (costs). The marginal probability of literal $L$ is:
 
 $$
-P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+P(L) = \sum_{x \in \mathcal{F} \thinspace:\thinspace L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
 $$
 
 a ratio of two partition functions over $\mathcal{F}$, both restricted by the hard clauses. This is weighted model counting (#WMC), and it's #P-hard in general — so the practical question is which back end fits the instance.
@@ -108,7 +108,7 @@ The distribution above supports two quite different queries. Marginal inference
 returns the single most probable assignment,
 
 $$
-x^\star \;=\; \arg\max_{x \in \mathcal{F}} P_\theta(x) \;=\; \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
+x^\star \thickspace=\thickspace \arg\max_{x \in \mathcal{F}} P_\theta(x) \thickspace=\thickspace \arg\min_{x \in \mathcal{F}} \sum_a \theta_a N_a(x)
 $$
 
 Because `exp(−·)` is monotone decreasing, *maximizing probability is minimizing
@@ -584,7 +584,7 @@ not count at all: it applies the maximum-term approximation
 to each atom's two polarities,
 
 $$
-\mathrm{logit}\,P(a) \approx \beta\,\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
+\mathrm{logit}\thinspaceP(a) \approx \beta\thinspace\big(c_{\min}(\lnot a) - c_{\min}(a)\big)
 $$
 
 where each $c_{\min}$ is a MaxSAT solve with a unit clause clamping the atom.

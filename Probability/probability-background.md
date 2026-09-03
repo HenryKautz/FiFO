@@ -110,7 +110,7 @@ probability, so the minimum-cost assignment is the mode. The marginal probabilit
 of a literal $L$ is a ratio of two such sums,
 
 $$
-P(L) = \sum_{x \in \mathcal{F} \,:\, L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
+P(L) = \sum_{x \in \mathcal{F} \thinspace:\thinspace L(x)=1} P_\theta(x) = \frac{Z_L(\theta)}{Z(\theta)}
 $$
 
 which is weighted model counting, $`\#P`$-hard in general. An inverse temperature
@@ -179,7 +179,7 @@ Two equivalent lenses organize everything below.
 **Regret (discriminative).** The optimality gap of demonstration $k$ under $\theta$,
 
 $$
-g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}} \;-\; \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
+g_k(\theta) = \underbrace{\theta^\top\Phi(x^{(k)})}_{\text{counting}} \thickspace-\thickspace \underbrace{\min_{x\in\mathcal{F}_d}\theta^\top\Phi(x)}_{\text{oracle}},
 $$
 
 is a linear term minus a concave term, hence **convex** in $\theta$. The first term
@@ -251,7 +251,7 @@ the problem shifts from feasibility to **minimizing total regret**, which stays
 convex. The canonical objective is **Maximum Margin Planning** / structured SVM:
 
 $$
-\min_{\theta\ge0}\ \tfrac{\lambda}{2}\|\theta\|^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .
+\min_{\theta\ge0}\ \tfrac{\lambda}{2}\Vert\theta\Vert^2 + \sum_k \Big[\theta^\top\Phi_k(x^{(k)}) - \min_{x\in\mathcal{F}_k}\big(\theta^\top\Phi_k(x) - \Delta_k(x)\big)\Big]_+ .
 $$
 
 A subgradient is $`\Phi_k(x^{(k)}) - \Phi_k(\hat x_k)`$ with $`\hat x_k`$ the
