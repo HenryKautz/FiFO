@@ -47,3 +47,12 @@ remembered to be included in the pddl file.
 The generated pddl file includes comment lines with the seed (specified or default) and the values of the all of the parameters
 that apply to the specified style (including the style itself), including any default values.
 
+--goals-per-package  N M default N=1 M=0
+If N is greater than 1, then instead of having one goal per package,
+there are N soft goals for each package.  Setting goals-per-package
+greater than one requires --preferences to be set to a value other
+than none.  M is the minimum number of hard goals per package, and
+takes the value 0 or 1.  If 0, then the final state has a disjunction
+over all packages and goals as is normal for preferences. If M=1, then
+there is also a hard constraint that each package must satisfy one of
+the goals regardless of cost.

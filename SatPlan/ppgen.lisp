@@ -19,7 +19,12 @@
 ;;;; arguments, so one number in :init prices every drive and every flight.
 ;;;;
 ;;;; Goals name a place for each package, drawn at random but never the package's
-;;;; own starting place, so no package is already where it needs to be.
+;;;; own starting place, so no package is already where it needs to be.  With
+;;;; :goals-per-package N each package instead gets N distinct destinations, any
+;;;; one of which delivers it; at most one can ever hold, since a package is at
+;;;; exactly one place.  :min-hard-goals 1 then makes reaching one of its own
+;;;; destinations a hard requirement for every package, rather than leaving the
+;;;; single global disjunction preferences normally impose.
 ;;;;
 ;;;; Entry point: (ppgen &key style ... ) writes one problem to a stream.
 ;;;; bin/../SatPlan/ppgen.sh is the command line wrapper.
@@ -167,17 +172,27 @@ the actual place.  Returns an alist of (item . place)."
                (push (cons (pop rest) (funcall place-fn gi)) out)))
     (nreverse out)))
 
-(defun goal-places (packages starts places)
-  "One goal place per package, random but never the package's own start (unless
-there is only one place, when no other choice exists)."
-  (mapcar (lambda (pkg)
-            (let ((start (cdr (assoc pkg starts))))
-              (cons pkg
-                    (if (< (length places) 2)
-                        (first places)
-                        (let ((choices (remove start places)))
-                          (pick choices))))))
-          packages))
+(defun goal-places (packages starts places &optional (per-package 1))
+  "PER-PACKAGE goal places for each package, random but never the package's own
+start (unless there is only one place, when no other choice exists), and all
+distinct within a package.  Returns (package . place) pairs in package order,
+each package's destinations consecutive."
+  (loop for pkg in packages
+        nconc (let* ((start (cdr (assoc pkg starts)))
+                     (choices (if (< (length places) 2)
+                                  places
+                                  (remove start places))))
+                (when (> per-package (length choices))
+                  (error "--goals-per-package ~d needs ~d distinct destination~:p per ~
+                          package, but only ~d place~:p ~:[are~;is~] available once a ~
+                          package's own starting place is excluded"
+                         per-package per-package (length choices) (= 1 (length choices))))
+                ;; The one-destination case draws exactly as it always did, so a
+                ;; recorded seed still reproduces its file byte for byte.
+                (if (= per-package 1)
+                    (list (cons pkg (pick choices)))
+                    (mapcar (lambda (p) (cons pkg p))
+                            (subseq (shuffled choices) 0 per-package))))))
 
 ;;; ------------------------------------------------------------ preferences
 
@@ -195,7 +210,12 @@ generated file reads cleanly."
                                  (if (= f (fround f)) (round f) f))
                                v))))))
 
-(defun preference-name (package) (intern-name "deliver-~a" package))
+(defun preference-name (package &optional index)
+  "Names the preference for one delivery.  A package with several destinations
+needs them told apart: deliver-pkg1-1, deliver-pkg1-2, ..."
+  (if index
+      (intern-name "deliver-~a-~d" package index)
+      (intern-name "deliver-~a" package)))
 
 ;;; ---------------------------------------------------------- goal cardinality
 
@@ -217,11 +237,30 @@ why N is capped at 3: the count grows as m^(n+1)."
 
 ;;; ------------------------------------------------------------------- emit
 
+(defun or-form (atoms)
+  "The disjunction of ATOMS, or the atom itself when there is only one."
+  (if (rest atoms) (format nil "(or ~{~a~^ ~})" atoms) (first atoms)))
+
+(defun goal-groups (goals atoms weights)
+  "Regroup the flat goal list by package, preserving order: one
+(package (atom . weight) ...) entry per package.  WEIGHTS may be NIL, in which
+case every weight is NIL."
+  (let ((out '()))
+    (loop for g in goals
+          for a in atoms
+          for w in (or weights (make-list (length atoms)))
+          do (let ((cell (assoc (car g) out)))
+               (if cell
+                   (push (cons a w) (cdr cell))
+                   (push (list (car g) (cons a w)) out))))
+    (mapcar (lambda (cell) (cons (car cell) (nreverse (cdr cell))))
+            (nreverse out))))
+
 (defun write-problem (stream &key name domain place-names airport-names roads routes
                                   trucks airplanes packages
                                   truck-at airplane-at package-at goals
                                   drive-cost fly-cost header parameters pref-weights
-                                  maxgoals)
+                                  maxgoals hard-per-package)
   (let ((*print-case* :downcase))
     (format stream ";; ~a~%" name)
     (dolist (line header) (format stream ";; ~a~%" line))
@@ -259,20 +298,29 @@ why N is capped at 3: the count grows as m^(n+1)."
     (format stream "        (= (fly-cost) ~a))~%~%" fly-cost)
     ;; goal: a conjunction of every delivery, or -- with preferences -- a
     ;; disjunction that requires ONE of them, each disjunct carrying a weight
-    ;; charged when it is not the one achieved.
+    ;; charged when it is not the one achieved.  HARD-PER-PACKAGE replaces that
+    ;; single disjunction with one per package, so each package must reach one of
+    ;; its own destinations regardless of cost; the global disjunction it stands
+    ;; in for is implied by any one of them, so it is not also emitted.
     (let* ((atoms (mapcar (lambda (g) (format nil "(at ~(~a~) ~(~a~))" (car g) (cdr g)))
                           goals))
-           (cap (when maxgoals (at-most-forms atoms maxgoals))))
+           (cap (when maxgoals (at-most-forms atoms maxgoals)))
+           (groups (goal-groups goals atoms pref-weights)))
       (if pref-weights
-          (format stream "  (:goal (and~%        ~a~{~%        ~a~}~{~%        ~a~}))~%~%"
-                  (if (rest atoms)
-                      (format nil "(or ~{~a~^ ~})" atoms)
-                      (first atoms))
-                  (loop for g in goals
-                        for a in atoms
-                        for w in pref-weights
-                        collect (format nil "(preference ~(~a~) ~a ~a)"
-                                        (preference-name (car g)) a w))
+          (format stream "  (:goal (and~{~%        ~a~}~{~%        ~a~}~{~%        ~a~}))~%~%"
+                  (if hard-per-package
+                      (mapcar (lambda (grp) (or-form (mapcar #'car (rest grp)))) groups)
+                      (list (or-form atoms)))
+                  (loop for grp in groups
+                        nconc (loop for (a . w) in (rest grp)
+                                    for i from 1
+                                    collect (format nil "(preference ~(~a~) ~a ~a)"
+                                                    (preference-name
+                                                     (first grp)
+                                                     ;; index only when there is
+                                                     ;; more than one to tell apart
+                                                     (when (rest (rest grp)) i))
+                                                    a w)))
                   cap)
           (format stream "  (:goal (and~{~%        ~a~}~{~%        ~a~}))~%~%" atoms cap)))
     (format stream "  (:metric minimize (total-cost)))~%")))
@@ -288,6 +336,7 @@ in the generated file and can be reproduced exactly."
 (defun ppgen (&key (style :clique) clique-size number-cliques rows cols airports
                    trucks airplanes packages (drive-cost 1) (fly-cost 3)
                    pref-low pref-high maxgoals
+                   (goals-per-package 1) (min-hard-goals 0)
                    seed (domain "clara-logistics") name
                    (stream *standard-output*))
   "Generate one clara-logistics problem.  See the file header for the two styles."
@@ -311,6 +360,23 @@ in the generated file and can be reproduced exactly."
             The default goal requires EVERY package to be delivered, so a cap on ~
             how many are delivered is either contradictory or vacuous.~%  ~
             Use --preferences <L> <H> to make the goal a disjunction first."))
+  (when (< goals-per-package 1)
+    (error "--goals-per-package must be at least 1, got ~d" goals-per-package))
+  (unless (member min-hard-goals '(0 1))
+    (error "--goals-per-package's second value is the minimum number of HARD goals ~
+            per package, and must be 0 or 1, got ~d" min-hard-goals))
+  ;; Alternative destinations only mean something once the goal is a disjunction:
+  ;; a conjunctive goal would demand the package be in N places at once.
+  (when (and (> goals-per-package 1) (not pref-low))
+    (error "--goals-per-package ~d needs --preferences.~%  ~
+            The default goal is a conjunction of every delivery, so ~d destinations ~
+            for one package would require it to be in ~d places at once.~%  ~
+            Use --preferences <L> <H> to make the goal a disjunction first."
+           goals-per-package goals-per-package goals-per-package))
+  (when (and (= min-hard-goals 1) (not pref-low))
+    (error "--goals-per-package's hard-goal minimum needs --preferences.~%  ~
+            Without preferences every delivery is already required, so demanding ~
+            one per package says nothing."))
   ;; An unseeded run still gets a definite seed, which is written into the file.
   (setf seed (or seed (clock-seed)))
   (setf *rng* (sb-ext:seed-random-state seed))
@@ -375,8 +441,24 @@ in the generated file and can be reproduced exactly."
                  airplane-at (spread-over plane-names airport-names
                                           (lambda (gi) (nth gi airport-names))))
            (setf trucks truck-names airplanes plane-names packages pkg-names)))))
-    (let* ((goals (goal-places packages package-at place-names))
-           ;; Default: as many as there are packages, i.e. no constraint at all.
+    (when (> goals-per-package 1)
+      (setf header
+            (append header
+                    (list (if (= min-hard-goals 1)
+                              (format nil "~d destinations per package, one of which each must reach."
+                                      goals-per-package)
+                              (format nil "~d destinations per package, any one of which delivers it."
+                                      goals-per-package))))))
+    ;; A package is at exactly one place, so at most one of its destinations can
+    ;; hold; requiring one per package therefore pins the total at exactly the
+    ;; package count, and any cap below that is unsatisfiable by construction.
+    (when (and maxgoals (= min-hard-goals 1) (< maxgoals (length packages)))
+      (error "--maxgoals ~d contradicts the hard-goal minimum: each of the ~d packages ~
+              must reach one of its destinations and can satisfy at most one goal, so ~
+              exactly ~d goals hold."
+             maxgoals (length packages) (length packages)))
+    (let* ((goals (goal-places packages package-at place-names goals-per-package))
+           ;; Default: as many goals as there are, i.e. no constraint at all.
            ;; A cap below that is only meaningful once the goal is a disjunction:
            ;; a conjunctive goal demands every delivery, so "at most N" with
            ;; N < packages is unsatisfiable by construction.
@@ -401,8 +483,15 @@ in the generated file and can be reproduced exactly."
                                  (if pref-low
                                      (format nil "~a ~a" pref-low pref-high)
                                      "none"))
-                           (cons "--maxgoals" cap)
-                           (cons "--seed" seed)))))
+                           (cons "--goals-per-package"
+                                 (format nil "~d ~d" goals-per-package min-hard-goals)))
+                     ;; Only recorded when it was actually given: its "unset"
+                     ;; value is "no cap", which has no spelling on the command
+                     ;; line -- --maxgoals is capped at 3 and demands
+                     ;; --preferences, so writing the default back out would
+                     ;; produce a settings block that will not replay.
+                     (when maxgoals (list (cons "--maxgoals" cap)))
+                     (list (cons "--seed" seed)))))
       (write-problem stream
                    :name (or name (format nil "~(~a~)-problem" style))
                    :domain domain
@@ -413,5 +502,6 @@ in the generated file and can be reproduced exactly."
                    :goals goals
                    :drive-cost drive-cost :fly-cost fly-cost
                    :header header :parameters parameters
-                   :pref-weights weights :maxgoals effective-cap))
+                   :pref-weights weights :maxgoals effective-cap
+                   :hard-per-package (= min-hard-goals 1)))
     (values)))

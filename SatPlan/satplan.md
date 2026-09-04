@@ -420,6 +420,20 @@ The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, th
 
 which is why `N` is **capped at 3** — the number of these grows as `packages^(N+1)`, and a larger `N` is rejected with an error. `--maxgoals` **requires `--preferences`**: the default goal demands that every package be delivered, so a cap on how many are delivered would either contradict it or say nothing at all. Left unset it defaults to the number of packages, which imposes no constraint.
 
+**Alternative destinations.** `--goals-per-package <N> <M>` gives each package `N` destinations instead of one (default `1`), any of which counts as delivering it. Only one can ever hold — a package is at exactly one place — so the `N` goals for a package are genuine alternatives, each with its own preference weight, and the planner picks whichever is cheapest to reach against what it is worth. Weights are still equally spaced over `L`..`H` across *all* `packages × N` goals in random order, and the preference names gain an index to tell them apart:
+
+```lisp
+(:goal (and
+      (or (at pkg1 c1-p1) (at pkg1 c2-p2) (at pkg1 c1-p3))       ; hard: pkg1 reaches one
+      (or (at pkg2 c1-p2) (at pkg2 c2-p2) (at pkg2 c2-p3))       ; hard: pkg2 reaches one
+      (preference deliver-pkg1-1 (at pkg1 c1-p1) 9)              ; soft, graded
+      (preference deliver-pkg1-2 (at pkg1 c2-p2) 5)
+      (preference deliver-pkg1-3 (at pkg1 c1-p3) 4)
+      ...))
+```
+
+`M` is the **minimum number of hard goals per package**, `0` or `1` (default `0`). With `M = 0` the goal keeps the single disjunction preferences normally impose — one delivery overall is required, and every package beyond that is optional. With `M = 1`, shown above, each package gets its own disjunction, so *every* package must reach one of its destinations regardless of cost; the global disjunction is implied by any one of them and so is not also emitted. Both `N > 1` and `M = 1` **require `--preferences`**: with a conjunctive goal, `N` destinations for one package would demand it be in `N` places at once, and a per-package requirement would say nothing that the conjunction does not already say. `N` may not exceed the number of places available once a package's own starting place is excluded, and `M = 1` is incompatible with a `--maxgoals` below the package count (each package contributes exactly one satisfied goal, so the total is pinned at the package count).
+
 Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) set the two travel prices; `--name` and `--domain` set the problem and domain names; `-o`/`--output` names an output file. `--help` lists them all.
 
 **Reproducibility.** `--seed <N>` fixes the random draws. With no `--seed` the clock supplies one, but the value used is still *recorded*, so an interesting random instance is never lost. Every generated file opens with the complete settings it was made from, defaults included:
@@ -434,11 +448,11 @@ Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) 
 ;;   --drive-cost 1
 ;;   --fly-cost 3
 ;;   --preferences none
-;;   --maxgoals 3
+;;   --goals-per-package 1 0
 ;;   --seed 1003680683
 ```
 
-Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques`.
+Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line.
 
 A generated problem feeds straight into the planner:
 

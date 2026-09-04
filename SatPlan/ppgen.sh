@@ -53,6 +53,15 @@ both styles:
   --preferences <L> <H>     disjunctive goal instead -- ONE delivery is required,
                             and each is preferred by a weight, equally spaced
                             from L to H and handed out in random order
+  --goals-per-package <N> <M>
+                            N destinations per package (default 1) instead of one,
+                            any of which delivers it; only one can ever hold, since
+                            a package is at one place.  M (0 or 1, default 0) is the
+                            minimum number of HARD goals per package: 0 leaves the
+                            usual single disjunction over every goal, 1 requires
+                            each package to reach one of its own destinations
+                            regardless of cost.  N > 1 or M = 1 REQUIRES
+                            --preferences
   --maxgoals <N>            require at most N deliveries in the goal state.
                             At most 3.  REQUIRES --preferences: the default goal
                             demands every delivery, so a cap on the number
@@ -71,6 +80,8 @@ examples:
   ppgen.sh --style grid --dimensions 5 5 --airports 3 --packages 4 -o pb2.pddl
   ppgen.sh --style grid --dimensions 4 4 --packages 3 --preferences 1 5
   ppgen.sh --style grid --dimensions 5 5 --packages 6 --preferences 1 9 --maxgoals 2
+  ppgen.sh --style grid --dimensions 5 5 --packages 3 --preferences 1 9 \
+           --goals-per-package 3 1
 
 Every generated file records the settings it was made with -- defaults and the
 seed included -- as comment lines, so it can be regenerated exactly.
@@ -80,6 +91,7 @@ EOF
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
 TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
 SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H="" MAXGOALS=""
+GOALS_PER_PACKAGE="" MIN_HARD_GOALS=""
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -116,6 +128,10 @@ while [[ $# -gt 0 ]]; do
         want_num "$1" "$2"; want_num "$1" "$3"
         PREF_L="$2"; PREF_H="$3"; shift 3
       fi ;;
+    --goals-per-package)
+      [[ $# -ge 3 ]] || die "--goals-per-package needs two values, e.g. --goals-per-package 3 1"
+      want_int "$1" "$2"; want_int "$1" "$3"
+      GOALS_PER_PACKAGE="$2"; MIN_HARD_GOALS="$3"; shift 3 ;;
     --maxgoals)       need "$@"; want_int "$1" "$2"; MAXGOALS="$2"; shift 2 ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
     --name)           need "$@"; NAME="$2"; shift 2 ;;
@@ -131,6 +147,18 @@ if [[ -n "$MAXGOALS" && "$MAXGOALS" -gt 3 ]]; then
 fi
 if [[ -n "$MAXGOALS" && -z "$PREF_L" ]]; then
   die "--maxgoals needs --preferences: the default goal requires every package to be delivered, so a cap on how many are delivered is either contradictory or vacuous"
+fi
+if [[ -n "$MIN_HARD_GOALS" && "$MIN_HARD_GOALS" != "0" && "$MIN_HARD_GOALS" != "1" ]]; then
+  die "--goals-per-package's second value is the minimum number of hard goals per package, and must be 0 or 1, got $MIN_HARD_GOALS"
+fi
+if [[ -n "$GOALS_PER_PACKAGE" && "$GOALS_PER_PACKAGE" -lt 1 ]]; then
+  die "--goals-per-package must be at least 1, got $GOALS_PER_PACKAGE"
+fi
+if [[ -n "$GOALS_PER_PACKAGE" && "$GOALS_PER_PACKAGE" -gt 1 && -z "$PREF_L" ]]; then
+  die "--goals-per-package $GOALS_PER_PACKAGE needs --preferences: the default goal is a conjunction of every delivery, so several destinations for one package would require it to be in several places at once"
+fi
+if [[ "${MIN_HARD_GOALS:-0}" == "1" && -z "$PREF_L" ]]; then
+  die "--goals-per-package's hard-goal minimum needs --preferences: without preferences every delivery is already required, so demanding one per package says nothing"
 fi
 [[ -n "$STYLE" ]] || { print_usage >&2; exit 2; }
 command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
@@ -170,6 +198,8 @@ ARGS+="$(kw :packages "$PACKAGES")"
 ARGS+="$(kw :drive-cost "$DRIVE_COST")"
 ARGS+="$(kw :fly-cost "$FLY_COST")"
 ARGS+="$(kw :maxgoals "$MAXGOALS")"
+ARGS+="$(kw :goals-per-package "$GOALS_PER_PACKAGE")"
+ARGS+="$(kw :min-hard-goals "$MIN_HARD_GOALS")"
 ARGS+="$(kw :pref-low "$PREF_L")"
 ARGS+="$(kw :pref-high "$PREF_H")"
 ARGS+="$(kw :seed "$SEED")"

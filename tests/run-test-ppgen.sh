@@ -251,10 +251,12 @@ then pass; else fail "assignment order looks fixed"; fi
 
 # ---------------------------------------------------------------- maxgoals ---
 
-name "no --maxgoals: records the package count, constrains nothing"
+name "no --maxgoals: no cap emitted, and none recorded"
 gen --style clique --clique-size 3 --number-cliques 2 --packages 4 --seed 1 > "$TMP/m0.pddl"   # no --maxgoals
-if grep -q '^;;   --maxgoals 4$' "$TMP/m0.pddl" && ! grep -q '(not (and' "$TMP/m0.pddl"
-then pass; else fail "default maxgoals should impose no constraint"; fi
+# The unset value is "no cap", which has no spelling on the command line -- writing
+# it back out gave a settings block that could not be replayed.
+if ! grep -q '(not (and' "$TMP/m0.pddl" && ! grep -q '^;;   --maxgoals' "$TMP/m0.pddl"
+then pass; else fail "default maxgoals should impose no constraint and record nothing"; fi
 
 name "--maxgoals equal to the package count constrains nothing"
 gen --style grid --dimensions 4 4 --packages 3 --preferences 1 5 --maxgoals 3 --seed 1 > "$TMP/m1.pddl"
@@ -290,6 +292,98 @@ EOF
   then pass; else fail "solution exceeded the cap; see $TMP/m3.log"; fi
 else echo "SKIP (no MaxSAT solver)"; fi
 
+# ------------------------------------------------------ goals per package ---
+
+name "--goals-per-package N gives each package N distinct destinations"
+gen --style clique --clique-size 4 --number-cliques 2 --packages 3 \
+    --preferences 1 9 --goals-per-package 3 0 --seed 5 > "$TMP/gp0.pddl"
+if pycheck "$TMP/gp0.pddl" <<'EOF'
+import sys,re,collections
+t=open(sys.argv[1]).read(); goal=t.split('(:goal')[1]
+prefs=re.findall(r'\(preference ([\w-]+) \(at (\w+) ([\w-]+)\) (\d+)\)',goal)
+assert len(prefs)==9, prefs                      # 3 packages x 3 destinations
+by=collections.defaultdict(list)
+for nm,pkg,place,w in prefs: by[pkg].append(place)
+assert sorted(by)==['pkg1','pkg2','pkg3'], list(by)
+for pkg,places in by.items():
+    assert len(places)==3 and len(set(places))==3, (pkg,places)   # distinct
+# no destination is where the package already is
+start=dict(re.findall(r'\(at (pkg\d+) ([\w-]+)\)',t.split('(:init')[1].split('(:goal')[0]))
+for pkg,places in by.items():
+    assert start[pkg] not in places, (pkg,start[pkg],places)
+# the weights still span L..H, each used once
+assert sorted(int(w) for _,_,_,w in prefs)==list(range(1,10))
+EOF
+then pass; else fail "per-package destinations wrong"; fi
+
+name "several destinations get indexed preference names"
+if pycheck "$TMP/gp0.pddl" <<'EOF'
+import sys,re
+goal=open(sys.argv[1]).read().split('(:goal')[1]
+names=re.findall(r'\(preference ([\w-]+) ',goal)
+assert sorted(names)==sorted(f'deliver-pkg{p}-{i}' for p in (1,2,3) for i in (1,2,3)), names
+EOF
+then pass; else fail "preference names not disambiguated"; fi
+
+name "one destination keeps the unindexed preference name"
+gen --style grid --dimensions 4 4 --packages 2 --preferences 1 5 \
+    --goals-per-package 1 0 --seed 5 > "$TMP/gp1.pddl"
+if pycheck "$TMP/gp1.pddl" <<'EOF'
+import sys,re
+goal=open(sys.argv[1]).read().split('(:goal')[1]
+assert sorted(re.findall(r'\(preference ([\w-]+) ',goal))==['deliver-pkg1','deliver-pkg2']
+EOF
+then pass; else fail "single-destination naming changed"; fi
+
+name "M=0 leaves one disjunction over every goal"
+if pycheck "$TMP/gp0.pddl" <<'EOF'
+import sys,re
+goal=open(sys.argv[1]).read().split('(:goal')[1]
+ors=re.findall(r'\(or ((?:\(at \w+ [\w-]+\) ?)+)\)',goal)
+assert len(ors)==1, ors                          # one, spanning every goal
+assert len(re.findall(r'\(at \w+ [\w-]+\)',ors[0]))==9, ors
+EOF
+then pass; else fail "M=0 should keep the single global disjunction"; fi
+
+name "M=1 requires one destination per package instead"
+gen --style clique --clique-size 4 --number-cliques 2 --packages 3 \
+    --preferences 1 9 --goals-per-package 3 1 --seed 5 > "$TMP/gp2.pddl"
+if pycheck "$TMP/gp2.pddl" <<'EOF'
+import sys,re
+goal=open(sys.argv[1]).read().split('(:goal')[1]
+ors=re.findall(r'\(or ((?:\(at \w+ [\w-]+\) ?)+)\)',goal)
+assert len(ors)==3, ors                          # one per package, not one overall
+seen=[]
+for o in ors:
+    pkgs={p for p,_ in re.findall(r'\(at (\w+) ([\w-]+)\)',o)}
+    assert len(pkgs)==1, o                       # each covers one package's own goals
+    assert len(re.findall(r'\(at \w+ [\w-]+\)',o))==3, o
+    seen.append(pkgs.pop())
+assert sorted(seen)==['pkg1','pkg2','pkg3'], seen
+EOF
+then pass; else fail "M=1 per-package hard goals wrong"; fi
+
+name "M=1 is honored in an actual solution"
+if command -v "${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" >/dev/null 2>&1; then
+  gen --style clique --clique-size 3 --number-cliques 2 --packages 2 --trucks 2 \
+      --preferences 1 4 --goals-per-package 2 1 --seed 11 > "$TMP/gp3.pddl"
+  if WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$REPO/bin/planner.sh" \
+       "$TMP/gp3.pddl" --domain "$DOMAIN" --maxslices 10 >"$TMP/gp3.log" 2>&1 &&
+     pycheck "$TMP/gp3.pddl" "$TMP/gp3.answer" <<'EOF'
+import sys,re,collections
+prob=open(sys.argv[1]).read(); ans=open(sys.argv[2]).read()
+want=collections.defaultdict(set)
+for pkg,place in re.findall(r'\(preference [\w-]+ \(at (\w+) ([\w-]+)\)',prob.split('(:goal')[1]):
+    want[pkg].add(place)
+last=max(int(m) for m in re.findall(r'\(HOLDS \(AT \w+ [\w-]+\) (\d+)\)',ans))
+held={(p.lower(),l.lower()) for p,l in re.findall(rf'\(HOLDS \(AT (\w+) ([\w-]+)\) {last}\)',ans)}
+# every package reached one of ITS OWN destinations, whatever it cost
+for pkg,places in want.items():
+    assert any((pkg,pl) in held for pl in places), (pkg,places)
+EOF
+  then pass; else fail "a package missed all its destinations; see $TMP/gp3.log"; fi
+else echo "SKIP (no MaxSAT solver)"; fi
+
 # ------------------------------------------------- recorded settings / seed ---
 
 name "the file records every setting, defaults included"
@@ -298,10 +392,12 @@ import sys,re
 t=open(sys.argv[1]).read()
 p=dict(re.findall(r'^;;   (--[\w-]+) (.+)$',t,re.M))
 for f in ('--style','--clique-size','--number-cliques','--trucks','--airplanes',
-          '--packages','--drive-cost','--fly-cost','--preferences','--maxgoals','--seed'):
+          '--packages','--drive-cost','--fly-cost','--preferences',
+          '--goals-per-package','--seed'):
     assert f in p, (f,p)
 assert p['--style']=='clique' and p['--drive-cost']=='1' and p['--fly-cost']=='3'
-assert p['--preferences']=='none'
+assert p['--preferences']=='none' and p['--goals-per-package']=='1 0'
+assert '--maxgoals' not in p          # unset: recorded only when it constrains
 assert '--dimensions' not in p and '--airports' not in p   # grid-only settings
 EOF
 then pass; else fail "settings block incomplete"; fi
@@ -326,6 +422,19 @@ gen --style clique --clique-size 3 --number-cliques 2 --seed "$SEED_USED" > "$TM
 if diff -q "$TMP/u1.pddl" "$TMP/u2.pddl" >/dev/null; then pass
 else fail "recorded seed did not reproduce the run"; fi
 
+name "the recorded settings block replays byte for byte"
+RT_BAD=""
+for spec in "--style clique --clique-size 4 --number-cliques 3 --seed 1" \
+            "--style grid --dimensions 5 5 --airports 3 --packages 4 --preferences 1 7 --maxgoals 2 --seed 42" \
+            "--style clique --clique-size 4 --number-cliques 2 --packages 3 --preferences 1 9 --goals-per-package 3 1 --seed 5"
+do
+  gen $spec > "$TMP/rt1.pddl"
+  # feed the file's own settings block back in as the command line
+  gen $(sed -n 's/^;;   //p' "$TMP/rt1.pddl" | tr '\n' ' ') > "$TMP/rt2.pddl"
+  diff -q "$TMP/rt1.pddl" "$TMP/rt2.pddl" >/dev/null || { RT_BAD="$spec"; break; }
+done
+if [ -z "$RT_BAD" ]; then pass; else fail "settings block did not replay: $RT_BAD"; fi
+
 # ------------------------------------------------------------------ errors ---
 
 err() { name "$1"; shift; local want="$1"; shift
@@ -347,6 +456,13 @@ err "--maxgoals above 3 is rejected"       "capped at 3"          --style grid -
 err "--maxgoals 0 is rejected"             "at least 1"           --style grid --dimensions 4 4 --packages 3 --preferences 1 5 --maxgoals 0
 err "--maxgoals without --preferences is rejected" "needs --preferences" --style grid --dimensions 4 4 --packages 4 --maxgoals 2
 err "--maxgoals = packages still needs --preferences" "needs --preferences" --style grid --dimensions 4 4 --packages 3 --maxgoals 3
+err "--goals-per-package > 1 needs --preferences" "needs --preferences" --style grid --dimensions 4 4 --preferences none --goals-per-package 2 0
+err "a hard-goal minimum needs --preferences" "needs --preferences" --style grid --dimensions 4 4 --goals-per-package 1 1
+err "a hard-goal minimum other than 0 or 1 is rejected" "must be 0 or 1" --style grid --dimensions 4 4 --preferences 1 5 --goals-per-package 2 2
+err "--goals-per-package 0 is rejected"    "at least 1"           --style grid --dimensions 4 4 --preferences 1 5 --goals-per-package 0 0
+err "--goals-per-package with one value is rejected" "needs two values" --style grid --dimensions 4 4 --preferences 1 5 --goals-per-package 2
+err "more destinations than places is rejected" "distinct destination" --style grid --dimensions 1 3 --packages 2 --preferences 1 5 --goals-per-package 3 0
+err "a cap below the package count contradicts M=1" "contradicts the hard-goal minimum" --style grid --dimensions 4 4 --packages 4 --preferences 1 5 --goals-per-package 2 1 --maxgoals 3
 
 # ------------------------------------------------------------ solvability ---
 
