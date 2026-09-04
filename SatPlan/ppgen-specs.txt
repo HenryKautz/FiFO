@@ -26,3 +26,24 @@ for grid style:
 Airports are randomly placed on the grid so as to maximize the minimum pairwise distance between them.
 In the initial state, trucks are randomly placed on the grid as are packages.
 In the goal state, packages are randomly placed on the grid.
+
+For either styke
+--preferences <none | L H> default none
+If preferences is not set to none, then the goals is a disjunction of the final package places rather than
+a conjunction of them.  The goals are assigned preference values in the range L to H.  The chosen values
+are equally spaced from L to H.  For example, if there are two goals, one is assign L and the other H.
+If there are three, then one is assigned L, one (L+H)/2, and the third H.  The order in which preferences
+are assigned to goals is random.
+
+--maxgoals N default is the number of packages
+Constrain the goal state to have at most N of the goals satisfied.
+The maximum value of N should be 3, if a larger value is specified
+then print an error.
+
+--seed N
+Seed the random number generator with the integer N.  If not given, the clock is used to create the seed, and the value used is
+remembered to be included in the pddl file.
+
+The generated pddl file includes comment lines with the seed (specified or default) and the values of the all of the parameters
+that apply to the specified style (including the style itself), including any default values.
+

@@ -49,7 +49,18 @@ grid style:
 both styles:
   --drive-cost <R>          cost of one drive, default 1
   --fly-cost <R>            cost of one flight, default 3
-  --seed <N>                seed the generator, so a run is reproducible
+  --preferences none        conjunctive goal: every package must be delivered
+  --preferences <L> <H>     disjunctive goal instead -- ONE delivery is required,
+                            and each is preferred by a weight, equally spaced
+                            from L to H and handed out in random order
+  --maxgoals <N>            require at most N deliveries in the goal state.
+                            At most 3.  REQUIRES --preferences: the default goal
+                            demands every delivery, so a cap on the number
+                            delivered would be contradictory or vacuous.
+                            Default: the number of packages, i.e. no limit
+  --seed <N>                seed the generator, so a run is reproducible.  With
+                            no --seed the clock supplies one, and the value used
+                            is recorded in the generated file
   --name <name>             problem name, default <style>-problem
   --domain <name>           domain named in (:domain ...), default clara-logistics
   --output <file>, -o       write here instead of stdout
@@ -58,12 +69,17 @@ both styles:
 examples:
   ppgen.sh --style clique --clique-size 4 --number-cliques 3 --seed 1
   ppgen.sh --style grid --dimensions 5 5 --airports 3 --packages 4 -o pb2.pddl
+  ppgen.sh --style grid --dimensions 4 4 --packages 3 --preferences 1 5
+  ppgen.sh --style grid --dimensions 5 5 --packages 6 --preferences 1 9 --maxgoals 2
+
+Every generated file records the settings it was made with -- defaults and the
+seed included -- as comment lines, so it can be regenerated exactly.
 EOF
 }
 
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
 TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
-SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT=""
+SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H="" MAXGOALS=""
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -91,6 +107,16 @@ while [[ $# -gt 0 ]]; do
     --packages)       need "$@"; want_int "$1" "$2"; PACKAGES="$2"; shift 2 ;;
     --drive-cost)     need "$@"; want_num "$1" "$2"; DRIVE_COST="$2"; shift 2 ;;
     --fly-cost)       need "$@"; want_num "$1" "$2"; FLY_COST="$2"; shift 2 ;;
+    --preferences)
+      need "$@"
+      if [[ "$2" == "none" ]]; then
+        PREF_L="" PREF_H=""; shift 2
+      else
+        [[ $# -ge 3 ]] || die "--preferences takes 'none' or two numbers, e.g. --preferences 1 5"
+        want_num "$1" "$2"; want_num "$1" "$3"
+        PREF_L="$2"; PREF_H="$3"; shift 3
+      fi ;;
+    --maxgoals)       need "$@"; want_int "$1" "$2"; MAXGOALS="$2"; shift 2 ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
     --name)           need "$@"; NAME="$2"; shift 2 ;;
     --domain)         need "$@"; DOMAIN="$2"; shift 2 ;;
@@ -100,6 +126,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$MAXGOALS" && "$MAXGOALS" -gt 3 ]]; then
+  die "--maxgoals is capped at 3, got $MAXGOALS"
+fi
+if [[ -n "$MAXGOALS" && -z "$PREF_L" ]]; then
+  die "--maxgoals needs --preferences: the default goal requires every package to be delivered, so a cap on how many are delivered is either contradictory or vacuous"
+fi
 [[ -n "$STYLE" ]] || { print_usage >&2; exit 2; }
 command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
 [[ -f "$PPGEN" ]] || die "generator not found: $PPGEN"
@@ -137,6 +169,9 @@ ARGS+="$(kw :airplanes "$AIRPLANES")"
 ARGS+="$(kw :packages "$PACKAGES")"
 ARGS+="$(kw :drive-cost "$DRIVE_COST")"
 ARGS+="$(kw :fly-cost "$FLY_COST")"
+ARGS+="$(kw :maxgoals "$MAXGOALS")"
+ARGS+="$(kw :pref-low "$PREF_L")"
+ARGS+="$(kw :pref-high "$PREF_H")"
 ARGS+="$(kw :seed "$SEED")"
 if [[ -n "$NAME" ]]; then ARGS+=" :name \"$NAME\""; fi
 ARGS+=" :domain \"$DOMAIN\""

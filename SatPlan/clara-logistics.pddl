@@ -18,7 +18,8 @@
 ;; standard IPC distance-matrix idiom, but it needs one assignment per pair.
 
 (define (domain clara-logistics)
-  (:requirements :strips :typing :action-costs)
+  (:requirements :strips :typing :action-costs
+                 :disjunctive-preconditions :preferences)
 
   (:types
         place vehicle package - object
