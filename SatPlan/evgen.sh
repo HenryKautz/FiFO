@@ -30,7 +30,8 @@ print_usage() {
 usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options]
 
   --problem <file>        the PDDL problem instance (required)
-  --evidence <file>       where to write the evidence (required)
+  --evidence <file>       where to write the evidence (required unless
+                          --export-dataset is given)
   --slices "<spec>"       which slices are observed (required): integers and
                           A-B ranges separated by commas, e.g. "1-3,5".
                           Slices are numbered from 1.  Fluents run 1..N and
@@ -57,6 +58,15 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           an action at slice s means slice s at any horizon, while
                           a fluent at the FINAL slice means "at the end" only at
                           the horizon it came from
+  --export-dataset <dir>  ALSO write the instance in the Ramirez & Geffner
+                          dataset format -- domain.pddl, template.pddl (goal =
+                          <HYPOTHESIS>), hyps.dat, obs.dat, real_hyp.dat and a
+                          README -- for handing the problem to a tool chain that
+                          does not read FiFO.  Needs a recognition instance (a
+                          goal that is a disjunction of nullary derived
+                          predicates).  obs.dat holds ACTIONS in order, so a
+                          fluent named in --observe is an error, and
+                          --negative-evidence 1 is refused
   --help, -h              this message
 
 examples:
@@ -66,6 +76,7 @@ examples:
            --observe "fly" --negative-evidence 1
   evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-5" \
            --observe "drive,fly" --recognition 1
+  evgen.sh --problem pb.pddl --slices "1-5" --export-dataset out/
 
   planner.sh pb.pddl --domain d.pddl --numslices <N> --evidence-file ev.txt
 
@@ -75,7 +86,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
-RECOGNITION="0"
+RECOGNITION="0" EXPORT_DIR=""
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -90,19 +101,25 @@ while [[ $# -gt 0 ]]; do
     --observe)           need "$@"; OBSERVE="$2";  shift 2 ;;
     --negative-evidence) need "$@"; NEGATIVE="$2"; shift 2 ;;
     --recognition)       need "$@"; RECOGNITION="$2"; shift 2 ;;
+    --export-dataset)    need "$@"; EXPORT_DIR="$2"; shift 2 ;;
     -h|--help)           print_usage; exit 0 ;;
     *)                   die "unknown option '$1' (try --help)" ;;
   esac
 done
 
 [[ -n "$PROBLEM"  ]] || { print_usage >&2; exit 2; }
-[[ -n "$EVIDENCE" ]] || die "--evidence is required: the file to write"
+if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" ]]; then
+  die "nothing to write: give --evidence <file>, --export-dataset <dir>, or both"
+fi
 [[ -n "$SLICES"   ]] || die "--slices is required, e.g. --slices \"1-3,5\""
 if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
   die "--negative-evidence must be 0 or 1, got '$NEGATIVE'"
 fi
 if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
   die "--recognition must be 0 or 1, got '$RECOGNITION'"
+fi
+if [[ -n "$EXPORT_DIR" && "$NEGATIVE" == "1" ]]; then
+  die "--export-dataset and --negative-evidence 1 do not go together: obs.dat records only what was observed to happen"
 fi
 if [[ "$RECOGNITION" == "1" && "$NEGATIVE" == "1" ]]; then
   die "--recognition and --negative-evidence 1 do not go together: negative evidence asserts complete observability, which pins the trajectory, so every hypothesis' cost becomes 0 or infinite and the posterior loses its gradation"
@@ -131,8 +148,14 @@ PROBLEM="$(abspath "$PROBLEM")"
 [[ -n "$SOLUTION" ]] && SOLUTION="$(abspath "$SOLUTION")"
 [[ -n "$DOMAIN"   ]] && DOMAIN="$(abspath "$DOMAIN")"
 SATPLAN="$(abspath "$SATPLAN")"
-mkdir -p "$(dirname "$EVIDENCE")"
-EVIDENCE="$(cd "$(dirname "$EVIDENCE")" && pwd -P)/$(basename "$EVIDENCE")"
+if [[ -n "$EVIDENCE" ]]; then
+  mkdir -p "$(dirname "$EVIDENCE")"
+  EVIDENCE="$(cd "$(dirname "$EVIDENCE")" && pwd -P)/$(basename "$EVIDENCE")"
+fi
+if [[ -n "$EXPORT_DIR" ]]; then
+  mkdir -p "$EXPORT_DIR"
+  EXPORT_DIR="$(cd "$EXPORT_DIR" && pwd -P)/"
+fi
 
 # Lisp string literals for the optional arguments; NIL when not given, so the
 # generator applies its own default.
@@ -147,14 +170,16 @@ sbcl --noinform --disable-debugger \
                      (evgen :problem \"$PROBLEM\"
                             :solution $(lisp_string "$SOLUTION")
                             :domain $(lisp_string "$DOMAIN")
-                            :evidence \"$EVIDENCE\"
+                            :evidence $(lisp_string "$EVIDENCE")
+                            :export-dataset $(lisp_string "$EXPORT_DIR")
                             :slices \"$SLICES\"
                             :observe \"$OBSERVE\"
                             :negative-evidence $NEGATIVE
                             :recognition $([[ "$RECOGNITION" == 1 ]] && echo t || echo nil)
                             :satplan \"$SATPLAN\")
-                   (format *error-output* \"Wrote ~a (~d literal~:p, horizon ~d)~%\"
-                           file n horizon))
+                   (when file
+                     (format *error-output* \"Wrote ~a (~d literal~:p, horizon ~d)~%\"
+                             file n horizon)))
                (error (e) (format *error-output* \"evgen.sh: ~a~%\" e)
                           (sb-ext:exit :code 2)))" \
      --quit >/dev/null

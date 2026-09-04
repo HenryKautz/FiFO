@@ -23,6 +23,7 @@ REPO="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 export FIFO_LISP="${FIFO_LISP:-$REPO/lisp}"
 EVGEN="$REPO/SatPlan/evgen.sh"
 PPGEN="$REPO/SatPlan/ppgen.sh"
+export REPO
 PLANNER="$REPO/bin/planner.sh"
 DOMAIN="$REPO/SatPlan/clara-logistics.pddl"
 SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}"
@@ -379,6 +380,225 @@ if bash "$RECOGNIZE" "$RDOM" "$RPROB" "$TMP/r.txt" --evidence-kind lisp \
      --out "$TMP/rg" 2>&1 >/dev/null | grep -q "must be 'pddl' or 'fifo'"; then pass
 else fail "accepted an unknown evidence kind"; fi
 
+# ------------------------------------------------------ dataset export -----
+# The R&G dataset format, for handing an instance to a tool chain that does not
+# read FiFO.  The fixture is IntrusionDetectionCosts, whose SOURCE dataset is
+# also checked in -- so the export can be checked against published ground truth,
+# not just against itself.
+
+echo
+echo "=== --export-dataset (R&G format) ==="
+PR="$REPO/SatPlan/Examples/Plan_Recognition"
+RCPROB="$PR/IntrusionDetectionCosts/problem.pddl"
+RCDOM="$PR/IntrusionDetectionCosts/intrusion-detection-costs.pddl"
+DS="$TMP/ds"
+
+# A plan to observe.  Solve ONE hypothesis rather than the disjunctive problem:
+# its cheapest plan is hyp0, which is 20 actions and needs a 21-slice horizon to
+# re-check.  The export still runs against the disjunctive problem, since that is
+# what carries the hypothesis set.
+cp "$RCPROB" "$RCDOM" "$TMP/"
+sbcl --noinform --non-interactive --eval "(let* ((*read-eval* nil)
+     (p (with-open-file (i \"$TMP/problem.pddl\") (read i))))
+   (with-open-file (o \"$TMP/sg.pddl\" :direction :output :if-exists :supersede)
+     (let ((*print-case* :downcase))
+       (print (mapcar (lambda (s)
+                        (if (and (consp s) (symbolp (first s))
+                                 (string-equal (symbol-name (first s)) \"GOAL\"))
+                            (list :goal (list (intern \"HYP3\"))) s))
+                      p) o))))" >/dev/null 2>&1
+RSOLVED=0
+if WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$TMP/sg.pddl" \
+     --domain "$TMP/intrusion-detection-costs.pddl" --maxslices 8 \
+     >"$TMP/rc.log" 2>&1 && [[ -f "$TMP/sg.answer" ]]; then RSOLVED=1; fi
+
+if [[ "$RSOLVED" -eq 1 ]]; then
+  bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" --export-dataset "$DS" >/dev/null 2>&1
+
+  name "writes the five dataset files plus a README"
+  MISSING=""
+  for f in domain.pddl template.pddl hyps.dat obs.dat real_hyp.dat README.md; do
+    [[ -s "$DS/$f" ]] || MISSING="$MISSING $f"
+  done
+  if [[ -z "$MISSING" ]]; then pass; else fail "missing:$MISSING"; fi
+
+  name "hyps.dat matches the PUBLISHED dataset, hypothesis for hypothesis"
+  # Content, not bytes: the two checked-in datasets already disagree on case and
+  # on whether a space follows the comma, and parse-hyps is blind to both.
+  if pycheck "$PR/IntrusionDetection/hyps.dat" "$DS/hyps.dat" <<'EOF'
+import sys,re
+def norm(p):
+    out=[]
+    for line in open(p):
+        line=line.strip()
+        if line: out.append([a.strip().lower() for a in line.split(',')])
+    return out
+a,b=norm(sys.argv[1]),norm(sys.argv[2])
+assert a==b, (len(a),len(b),[x for x in a if x not in b][:2])
+EOF
+  then pass; else fail "hypotheses differ from the published hyps.dat"; fi
+
+  name "hyps.dat is ordered by the problem's goal disjunction"
+  if pycheck "$RCDOM" "$RCPROB" "$DS/hyps.dat" <<'EOF'
+import sys,re
+dom=open(sys.argv[1]).read(); prob=open(sys.argv[2]).read()
+order=re.findall(r'\((hyp\d+)\)',prob.split('(:goal')[1])
+rules=dict((m.group(1),m.group(2)) for m in
+           re.finditer(r'\(:derived \((hyp\d+)\)\s*(\(and.*?\)\)|\(\w[^()]*\))',dom,re.S))
+lines=[l.strip() for l in open(sys.argv[3]) if l.strip()]
+assert len(lines)==len(order), (len(lines),len(order))
+for name,line in zip(order,lines):
+    atoms=[a.strip().lower() for a in line.split(',')]
+    body=re.findall(r'\([\w-]+ [\w-]+\)',rules[name].lower())
+    assert atoms==body, (name,atoms,body)
+EOF
+  then pass; else fail "hyps.dat order or content wrong"; fi
+
+  name "obs.dat is the plan's actions at the requested slices, in order"
+  if pycheck "$TMP/sg.answer" "$DS/obs.dat" <<'EOF'
+import sys,re
+ans=open(sys.argv[1]).read()
+want=[(int(s),t.lower()) for t,s in
+      re.findall(r'\(OCCURS (\([^)]*\)) (\d+)\)',ans) if int(s) in (1,2,3)]
+got=[l.strip().lower() for l in open(sys.argv[2]) if l.strip()]
+assert sorted(got)==sorted(t for _,t in want), (len(got),len(want))
+# slice order preserved (within a slice any order is allowed: slices are parallel)
+seen=[]
+for line in got:
+    seen.append(min(s for s,t in want if t==line))
+assert seen==sorted(seen), seen
+EOF
+  then pass; else fail "obs.dat wrong"; fi
+
+  name "real_hyp.dat is the hypothesis the plan achieved, and is in hyps.dat"
+  if pycheck "$TMP/sg.answer" "$DS/hyps.dat" "$DS/real_hyp.dat" <<'EOF'
+import sys,re
+hyp=re.findall(r'\(HOLDS \((HYP\d+)\) \d+\)',open(sys.argv[1]).read())
+assert hyp, "the answer names no hypothesis"
+i=int(hyp[0][3:])                                  # hypN -> N, the hyps.dat index
+lines=[[a.strip().lower() for a in l.split(',')] for l in open(sys.argv[2]) if l.strip()]
+real=[a.strip().lower() for a in open(sys.argv[3]).read().strip().split(',')]
+assert real==lines[i], (i,real,lines[i])
+EOF
+  then pass; else fail "real_hyp.dat wrong"; fi
+
+  name "template.pddl carries <HYPOTHESIS> and no hypothesis machinery"
+  if grep -q '<HYPOTHESIS>' "$DS/template.pddl" \
+     && ! grep -qE '\(hyp[0-9]+\)' "$DS/template.pddl" \
+     && ! grep -q 'total-cost) 0' "$DS/template.pddl"; then pass
+  else fail "$(grep -o '(:goal.*' "$DS/template.pddl")"; fi
+
+  name "domain.pddl drops the hypothesis rules and keeps everything else"
+  if ! grep -qE ':derived \(hyp[0-9]+\)' "$DS/domain.pddl" \
+     && [[ "$(grep -c 'increase (total-cost)' "$DS/domain.pddl")" -ge 8 ]] \
+     && grep -q ':action recon' "$DS/domain.pddl"; then pass
+  else fail "domain export wrong"; fi
+
+  name "and drops :derived-predicates once no derived section is left"
+  # The published source domain declares only what it uses; a stale capability
+  # flag is inert but untidy.
+  if [[ "$(grep -c '(:derived ' "$DS/domain.pddl")" -eq 0 ]] \
+     && ! grep -q ':derived-predicates' "$DS/domain.pddl"; then pass
+  else fail "stale :derived-predicates in the exported requirements"; fi
+
+  name "the export re-imports into a working FiFO instance"
+  # The round trip: make-recognition-instance.lisp is the reader this inverts.
+  { echo "(occur-in-order"; sed 's/^/  /' "$DS/obs.dat"; echo ")"; } > "$DS/ev.txt"
+  if sbcl --script "$PR/make-recognition-instance.lisp" \
+       "$DS/domain.pddl" "$DS/template.pddl" "$DS/hyps.dat" "$DS/ev.txt" \
+       "$TMP/reimport" >"$TMP/reimport.log" 2>&1 \
+     && [[ -s "$TMP/reimport/problem.pddl" && -s "$TMP/reimport/domain-costs.pddl" ]]; then pass
+  else fail "re-import failed"; tail -3 "$TMP/reimport.log" | sed 's/^/      | /'; fi
+
+  name "the re-imported goal is the hypothesis disjunction again"
+  if grep -qE '\(hyp0\)' "$TMP/reimport/problem.pddl" \
+     && grep -qE ':derived \(hyp0\)' "$TMP/reimport/domain-costs.pddl"; then pass
+  else fail "round trip lost the hypotheses"; fi
+
+  name "the re-import does not double the action costs"
+  # add-cost-to-action leaves an action that already has an increase effect alone.
+  if [[ "$(grep -c 'increase (total-cost)' "$TMP/reimport/domain-costs.pddl")" \
+        -eq "$(grep -c 'increase (total-cost)' "$DS/domain.pddl")" ]]; then pass
+  else fail "costs changed across the round trip"; fi
+
+  name "the re-imported instance solves, embedding the observations"
+  NOBS=$(grep -c . "$DS/obs.dat")
+  if WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$TMP/reimport/problem.pddl" \
+       --domain "$TMP/reimport/domain-costs.pddl" --minslices "$((NOBS+1))" --maxslices "$((NOBS+5))" \
+       --pddl-evidence-file "$TMP/reimport/evidence-$NOBS.txt" >"$TMP/ri.log" 2>&1 \
+     && pycheck "$DS/obs.dat" "$TMP/reimport/problem.answer" <<'EOF'
+import sys,re
+obs=[l.strip().upper() for l in open(sys.argv[1]) if l.strip()]
+ans=open(sys.argv[2]).read()
+prev=0
+for o in obs:                                  # embedded at increasing slices
+    ts=sorted(int(s) for s in re.findall(r'\(OCCURS %s (\d+)\)'%re.escape(o),ans))
+    nxt=[t for t in ts if t>prev]
+    assert nxt, (o,ts,prev)
+    prev=nxt[0]
+EOF
+  then pass; else fail "re-imported instance did not embed its own observations"
+       tail -3 "$TMP/ri.log" | sed 's/^/      | /'; fi
+
+  name "a fluent named in --observe is refused"
+  if bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" --observe "recon,recon-performed" --export-dataset "$TMP/ds2" 2>&1 >/dev/null \
+     | grep -q "cannot record the fluent"; then pass
+  else fail "obs.dat cannot hold a fluent; should have said so"; fi
+
+  name "--negative-evidence 1 is refused"
+  if bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" --negative-evidence 1 --export-dataset "$TMP/ds2" 2>&1 >/dev/null \
+     | grep -q "observed to happen"; then pass
+  else fail "should refuse negative evidence"; fi
+
+  name "--export-dataset alone needs no --evidence"
+  if bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" --export-dataset "$TMP/ds3" >/dev/null 2>&1 \
+     && [[ -s "$TMP/ds3/obs.dat" ]]; then pass
+  else fail "--evidence should be optional here"; fi
+else
+  echo "  (skipping: could not solve the recognition fixture)"
+fi
+
+name "a domain with other derived predicates keeps :derived-predicates"
+# The converse of the case above: DerivedPreds defines derived predicates that
+# are not hypotheses, so the flag must survive.  Checked on the export function's
+# own logic via a synthetic domain, since DerivedPreds is not a recognition
+# instance and so cannot be exported end to end.
+if pycheck <<'EOF'
+import subprocess,os,sys,tempfile,textwrap
+repo=os.environ["REPO"]
+d=tempfile.mkdtemp()
+open(d+"/t.lisp","w").write(textwrap.dedent(f"""
+  (load "{repo}/lisp/FiFO.lisp") (load "{repo}/lisp/pddl2fifo.lisp")
+  (load "{repo}/SatPlan/evgen.lisp")
+  (let ((dom '(define (domain d)
+                (:requirements :strips :derived-predicates)
+                (:derived (hyp0) (and (p a)))
+                (:derived (other) (and (q b)))
+                (:action go :parameters () :effect (p a)))))
+    (princ (evgen--export-domain dom (list (intern "HYP0")))))
+  """))
+out=subprocess.run(["sbcl","--noinform","--disable-debugger","--eval",
+                    f'(load "{d}/t.lisp")',"--quit"],capture_output=True,text=True).stdout
+assert "DERIVED-PREDICATES" in out.upper(), out[-300:]
+assert "OTHER" in out.upper(), out[-300:]
+assert "HYP0" not in out.upper(), out[-300:]
+EOF
+then pass; else fail "a non-hypothesis derived predicate lost its requirement flag"; fi
+
+name "a non-recognition problem is refused"
+# The clara-logistics fixture has no hypothesis disjunction, so hyps.dat cannot
+# be made -- say that rather than write a meaningless dataset.
+if everr --slices "2" --export-dataset "$TMP/ds4" | grep -q "needs a recognition instance"
+then pass; else fail "should refuse a problem with no hypotheses"; fi
+
+name "neither --evidence nor --export-dataset is an error"
+if bash "$EVGEN" --problem "$PROB" --slices "2" 2>&1 >/dev/null | grep -q "nothing to write"
+then pass; else fail "should require one of the two outputs"; fi
+
 # --------------------------------------------------------------- errors ----
 
 err() { name "$1"; shift; local want="$1"; shift
@@ -422,9 +642,9 @@ if bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --evidence "$TMP/x.txt" \
      --slices "2" --solution "$TMP/unsat.answer" 2>&1 >/dev/null \
    | grep -q "not SAT"; then pass; else fail "accepted a solution with no plan"; fi
 
-name "missing --evidence is reported"
-if bash "$EVGEN" --problem "$PROB" --slices "2" 2>&1 >/dev/null | grep -q "evidence is required"
-then pass; else fail "should require --evidence"; fi
+name "missing --evidence AND --export-dataset is reported"
+if bash "$EVGEN" --problem "$PROB" --slices "2" 2>&1 >/dev/null | grep -q "nothing to write"
+then pass; else fail "should require one of the two outputs"; fi
 
 name "missing --slices is reported"
 if bash "$EVGEN" --problem "$PROB" --evidence "$TMP/x.txt" 2>&1 >/dev/null | grep -q "slices is required"

@@ -273,11 +273,249 @@ the evidence quietly do nothing, so the check belongs here."
               (dolist (l lines) (format out "~s~%" l))))))
     (values evidence count horizon)))
 
+;;; --------------------------------------------------------- dataset export
+
+;;; The inverse of SatPlan/Examples/Plan_Recognition/make-recognition-instance.lisp:
+;;; that reads the R&G dataset format -- domain.pddl, a template.pddl whose goal is
+;;; the placeholder <HYPOTHESIS>, hyps.dat, obs.dat -- and builds a FiFO instance
+;;; from it.  This writes the format back out, so an instance developed here can be
+;;; handed to a tool chain that speaks it.
+;;;
+;;; Why not PDDL 3.0 :constraints, which is the obvious thing to reach for: every
+;;; con-GD operand is a state formula, so there is NO standard operator saying an
+;;; action occurred (FiFO's occur-sometime is its own extension, with no PDDL
+;;; counterpart) -- and action observations are most recognition evidence.  Beyond
+;;; that, FiFO slices are PARALLEL, so a slice index means nothing to a sequential
+;;; planner, and few current planners read :constraints at all.
+
+(defun evgen--section (define-form name)
+  "The (NAME ...) section of a PDDL define form, or NIL."
+  (find-if (lambda (s) (and (consp s) (symbolp (first s))
+                            (string-equal (symbol-name (first s)) name)))
+           (cddr define-form)))
+
+(defun evgen--hypothesis-names (problem-def)
+  "The nullary predicate names of a recognition goal (or (hyp0) ... (hypN)), in
+that order.  NIL when the goal is not such a disjunction."
+  (let ((goal (second (evgen--section problem-def "GOAL"))))
+    (when (and (consp goal) (symbolp (first goal))
+               (string-equal (symbol-name (first goal)) "OR")
+               (every (lambda (d) (and (consp d) (null (rest d)) (symbolp (first d))))
+                      (rest goal)))
+      (mapcar #'first (rest goal)))))
+
+(defun evgen--derived-conjunctions (domain-def names)
+  "For each NAME, the list of ground atoms its (:derived (name) (and ...)) rule
+conjoins.  Errors on a name the domain does not define."
+  (let ((rules (remove-if-not (lambda (s) (and (consp s) (eq (first s) :derived)))
+                              (cddr domain-def))))
+    (mapcar
+     (lambda (name)
+       (let ((rule (find-if (lambda (r) (and (consp (second r))
+                                             (eq (first (second r)) name)))
+                            rules)))
+         (unless rule
+           (error "the goal names ~(~a~), but the domain has no (:derived (~(~a~)) ...) rule"
+                  name name))
+         (let ((body (third rule)))
+           ;; (and a b c) or a bare single atom
+           (if (and (consp body) (symbolp (first body))
+                    (string-equal (symbol-name (first body)) "AND"))
+               (rest body)
+               (list body)))))
+     names)))
+
+(defun evgen--dat-line (atoms)
+  "One hyps.dat line: ground atoms separated by commas, upper case, as the
+published datasets write them."
+  (let ((*print-case* :upcase))
+    (format nil "~{~a~^,~}" (mapcar (lambda (a) (format nil "~s" a)) atoms))))
+
+(defun evgen--strip-sections (define-form drop-p)
+  "DEFINE-FORM with the sections DROP-P accepts removed."
+  (list* (first define-form) (second define-form)
+         (remove-if drop-p (cddr define-form))))
+
+(defun evgen--export-domain (domain-def hyp-names)
+  "The domain without its hypothesis rules -- those become hyps.dat.  Everything
+else, cost machinery included, is preserved: we cannot tell a cost the importer
+added from one the domain always had, and (increase (total-cost) n) is standard
+PDDL that any recipient can read or ignore.
+
+:derived-predicates is dropped from :requirements only when NO derived section
+survives -- a domain may define derived predicates that are not hypotheses (see
+SatPlan/Examples/DerivedPreds), and those must keep the flag."
+  (let ((stripped (evgen--strip-sections
+                   domain-def
+                   (lambda (s) (and (consp s) (eq (first s) :derived)
+                                    (consp (second s))
+                                    (member (first (second s)) hyp-names))))))
+    (if (find-if (lambda (s) (and (consp s) (eq (first s) :derived))) (cddr stripped))
+        stripped
+        (list* (first stripped) (second stripped)
+               (mapcar (lambda (s)
+                         (if (and (consp s) (symbolp (first s))
+                                  (string-equal (symbol-name (first s)) "REQUIREMENTS"))
+                             (remove-if (lambda (r)
+                                          (and (symbolp r)
+                                               (string-equal (symbol-name r)
+                                                             "DERIVED-PREDICATES")))
+                                        s)
+                             s))
+                       (cddr stripped))))))
+
+(defun evgen--export-template (problem-def)
+  "The problem as a template: the hypothesis disjunction replaced by the
+<HYPOTHESIS> placeholder, and the (= (total-cost) 0) the importer adds to :init
+removed, so a re-import reproduces the original exactly."
+  (list* (first problem-def) (second problem-def)
+         (mapcar
+          (lambda (s)
+            (cond ((and (consp s) (symbolp (first s))
+                        (string-equal (symbol-name (first s)) "GOAL"))
+                   (list (first s) (list (intern "AND") (intern "<HYPOTHESIS>"))))
+                  ((and (consp s) (symbolp (first s))
+                        (string-equal (symbol-name (first s)) "INIT"))
+                   (remove-if (lambda (f)
+                                (and (consp f) (symbolp (first f))
+                                     (string= (symbol-name (first f)) "=")
+                                     (equal (second f) '(total-cost))))
+                              s))
+                  (t s)))
+          (cddr problem-def))))
+
+(defun evgen--true-hypothesis (names true horizon)
+  "The hypothesis the solution actually achieved.  Derived predicates DO appear in
+the .answer, so this is read rather than guessed; NIL if none is reported."
+  (find-if (lambda (n) (gethash (list :holds (list n) horizon) true)) names))
+
+(defun evgen--replace-all (string old new)
+  (with-output-to-string (o)
+    (loop with start = 0
+          for pos = (search old string :start2 start)
+          do (write-string string o :start start :end (or pos (length string)))
+             (when (null pos) (return))
+             (write-string new o)
+             (setf start (+ pos (length old))))))
+
+(defun evgen--write-pddl (path define-form)
+  "Print a PDDL define form.  PDDL is case-insensitive, so :downcase is only a
+convention -- except for the <HYPOTHESIS> placeholder, which the published
+datasets write in caps and which readers may well match as text, so it is put
+back after printing."
+  (let ((text (let ((*print-case* :downcase) (*print-right-margin* 78))
+                (with-output-to-string (o) (pprint define-form o) (terpri o)))))
+    (with-open-file (out path :direction :output :if-exists :supersede
+                              :if-does-not-exist :create)
+      (write-string (evgen--replace-all text "<hypothesis>" "<HYPOTHESIS>") out))))
+
+(defun evgen--write-lines (path lines)
+  (with-open-file (out path :direction :output :if-exists :supersede
+                            :if-does-not-exist :create)
+    (dolist (l lines) (write-line l out))))
+
+(defun evgen--dataset-readme (problem-path solution-path domain-path
+                              names observations true-hyp slices observe horizon)
+  (append
+   (list "# Plan-recognition instance"
+         ""
+         (format nil "~d candidate hypotheses, ~d observation~:p."
+                 (length names) (length observations))
+         ""
+         "Files, in the format Ramirez & Geffner's datasets use:"
+         ""
+         "| file | contents |"
+         "|---|---|"
+         "| `domain.pddl` | the domain, with the hypothesis rules removed |"
+         "| `template.pddl` | the initial state; its goal is the `<HYPOTHESIS>` placeholder |"
+         "| `hyps.dat` | one candidate goal per line, ground atoms separated by commas |"
+         "| `obs.dat` | the observed actions, one per line, in order |"
+         (if true-hyp "| `real_hyp.dat` | the hypothesis the source plan actually achieved |"
+             "| (no `real_hyp.dat`) | the solution reported no hypothesis true at its final slice |")
+         ""
+         "## What the observations do and do not say"
+         ""
+         "`obs.dat` records **actions, in order, without times**.  Two consequences:"
+         ""
+         "- A fluent observation cannot be written in this format, so only actions"
+         "  were exported."
+         (format nil "- FiFO's time slices are PARALLEL -- a slice may hold several actions at~%  ~
+                      once -- while `obs.dat` is a linear sequence.  Actions observed in the~%  ~
+                      same slice are consecutive here in an arbitrary order.  That is sound~%  ~
+                      for a sequential planner, since they do not interfere, but it is a~%  ~
+                      total order the source plan did not assert.")
+         ""
+         "## Provenance"
+         ""
+         "```")
+   (list (format nil "problem   ~a" (file-namestring problem-path))
+         (format nil "domain    ~a" (file-namestring domain-path))
+         (format nil "solution  ~a (horizon ~d slices)"
+                 (file-namestring solution-path) horizon)
+         (format nil "slices    ~a" slices)
+         (format nil "observe   ~a"
+                 (if (string= (string-trim " " observe) "") "(all actions)" observe))
+         "```")))
+
+(defun evgen--export-dataset (dir problem-path domain-path solution-path
+                              requested horizon true actions
+                              slices observe)
+  "Write the R&G dataset files into DIR.  Returns the number of observations."
+  (let* ((problem-def (let ((*read-eval* nil))
+                        (with-open-file (in problem-path) (read in))))
+         (domain-def (let ((*read-eval* nil))
+                       (with-open-file (in domain-path) (read in))))
+         (names (evgen--hypothesis-names problem-def)))
+    (unless names
+      (error "--export-dataset needs a recognition instance: ~a's goal is not a ~
+              disjunction (or (hyp0) ... (hypN)) of nullary derived predicates.~%  ~
+              That disjunction and the domain's (:derived (hypI) ...) rules are ~
+              what hyps.dat is made of."
+             (file-namestring problem-path)))
+    (let* ((conjunctions (evgen--derived-conjunctions domain-def names))
+           ;; observations: the actions true at the requested slices, in slice
+           ;; order.  A slice may hold SEVERAL -- FiFO's slices are parallel --
+           ;; and obs.dat is a linear sequence, so they come out consecutive in
+           ;; the universe's order, which the README calls out.
+           (observations
+             (loop for s in requested
+                   when (< s horizon)
+                     nconc (loop for a in actions
+                                 when (gethash (list :occurs a s) true)
+                                   collect (cons a s))))
+           (true-hyp (evgen--true-hypothesis names true horizon)))
+      (when (null observations)
+        (error "no action observations selected: slices ~a~@[ restricted to ~a~] ~
+                produced none.~%  obs.dat records ACTIONS -- a fluent cannot be ~
+                written in this format."
+               slices (and (string/= (string-trim " " observe) "") observe)))
+      (ensure-directories-exist (merge-pathnames "x" dir))
+      (evgen--write-pddl (merge-pathnames "domain.pddl" dir)
+                         (evgen--export-domain domain-def names))
+      (evgen--write-pddl (merge-pathnames "template.pddl" dir)
+                         (evgen--export-template problem-def))
+      (evgen--write-lines (merge-pathnames "hyps.dat" dir)
+                          (mapcar #'evgen--dat-line conjunctions))
+      (evgen--write-lines (merge-pathnames "obs.dat" dir)
+                          (let ((*print-case* :upcase))
+                            (mapcar (lambda (o) (format nil "~s" (car o))) observations)))
+      (when true-hyp
+        (evgen--write-lines
+         (merge-pathnames "real_hyp.dat" dir)
+         (list (evgen--dat-line (nth (position true-hyp names) conjunctions)))))
+      (evgen--write-lines
+       (merge-pathnames "README.md" dir)
+       (evgen--dataset-readme problem-path solution-path domain-path
+                              names observations true-hyp slices observe horizon))
+      (length observations))))
+
 (defun evgen (&key problem solution domain evidence slices (observe "")
-                   (negative-evidence 0) (recognition nil) (satplan "satplan.wff"))
+                   (negative-evidence 0) (recognition nil) export-dataset
+                   (satplan "satplan.wff"))
   "Write an evidence file from a solved PDDL problem.  See the file header."
   (unless problem  (error "--problem is required: the PDDL problem instance"))
-  (unless evidence (error "--evidence is required: the file to write"))
+  (unless (or evidence export-dataset)
+    (error "nothing to write: give --evidence <file>, --export-dataset <dir>, or both"))
   (unless (member negative-evidence '(0 1))
     (error "--negative-evidence must be 0 or 1, got ~a" negative-evidence))
   ;; Complete observability pins the trajectory, so c(O) becomes the cost of that
@@ -292,6 +530,11 @@ the evidence quietly do nothing, so the check belongs here."
             Negative evidence asserts COMPLETE observability, which pins the ~
             trajectory: every hypothesis' cost becomes 0 or infinite and the ~
             posterior loses its gradation."))
+  ;; obs.dat records ACTIONS in order; there is no way to write a fluent, and
+  ;; nothing to write "this was false".
+  (when (and export-dataset (= negative-evidence 1))
+    (error "--export-dataset and --negative-evidence 1 do not go together: ~
+            obs.dat records only what was observed to HAPPEN."))
   (let ((problem-path (probe-file problem)))
     (unless problem-path (error "problem file not found: ~a" problem))
     (let* ((requested (evgen--parse-slices slices))
@@ -323,9 +566,39 @@ the evidence quietly do nothing, so the check belongs here."
               ;; a name matching nothing must be an error, not a quietly smaller
               ;; evidence file.
               (evgen--check-observe-names names all-fluents all-actions observe)
+              ;; A fluent named in --observe cannot reach obs.dat, and quietly
+              ;; dropping it would export less than was asked for.
+              (when export-dataset
+                (let ((fluent-names (mapcar #'symbol-name
+                                            (evgen--distinct-heads all-fluents))))
+                  (let ((bad (remove-if-not (lambda (n) (member n fluent-names
+                                                                :test #'string=))
+                                            (or names '()))))
+                    (when bad
+                      (error "--export-dataset cannot record the fluent~p ~
+                              ~{~(~a~)~^, ~} named in --observe: obs.dat holds ~
+                              ACTIONS in order, and has no way to say a fluent ~
+                              held.~%  Restrict --observe to action names."
+                             (length bad) bad)))))
               (let ((fluents (evgen--restrict all-fluents names))
                     (actions (evgen--restrict all-actions names)))
-                (evgen--write evidence problem-path solution-path domain
-                              requested horizon true fluents actions
-                              slices observe negative-evidence recognition)))))))))
+                (let ((written nil) (n 0))
+                  (when evidence
+                    (multiple-value-bind (f c) (evgen--write evidence problem-path
+                                                 solution-path domain requested horizon
+                                                 true fluents actions slices observe
+                                                 negative-evidence recognition)
+                      (setf written f n c)))
+                  (when export-dataset
+                    (let ((obs (evgen--export-dataset export-dataset problem-path
+                                 (or domain (evgen--resolved-domain problem-path))
+                                 solution-path requested horizon true actions
+                                 slices observe)))
+                      (let ((h (length (evgen--hypothesis-names
+                                        (let ((*read-eval* nil))
+                                          (with-open-file (in problem-path) (read in)))))))
+                        (format *error-output*
+                                "Wrote ~a (~d observation~:p, ~d ~:[hypotheses~;hypothesis~])~%"
+                                export-dataset obs h (= h 1)))))
+                  (values written n horizon))))))))))
 

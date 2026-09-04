@@ -524,6 +524,33 @@ Three restrictions come with it, and they are about the observation model, not t
 
 One thing you get for free: **evgen can never leak a hypothesis.** The `hypI` predicates are derived, and evgen emits from the `fluents` domain, which derived predicates are deliberately kept out of — so a hypothesis predicate cannot appear among the observations meant to infer it.
 
+**Exporting the instance for other tool chains.** `--export-dataset <dir>` writes the problem in the **Ramírez & Geffner dataset format**, the shape every plan-recognition tool chain reads:
+
+```sh
+SatPlan/evgen.sh --problem problem.pddl --solution sg.answer \
+                 --slices "1-3" --export-dataset out/
+```
+
+| file | contents |
+|---|---|
+| `domain.pddl` | the domain, with the `(:derived (hypI) …)` rules removed |
+| `template.pddl` | the initial state; its goal is the `<HYPOTHESIS>` placeholder |
+| `hyps.dat` | one candidate goal per line, ground atoms separated by commas |
+| `obs.dat` | the observed actions, one per line, in order |
+| `real_hyp.dat` | the hypothesis the source plan actually achieved |
+| `README.md` | what the instance is, and the two caveats below |
+
+This is the exact inverse of `SatPlan/Examples/Plan_Recognition/make-recognition-instance.lisp`, which reads that format to build FiFO instances — so the round trip closes, and `tests/run-test-evgen.sh` checks it: export, re-import, then solve the re-imported instance under its own `obs.dat` and confirm the observations embed. The exported `hyps.dat` is also checked against the *published* `IntrusionDetection/hyps.dat`, which it reproduces hypothesis for hypothesis.
+
+The instance must be a recognition instance — a goal that is a disjunction `(or (hyp0) … (hypN))` of nullary derived predicates, with a `(:derived (hypI) …)` rule apiece, as `SatPlan/Examples/Plan_Recognition/make-recognition-instance.lisp` builds. That disjunction supplies the order of `hyps.dat` and the rules supply its content; anything else is refused. `real_hyp.dat` is *read*, not guessed: derived predicates appear in the `.answer`, so the hypothesis the plan achieved is whichever `(HOLDS (hypI) numslices)` it reports.
+
+Two limits, which the exported README repeats:
+
+- **Actions only.** `obs.dat` has no way to say a fluent held, so a fluent name in `--observe` is an error rather than a silent narrowing, and `--negative-evidence 1` is refused.
+- **Order, not time.** FiFO's slices are *parallel* — a slice may hold several actions — while `obs.dat` is a linear sequence. Actions from one slice come out consecutive in an arbitrary order. That is sound for a sequential recipient, since they do not interfere, but it is a total order the source plan never asserted.
+
+**Why not `:constraints`.** Encoding the observations in the problem's `(:constraints …)` section is the obvious idea and does not work. Every PDDL 3.0 con-GD operand is a *state* formula, so there is no standard operator saying an action occurred — FiFO's `occur-sometime` is its own extension with no PDDL counterpart (see [Trajectory constraints](#trajectory-constraints)), and action observations are most recognition evidence. Beyond that, a FiFO slice index means nothing to a sequential planner, and few current planners read `:constraints` at all. The dataset format sidesteps all three.
+
 **Everything emitted is checked**, against the problem's real ground universe — re-derived from the problem rather than read from the `.map` beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes. evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set.
 
 The reason for that care is worth stating, because it used to be a live trap. A FiFO literal naming an atom the problem does not have is not an error — `parse` simply mints a fresh proposition. That proposition appears in no other clause, so evidence built on it constrains *nothing*, and the planner would return its **unconditioned** answer with no warning: a misspelled predicate and a slice past the horizon both read as "no evidence at all". `planner.sh` now catches this itself (see [Conditioning on evidence](#conditioning-on-evidence-and-marginal-inference)), so evgen's checks are a second line that fails earlier, at generation time, with a message about the *solution* rather than the horizon.
