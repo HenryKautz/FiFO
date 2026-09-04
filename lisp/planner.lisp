@@ -48,17 +48,106 @@ EVIDENCE-FILE (if any) into one list, or NIL when there is no evidence."
       (with-open-file (i in :direction :input)
         (loop for line = (read-line i nil) while line do (write-line line o))))))
 
+;;; Evidence sanity: an evidence literal naming an atom the problem does not have
+;;; is NOT an error in FiFO -- parse simply mints a fresh proposition.  That
+;;; proposition appears in no other clause, so the evidence constrains nothing
+;;; and the planner returns its UNCONDITIONED answer with no warning at all: a
+;;; misspelled predicate and a slice past the horizon both read as "no evidence".
+;;; The two cases need different treatment, and the problem's own instantiated
+;;; clauses tell them apart:
+;;;
+;;;   the TERM appears at some other slice  -> the atom is real, this horizon is
+;;;                                            just too short; the literal is
+;;;                                            false here, so the evidence is
+;;;                                            unsatisfiable at N and the search
+;;;                                            correctly moves to a longer one
+;;;   the TERM appears nowhere              -> a typo, at any horizon: an error
+;;;
+;;; Checking against the theory's atoms rather than the fluents/actions domains
+;;; is deliberate: derived predicates are kept OUT of the fluents domain but are
+;;; legal in evidence, and they do appear in the clauses.
+
+(defun plan--timeline-atom (x)
+  "X as (kind term slice) when it is a ground SatPlan timeline atom -- (HOLDS f s)
+or (OCCURS a s) with an integer slice -- else NIL."
+  (when (and (consp x) (symbolp (first x)) (= (length x) 3) (integerp (third x))
+             (member (symbol-name (first x)) '("HOLDS" "OCCURS") :test #'string=))
+    x))
+
+(defun plan--collect-timeline-atoms (form atoms terms)
+  "Walk FORM, recording every timeline atom in ATOMS (keyed by the whole atom) and
+its predicate+term in TERMS (keyed by (kind . term))."
+  (let ((atom (plan--timeline-atom form)))
+    (cond (atom
+           (setf (gethash atom atoms) t)
+           (setf (gethash (cons (first atom) (second atom)) terms) t))
+          ((consp form)
+           (dolist (sub form) (plan--collect-timeline-atoms sub atoms terms))))))
+
+(defun plan--theory-atoms (scnf-file)
+  "The timeline atoms of an instantiated theory.  Returns (values atoms terms)."
+  (let ((atoms (make-hash-table :test #'equal))
+        (terms (make-hash-table :test #'equal))
+        (*read-eval* nil))
+    (with-open-file (in scnf-file :direction :input)
+      (loop for f = (read in nil 'eof) until (eql f 'eof)
+            do (plan--collect-timeline-atoms f atoms terms)))
+    (values atoms terms)))
+
+(defun plan--resolve-evidence (clauses problem-scnf n)
+  "Check CLAUSES against the problem theory and return the clauses to write.
+Errors on an atom whose term the problem does not have at any slice.  A known
+term at an out-of-range slice cannot be true at this horizon, so its literal is
+resolved to its truth value: the clause is dropped when a negated one satisfies
+it, and the literal removed otherwise -- leaving (OR), the empty clause, when
+that empties it, which is exactly the UNSAT this horizon deserves."
+  (multiple-value-bind (atoms terms) (plan--theory-atoms problem-scnf)
+    (flet ((state (lit)   ; :ok, :false (real atom, not at this horizon), or error
+             (let ((atom (plan--timeline-atom lit)))
+               (cond ((null atom) :ok)
+                     ((gethash atom atoms) :ok)
+                     ((gethash (cons (first atom) (second atom)) terms) :false)
+                     (t (error "evidence names ~S, which this problem has at no ~
+                                slice.~%  ~
+                                A misspelled predicate, action or object name is ~
+                                not a FiFO error -- it becomes a fresh ~
+                                unconstrained proposition, so the evidence would ~
+                                silently constrain NOTHING and the planner would ~
+                                report its unconditioned answer."
+                               atom))))))
+      (let ((out '()))
+        (dolist (c clauses (nreverse out))
+          ;; a clause is (OR lit ...); a lit is an atom or (NOT atom)
+          (let ((kept '()) (satisfied nil))
+            (dolist (lit (rest c))
+              (let* ((negp (and (consp lit) (symbolp (first lit))
+                                (string= (symbol-name (first lit)) "NOT")))
+                     (inner (if negp (second lit) lit)))
+                (case (state inner)
+                  (:ok (push lit kept))
+                  ;; the atom is false at this horizon: a negated literal makes the
+                  ;; clause true, a positive one just drops out
+                  (:false (when negp (setf satisfied t))))))
+            (unless satisfied
+              (push (cons 'or (nreverse kept)) out))))))
+    ))
+
 (defun plan--instantiate (wff n problem-scnf evidence-forms evidence-scnf)
   "Instantiate the problem WFF at N slices into PROBLEM-SCNF (assumes
 *satplan-numslices* / *cnf-format* are already set).  When EVIDENCE-FORMS is
 non-NIL, parse them IN THE SAME ENVIRONMENT -- so quantifiers ground over the
 SAME domains the problem just set up (e.g. slices/actslices at this N) -- and
 write those hard (OR ...) clauses to EVIDENCE-SCNF, kept as a SEPARATE file.  Does
-not concatenate (see PLAN--SCNF-TO-SOLVE)."
+not concatenate (see PLAN--SCNF-TO-SOLVE).
+
+The evidence is checked against the problem theory first; see
+PLAN--RESOLVE-EVIDENCE for why a literal the problem cannot have is a silent
+wrong answer without it."
   (unless (instantiate wff :scnfile problem-scnf)
     (error "instantiation failed at ~A slices" n))
   (when evidence-forms
-    (let ((clauses (parse-same-env evidence-forms)))
+    (let ((clauses (plan--resolve-evidence (parse-same-env evidence-forms)
+                                           problem-scnf n)))
       (with-open-file (out evidence-scnf :direction :output
                                          :if-exists :supersede :if-does-not-exist :create)
         (dolist (c clauses) (format out "~S~%" c))))))

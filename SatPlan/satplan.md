@@ -506,7 +506,9 @@ emits only `(occurs (fly …) s)` and `(holds (in …) s)`. A name matching no f
 
 Two warnings. First, this is not a "more evidence" knob — it asserts **complete observability**, that nothing you did not see happened. That pins the trajectory almost entirely, and in a recognition setting it will collapse the posterior rather than sharpen it. Second, the size: `--observe` restricts negatives too, and usually must. The ground universe is every fluent and every action, so on a *toy* 6-place, 3-package problem one slice alone carries 341 literals (45 fluents + 296 actions) against 8 true ones; over six slices that is ~1750, and a realistic instance reaches 10<sup>5</sup>. With `--observe "fly,in"` the same slice is 11 literals.
 
-**Everything emitted is checked.** This matters more than it sounds, because slice-pinned evidence fails *silently* downstream: a slice past the horizon, or a misspelled predicate, is not an error — it becomes a fresh unconstrained atom, and the planner returns its **unconditioned** answer with no warning at all. So evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set, and it verifies every literal against the problem's real ground universe before writing. That universe is re-derived from the problem rather than read from the `.map` file beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes.
+**Everything emitted is checked**, against the problem's real ground universe — re-derived from the problem rather than read from the `.map` beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes. evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set.
+
+The reason for that care is worth stating, because it used to be a live trap. A FiFO literal naming an atom the problem does not have is not an error — `parse` simply mints a fresh proposition. That proposition appears in no other clause, so evidence built on it constrains *nothing*, and the planner would return its **unconditioned** answer with no warning: a misspelled predicate and a slice past the horizon both read as "no evidence at all". `planner.sh` now catches this itself (see [Conditioning on evidence](#conditioning-on-evidence-and-marginal-inference)), so evgen's checks are a second line that fails earlier, at generation time, with a message about the *solution* rather than the horizon.
 
 Every generated file opens with the settings that made it, so it can be regenerated exactly:
 
@@ -585,6 +587,17 @@ After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem
 #### Conditioning on evidence and marginal inference
 
 `--evidence '<formula>'` (repeatable) and `--evidence-file <file>` **condition** the problem on a FiFO formula. Unlike the `.scnf`-level evidence of `marginals.sh`/`wmc.sh` (which must be ground), here the formula may be **quantified over the problem's domains** — e.g. `--evidence '(all (s) actslices true (not (occurs (turn-on s1) s)))'` — because the planner instantiates it through the full pipeline. At each working horizon the evidence is parsed **in the same environment as the problem**, so its quantifiers ground over the same `slices`/`objects`/… domains at that horizon, and the resulting hard clauses are written to a **separate** `<root>-evidence.scnf`. That file is then concatenated with the problem `.scnf` and handed downstream — so without `--marginals`, the planner searches for the smallest-horizon, lowest-cost plan **that also satisfies the evidence** (the evidence is a hard constraint). For instance, forbidding an action the shortest plan relies on can push the solution to a longer horizon that routes around it.
+
+**Evidence is checked against the problem.** A FiFO literal naming an atom the problem does not have is not an error in `parse` — it mints a fresh proposition, which appears in no other clause. Evidence built on such an atom therefore constrains *nothing*, and before this check the planner would return its **unconditioned** answer with no warning at all. Two different mistakes both landed there, and they need opposite treatment, so the planner tells them apart using the problem's own instantiated clauses:
+
+| what you wrote | verdict |
+|---|---|
+| a predicate, action, or object name the problem has at **no** slice | **error** — a typo is wrong at every horizon, so the run stops and names the atom |
+| a real atom at a slice **past this horizon** | not an error — the literal is false here, so the evidence is unsatisfiable at this horizon and the search moves to a longer one |
+
+So `--evidence '(occurs (fly plane1 bos wash) 20)'` at a 6-slice horizon now reports `unsatisfiable` and, given room to grow, finds the horizon that fits the observation; `--evidence '(occurs (flyy plane1 bos wash) 4)'` stops with `evidence names (OCCURS (FLYY …) 4), which this problem has at no slice`. A negated out-of-range literal is vacuously true and is simply dropped.
+
+The comparison is against the atoms of the instantiated theory, not the `fluents`/`actions` domains, so **derived predicates work**: they are deliberately kept out of the `fluents` domain but do appear in the clauses their `equiv` axioms generate.
 
 **Evidence in PDDL syntax.** Writing FiFO evidence means knowing the SatPlan encoding (`occurs`/`holds` wrappers, explicit slice arguments). `--pddl-evidence '<form>'` (repeatable) and `--pddl-evidence-file <file>` let you instead use the **PDDL modal language** — the same operators as the `:constraints` section — over PDDL predicate and action names, which `pddl2fifo` translates to FiFO for you:
 

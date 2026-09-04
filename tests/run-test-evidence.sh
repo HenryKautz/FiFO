@@ -296,6 +296,97 @@ dp_neg "derived: in action precondition rejected" \
   "sed -i.bak 's|:precondition (holding ?x)|:precondition (and (holding ?x) (spells-ab))|' dp.pddl" \
   "precondition on derived"
 
+# ---------------------------------------------------------------------------
+# Evidence that names an atom the problem does not have.
+#
+# FiFO's parse mints a fresh proposition for any literal, so before the check in
+# plan--resolve-evidence these ran clean and returned the UNCONDITIONED answer:
+# the evidence constrained a variable that appeared in no other clause.  The two
+# causes need opposite treatment -- a typo is wrong at every horizon, while a
+# slice past the horizon just means this horizon is too short -- so the fixture
+# below pins both, and the cost of the conditioned answer proves the evidence
+# actually bound.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== evidence naming atoms the problem does not have ==="
+
+SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}"
+if command -v "$SOLVER" >/dev/null 2>&1; then
+  stage Switch switchprob.pddl switches.pddl
+  # baseline: what the problem costs with no evidence at all
+  bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 >base.log 2>&1
+  BASE="$(grep -oE 'cost [0-9]+' base.log | tail -1)"
+
+  printf '  %-52s ... ' "a misspelled action in evidence is an error"
+  if bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 \
+       --evidence '(occurs (turn-onn s1) 2)' >e1.log 2>&1; then
+    fail "a misspelled action was accepted"
+  elif grep -q "which this problem has at no slice" e1.log; then pass
+  else fail "wrong error"; tail -3 e1.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "a misspelled fluent in evidence is an error"
+  if bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 \
+       --evidence '(holds (onn s1) 2)' >e2.log 2>&1; then
+    fail "a misspelled fluent was accepted"
+  elif grep -q "which this problem has at no slice" e2.log; then pass
+  else fail "wrong error"; tail -3 e2.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "a misspelled atom under (not ...) is an error too"
+  if bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 \
+       --evidence '(not (occurs (turn-onn s1) 2))' >e3.log 2>&1; then
+    fail "a negated misspelling was accepted"
+  elif grep -q "which this problem has at no slice" e3.log; then pass
+  else fail "wrong error"; tail -3 e3.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "a real action at a slice past the horizon is UNSAT"
+  # Not an error: the atom is real, this horizon is just too short.  (Checked on
+  # the output, not the exit code -- planner.sh exits 0 on a clean UNSAT verdict.)
+  bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 \
+       --evidence '(occurs (turn-on s1) 20)' >e4.log 2>&1
+  if grep -qi "unsatisfiable" e4.log && ! grep -q "at no slice" e4.log \
+     && ! grep -q "cost " e4.log; then pass
+  else fail "expected UNSAT, not an error and not a plan"
+       tail -3 e4.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "the horizon search extends past a too-short one"
+  # The same observation must not abort the search: a longer horizon can hold it.
+  if bash "$PLANNER" switchprob.pddl --domain switches.pddl --minslices 3 --maxslices 9 \
+       --evidence '(occurs (turn-on s1) 6)' >e5.log 2>&1 \
+     && grep -q "unsatisfiable with 3 time slices" e5.log \
+     && grep -qE "SOLVED with [7-9] time slices" e5.log \
+     && grep -q "(OCCURS (TURN-ON S1) 6)" switchprob.answer; then pass
+  else fail "search did not extend to a horizon that fits the observation"
+       tail -4 e5.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "a NEGATED out-of-range literal is vacuously true"
+  # Nothing can occur at slice 20 here, so (not ...) of it is satisfied and the
+  # problem must solve exactly as it did unconditioned.
+  if bash "$PLANNER" switchprob.pddl --domain switches.pddl --numslices 4 \
+       --evidence '(not (occurs (turn-on s1) 20))' >e6.log 2>&1 \
+     && [[ "$(grep -oE 'cost [0-9]+' e6.log | tail -1)" == "$BASE" ]]; then pass
+  else fail "expected the unconditioned cost $BASE"
+       tail -3 e6.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "evidence over a DERIVED predicate still works"
+  # Derived predicates are deliberately kept OUT of the fluents domain, so a
+  # check against the domains rather than the theory's atoms would reject this.
+  stage DerivedPreds pb1.pddl blocks-derived.pddl
+  if bash "$PLANNER" pb1.pddl --domain blocks-derived.pddl --numslices 4 \
+       --evidence '(holds (spells-ab) 4)' >e7.log 2>&1 \
+     && grep -q "SOLVED" e7.log; then pass
+  else fail "derived-predicate evidence was rejected"; tail -3 e7.log | sed 's/^/      | /'; fi
+
+  printf '  %-52s ... ' "a misspelled DERIVED predicate is still an error"
+  if bash "$PLANNER" pb1.pddl --domain blocks-derived.pddl --numslices 4 \
+       --evidence '(holds (spells-abc) 4)' >e8.log 2>&1; then
+    fail "a misspelled derived predicate was accepted"
+  elif grep -q "which this problem has at no slice" e8.log; then pass
+  else fail "wrong error"; tail -3 e8.log | sed 's/^/      | /'; fi
+else
+  echo "  (skipping: no MaxSAT solver '$SOLVER' on PATH)"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]
