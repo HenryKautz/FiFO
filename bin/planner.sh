@@ -159,7 +159,17 @@ SATPLAN="$FIFO_LISP/satplan.wff"
 
 # The (include ...) path written into a generated wff is computed relative to the
 # problem directory so it stays portable; unused for .wff input.
-SATPLAN_REL="$(perl -MFile::Spec -e 'print File::Spec->abs2rel($ARGV[0], $ARGV[1])' "$SATPLAN" "$DIR")"
+#
+# Both sides must be resolved through symlinks first -- pwd -P, not the pwd used
+# above -- because abs2rel is purely lexical while FiFO resolves the include
+# against the wff's TRUENAME.  Measured from a symlinked directory the relative
+# path comes out short by however many components the link crossed, and
+# satplan.wff is then looked for in a directory that does not exist.  On macOS
+# that is every problem under /tmp, which is really /private/tmp.
+SATPLAN_DIR_PHYS="$(cd "$FIFO_LISP" && pwd -P)"
+DIR_PHYS="$(cd "$DIR" && pwd -P)"
+SATPLAN_REL="$(perl -MFile::Spec -e 'print File::Spec->abs2rel($ARGV[0], $ARGV[1])' \
+                    "$SATPLAN_DIR_PHYS/$(basename "$SATPLAN")" "$DIR_PHYS")"
 
 # Pass slice bounds only when given; otherwise the planner computes them
 # (minslices from pddl2fifo's reachability analysis, maxslices = 2 * minslices).

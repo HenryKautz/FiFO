@@ -65,6 +65,26 @@ run_one Plan_Recognition/BlockWords pb1.pddl block-words.pddl intermediates/pb1.
 run_one Plan_Recognition/IntrusionDetection pb1.pddl intrusion-detection.pddl intermediates/pb1.wff
 run_one DerivedPreds pb1.pddl blocks-derived.pddl intermediates/pb1.wff
 
+# The include path planner.sh writes must survive a symlinked problem directory.
+# abs2rel is purely lexical while FiFO resolves the include against the wff's
+# TRUENAME, so measuring from a symlinked directory once produced a path short by
+# however many components the link crossed -- on macOS, every problem under /tmp.
+# --stop-after scnf reaches the instantiate step, which is where it failed, and
+# needs no solver.
+echo
+echo "=== satplan.wff include path ==="
+printf '  %-31s ... ' "resolved through a symlinked dir"
+REAL="$TMP/real/deep"; mkdir -p "$REAL"
+ln -s "$TMP/real" "$TMP/link"
+cp "$EXAMPLES/LogisticsCosts/pb1.pddl" "$EXAMPLES/LogisticsCosts/logistics-costs.pddl" "$REAL/"
+if FIFO_LISP="$FIFO_LISP" bash "$REPO/bin/planner.sh" "$TMP/link/deep/pb1.pddl" \
+     --domain "$TMP/link/deep/logistics-costs.pddl" --stop-after scnf \
+     >"$TMP/link.log" 2>&1 && ! grep -q "does not exist" "$TMP/link.log"
+then echo "PASS"; PASS=$((PASS+1))
+else echo "FAIL (satplan.wff not found through the symlink)"
+     sed 's/^/      | /' "$TMP/link.log" | grep -v '^      | ;' | tail -8
+     FAIL=$((FAIL+1)); fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]
