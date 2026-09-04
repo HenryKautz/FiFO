@@ -154,11 +154,20 @@ exactly where it was."
              (format *error-output* "FiFO error while ~A ~A: ~A~%"
                      ,operation ,file c)
              nil)))))
+(defvar *scratch-random-state* (make-random-state t)
+  "Seeded from the clock when this file is loaded.  SBCL starts every process with
+an IDENTICAL *random-state*, so (random n) against the default state returns the
+same number in every run -- it contributes nothing to a name meant to be unique.")
+
 (defun make-scratch-file-root ()
-  "Generate a unique scratch file base name for this process."
-  (format nil "scratch-~A-~A"
+  "Generate a scratch file base name unique to this process.  The pid is what
+actually guarantees it: GET-UNIVERSAL-TIME has one-second granularity, so two
+FiFO runs started within the same second in the same directory would otherwise
+share a root and overwrite -- or delete -- each other's .cnf/.satout files."
+  (format nil "scratch-~A-~A-~A"
           (get-universal-time)
-          (random 1000000000)))
+          (sb-unix:unix-getpid)
+          (random 1000000000 *scratch-random-state*)))
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 

@@ -117,7 +117,7 @@ numbers on the clauses, never the shape of the pipeline.
 | [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
 | [`learn-pddl.sh`](#learn-pddlsh) | pddl2fifo → instantiate → learn → rewrite the domain | a `.pddl` domain with each `:probability` replaced by the learned `:cost` (and a problem file when preferences or fluent costs carry targets) |
 | [`install-solvers.sh`](#install-solverssh) | none — bootstrap | solver binaries in `~/bin`; checkouts under `Solvers/` |
-| [`cleanupfifo.sh`](#cleanupfifosh) | none — housekeeping | deletes `.scnf .cnf .wcnf .map .satout .soln .answer` |
+| [`cleanupfifo.sh`](#cleanupfifosh) | none — housekeeping | deletes `.scnf .cnf .wcnf .map .satout .soln .answer` from the current directory and the whole checkout, skipping git-tracked files and `tests/` |
 
 Three questions, three solver families: **satisfiability** (SAT), **the most
 probable model** (MaxSAT — see
@@ -550,21 +550,41 @@ when the action is favored (`p > 0.5`).
 ### `cleanupfifo.sh`
 
 Delete the regenerable byproducts of the pipeline — `.scnf .cnf .wcnf .map
-.satout .soln .answer` — from a directory. Source files (`.wff`, `.pddl`,
-`.lisp`, …) are never touched.
+.satout .soln .answer` — wherever they have piled up. Source files (`.wff`,
+`.pddl`, `.lisp`, …) are never candidates: no extension that can hold source is
+in the list.
 
 ```sh
-cleanupfifo.sh [<dir>|<file>] [-r|--recursive] [-n|--dry-run]
+cleanupfifo.sh [<dir>|<file>]... [-r|--recursive] [-n|--dry-run]
 ```
 
-With no argument it cleans the current directory; given a file, it cleans the
-directory containing it.
+Runnable from anywhere. With no argument it cleans the **current directory** and
+sweeps the **FiFO checkout** recursively — located beside the script, else via
+`$FIFO_LISP/..`, else the git repository the current directory sits in. A
+candidate must hold `lisp/FiFO.lisp` *and* a `.git`, so an installed
+`~/lib/fifo` is never swept. With arguments it cleans exactly those directories
+(a file argument means the directory containing it), recursing only under `-r`.
+
+Two guards decide what it will never delete:
+
+1. **Anything git tracks.** This is the load-bearing one. Checked-in fixtures
+   carry exactly these extensions — `gold_instantiate/*_gold.scnf`,
+   `Probability/*.scnf`, `SatPlan/Examples/**/intermediates/*.wcnf`, and the
+   committed `.scnf`/`.answer` under `tests_instantiate/` and `tests_solve/` —
+   so a sweep by extension alone would delete the suite's expected outputs.
+2. **Everything under the checkout's `tests/` tree**, tracked or not, so the
+   regression-test directories cannot lose a file even by accident. An explicit
+   target inside `tests/` is refused (exit 2) rather than silently skipped, and
+   running *from* inside `tests/` says so and sweeps the rest of the checkout.
 
 | Option | Meaning |
 |---|---|
-| `-r`, `--recursive` | Also clean every subdirectory. Use with care — this reaches committed test fixtures such as `*_gold.scnf`. |
+| `-r`, `--recursive` | Recurse into the directories named on the command line. The no-argument checkout sweep is always recursive. |
 | `-n`, `--dry-run` | List what would be deleted, without deleting. |
 | `-h`, `--help` | Usage. |
+
+`tests/run-test-cleanup.sh` covers the guards, against a throwaway git
+repository built in a temp directory — never the real checkout.
 
 ------
 
@@ -648,6 +668,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-mcsat.sh` | The MC-SAT back end: each case fixes `--seed` and asserts the sampled marginals match the exact `maxent` ones to a tolerance. Skips cleanly (exit 0) when no WalkSAT v58 binary is found. |
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
+| `tests/run-test-cleanup.sh` | `bin/cleanupfifo.sh`'s guards, plus the scratch-file root. Every destructive case runs against a throwaway git repository in a temp directory, never the real checkout: byproducts swept, git-tracked fixtures kept, `tests/` untouched tracked or not, an explicit `tests/` target refused, `--dry-run`, a plain directory outside any repository, `-r`, an installed copy with and without `FIFO_LISP`, and a run under bash 3.2. One case starts four concurrent SBCLs and asserts four distinct scratch roots — before the pid was added they collapsed to one. Needs no solver and no sbcl (the last case skips without it). |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
 | `tests/run-test-ppgen.sh` | `SatPlan/ppgen.sh`, the clara-logistics problem generator: structural checks against the spec (clique/grid topology, even distribution, maximal airport separation verified by brute force, complete routes, goals that differ from starts), the preference mode (disjunctive goal with equally-spaced weights), `--maxgoals` capping the deliveries, `--goals-per-package` (N alternative destinations per package; M=1's per-package hard disjunctions, checked in a solved plan), the recorded settings block replaying byte for byte and the seed round-trip, eighteen error paths, and a solvability check per style. Skips the solvability cases without a MaxSAT solver. |
 | `tests/run-test-action-costs.sh` | Problem-file action costs (the standard `:action-costs` function idiom): a 0-ary function's value reaches the schema, one domain yields different costs under two problems, a parameterized function gives per-grounding cost facts, literal costs still work, the costs drive the optimum end to end, and the six error paths fire. The end-to-end case needs a MaxSAT solver and skips without one. |

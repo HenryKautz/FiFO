@@ -12,8 +12,8 @@
 Solvers/
 
 # Per-process scratch files from test-scnf (make-scratch-file-root writes
-# "scratch-<universal-time>-<random>.{scnf,cnf,wcnf,map,satout,soln}" into the
-# current directory, so they land wherever solve was run from).  Regenerable;
+# "scratch-<universal-time>-<pid>-<random>.{scnf,cnf,wcnf,map,satout,soln}" into
+# the current directory, so they land wherever solve was run from).  Regenerable;
 # bin/cleanupfifo.sh sweeps them.  Unanchored, since they appear in whichever
 # directory the run started from, not only the repository root.
 scratch-*
