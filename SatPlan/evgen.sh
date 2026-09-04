@@ -48,6 +48,15 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           unrestricted, a toy 3-package problem yields ~1700
                           literals.  Note this asserts COMPLETE observability,
                           a much stronger claim than "more evidence"
+  --recognition <0|1>     1 emits ONE (and ...) form instead of a literal per line,
+                          which is what recognize.sh needs: it builds the
+                          not-comply case by wrapping the whole file in (not ...),
+                          and that is only valid for a single form.  Refuses
+                          --negative-evidence 1, which would collapse the
+                          posterior.  Pair it with --observe over ACTION names:
+                          an action at slice s means slice s at any horizon, while
+                          a fluent at the FINAL slice means "at the end" only at
+                          the horizon it came from
   --help, -h              this message
 
 examples:
@@ -55,6 +64,8 @@ examples:
   evgen.sh --problem pb.pddl --evidence ev.txt --slices "2" --observe "fly,in"
   evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-2" \
            --observe "fly" --negative-evidence 1
+  evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-5" \
+           --observe "drive,fly" --recognition 1
 
   planner.sh pb.pddl --domain d.pddl --numslices <N> --evidence-file ev.txt
 
@@ -64,6 +75,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
+RECOGNITION="0"
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -77,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --slices)            need "$@"; SLICES="$2";   shift 2 ;;
     --observe)           need "$@"; OBSERVE="$2";  shift 2 ;;
     --negative-evidence) need "$@"; NEGATIVE="$2"; shift 2 ;;
+    --recognition)       need "$@"; RECOGNITION="$2"; shift 2 ;;
     -h|--help)           print_usage; exit 0 ;;
     *)                   die "unknown option '$1' (try --help)" ;;
   esac
@@ -87,6 +100,12 @@ done
 [[ -n "$SLICES"   ]] || die "--slices is required, e.g. --slices \"1-3,5\""
 if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
   die "--negative-evidence must be 0 or 1, got '$NEGATIVE'"
+fi
+if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
+  die "--recognition must be 0 or 1, got '$RECOGNITION'"
+fi
+if [[ "$RECOGNITION" == "1" && "$NEGATIVE" == "1" ]]; then
+  die "--recognition and --negative-evidence 1 do not go together: negative evidence asserts complete observability, which pins the trajectory, so every hypothesis' cost becomes 0 or infinite and the posterior loses its gradation"
 fi
 [[ -f "$PROBLEM" ]] || die "problem file not found: $PROBLEM"
 if [[ -n "$SOLUTION" && ! -f "$SOLUTION" ]]; then die "solution file not found: $SOLUTION"; fi
@@ -132,6 +151,7 @@ sbcl --noinform --disable-debugger \
                             :slices \"$SLICES\"
                             :observe \"$OBSERVE\"
                             :negative-evidence $NEGATIVE
+                            :recognition $([[ "$RECOGNITION" == 1 ]] && echo t || echo nil)
                             :satplan \"$SATPLAN\")
                    (format *error-output* \"Wrote ~a (~d literal~:p, horizon ~d)~%\"
                            file n horizon))

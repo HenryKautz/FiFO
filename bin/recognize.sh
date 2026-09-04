@@ -34,6 +34,16 @@
 #                 Default: uniform.
 #   --out DIR     output directory (default: <problem-dir>/runs/recognize).
 #   --solver NAME override the SAT feasibility solver passed to planner.sh.
+#   --evidence-kind pddl|fifo  which evidence language the file is written in.
+#                 'pddl' (default) is the modal language -- (occur-in-order ...)
+#                 and friends, horizon-INDEPENDENT, which is what R&G assumes.
+#                 'fifo' is slice-pinned FiFO forms as SatPlan/evgen.sh --recognition
+#                 writes them; the file must hold a SINGLE form, since the
+#                 not-comply case is built by wrapping the whole file in (not ...).
+#                 Slice-pinned evidence is horizon-DEPENDENT: the horizon is
+#                 forced to at least the largest slice observed, and a fluent
+#                 observed at the final slice means "at the end" only at the
+#                 horizon it came from -- prefer --observe over action names.
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -58,7 +68,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 [[ $# -ge 3 ]] || usage
 
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
-HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""
+HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -66,10 +76,16 @@ while [[ $# -gt 0 ]]; do
     --priors)  PRIORS="$2"; shift 2;;
     --out)     OUT="$2"; shift 2;;
     --solver)  SOLVER="$2"; shift 2;;
+    --evidence-kind) EVKIND="$2"; shift 2;;
     -h|--help) usage 0;;
     *) echo "unexpected argument: $1" >&2; usage;;
   esac
 done
+case "$EVKIND" in
+  pddl) EV_FLAG="--pddl-evidence-file" ;;
+  fifo) EV_FLAG="--evidence-file" ;;
+  *) echo "--evidence-kind must be 'pddl' or 'fifo', got: $EVKIND" >&2; exit 2;;
+esac
 for f in "$DOMAIN" "$PROBLEM" "$EVIDENCE"; do
   [[ -f "$f" ]] || { echo "no such file: $f" >&2; exit 2; }
 done
@@ -109,10 +125,33 @@ mapfile -t HYPS < <(grep -oE '\(hyp[0-9]+\)' "$PROBLEM" | tr -d '()' | sort -u -
 N=${#HYPS[@]}
 [[ $N -ge 1 ]] || { echo "no hypotheses (hypI) found in $PROBLEM goal" >&2; exit 2; }
 
-# --- build the negated evidence file: (not <occur-in-order form>) -------------
+# --- build the negated evidence file: (not <the one evidence form>) ----------
+# Wrapping the file's whole contents only negates what it says if the file holds
+# exactly ONE form.  (not A B) is not an error downstream -- it is silently read
+# as (not A), so the second observation vanishes from the not-comply case while
+# the comply case still uses it, and the two costs stop being comparable.
+# Measured: (not A) and (not A B) both UNSAT where (not (A B)) costs 14.
+# evgen.sh --recognition 1 conjoins its literals for this reason.
+NFORMS=$(sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil) (n 0))
+    (with-open-file (i \"$EVIDENCE\")
+      (loop for f = (read i nil :eof) until (eq f :eof) do (incf n)))
+    (princ n))" 2>/dev/null | tr -dc '0-9')
+if [[ -n "$NFORMS" && "$NFORMS" != "1" ]]; then
+  echo "evidence file holds $NFORMS forms; it must hold exactly one." >&2
+  echo "  The not-comply case is (not <the evidence>), and (not A B) is not a formula." >&2
+  [[ "$EVKIND" == fifo ]] && echo "  Regenerate with: evgen.sh ... --recognition 1" >&2
+  exit 2
+fi
 NEG_EV="$OUT/evidence-negated.txt"
 { echo "(not"; grep -v '^[[:space:]]*;;' "$EVIDENCE"; echo ")"; } > "$NEG_EV"
-NOBS=$(grep -oE '\([a-zA-Z][^()]*\)' "$EVIDENCE" | wc -l | tr -d ' ')  # observed actions
+if [[ "$EVKIND" == fifo ]]; then
+  # observed literals, and the largest slice any of them names
+  NOBS=$(grep -oE '\((holds|occurs) ' "$EVIDENCE" | wc -l | tr -d ' ')
+  MAXSLICE=$(grep -oE '\) [0-9]+\)' "$EVIDENCE" | grep -oE '[0-9]+' | sort -n | tail -1)
+else
+  NOBS=$(grep -oE '\([a-zA-Z][^()]*\)' "$EVIDENCE" | wc -l | tr -d ' ')  # observed actions
+  MAXSLICE=""
+fi
 
 # --- rewrite the problem goal to a single hypothesis -------------------------
 single_goal_problem() {   # single_goal_problem <hyp> <out.pddl>
@@ -141,6 +180,12 @@ if [[ -z "$HORIZON" ]]; then
   done
   HORIZON="$H"
 fi
+# Slice-pinned evidence cannot be satisfied at a horizon shorter than the largest
+# slice it names: every c(O) would come back infinite and every posterior 0.
+if [[ -n "$MAXSLICE" && "$HORIZON" -lt "$MAXSLICE" ]]; then
+  echo "Raising horizon $HORIZON -> $MAXSLICE (the largest slice the evidence names)" >&2
+  HORIZON="$MAXSLICE"
+fi
 echo "Horizon H = $HORIZON (observations = $NOBS)" >&2
 
 # --- the two MaxSAT runs per hypothesis --------------------------------------
@@ -149,8 +194,8 @@ printf 'hyp\tc_O\tc_notO\tdelta\tlikelihood\tprior\tposterior\n' > "$SUM"
 CO=(); CN=()
 for i in "${!HYPS[@]}"; do
   hyp="${HYPS[$i]}"; p="$OUT/sg-$hyp.pddl"; single_goal_problem "$hyp" "$p"
-  run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" --pddl-evidence-file "$EVIDENCE" "${SOLVER_ARG[@]}"
-  run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" --pddl-evidence-file "$NEG_EV"   "${SOLVER_ARG[@]}"
+  run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" "${SOLVER_ARG[@]}"
+  run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$NEG_EV"   "${SOLVER_ARG[@]}"
   CO[$i]=$(cost_of "$OUT/$hyp-comply.log")
   CN[$i]=$(cost_of "$OUT/$hyp-notcomply.log")
   # drop this hypothesis's heavy intermediates once its costs are read

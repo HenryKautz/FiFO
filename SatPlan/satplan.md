@@ -484,7 +484,7 @@ The output is FiFO evidence forms, which is the syntax the `.answer` file alread
 (occurs (fly plane1 c2-air c1-air) 4)
 ```
 
-**Why not the PDDL modal evidence language.** `--pddl-evidence` (see [Conditioning on evidence and marginal inference](#conditioning-on-evidence-and-marginal-inference)) is the other channel, but it cannot express these observations: its `(at <slice> <action>)` takes an **action**, and `hold-during` takes a *range*, so nothing there pins a **fluent** to a single slice, and nothing expresses negative evidence. The two are complementary — `(occur-in-order …)` says *what* happened without saying *when*, and is therefore independent of the horizon, which is what R&G recognition wants; evgen's evidence says exactly when, which is a stronger and more brittle claim. `bin/recognize.sh` uses the `occur-in-order` form and does not read evgen files.
+**Why not the PDDL modal evidence language.** `--pddl-evidence` (see [Conditioning on evidence and marginal inference](#conditioning-on-evidence-and-marginal-inference)) is the other channel, but it cannot express these observations: its `(at <slice> <action>)` takes an **action**, and `hold-during` takes a *range*, so nothing there pins a **fluent** to a single slice, and nothing expresses negative evidence. The two are complementary — `(occur-in-order …)` says *what* happened without saying *when*, and is therefore independent of the horizon; evgen's evidence says exactly when, which is a stronger and more brittle claim.
 
 **Fluents and actions live on different slice ranges.** A plan with horizon *N* has fluents at slices 1…*N* but actions only at 1…*N*−1 (`slices` and `actslices` in [the axioms](#domain-independent-satplan-axioms)). So `--slices "N"` legitimately produces fluents and no actions. evgen says so in the file's header.
 
@@ -505,6 +505,24 @@ emits only `(occurs (fly …) s)` and `(holds (in …) s)`. A name matching no f
 ```
 
 Two warnings. First, this is not a "more evidence" knob — it asserts **complete observability**, that nothing you did not see happened. That pins the trajectory almost entirely, and in a recognition setting it will collapse the posterior rather than sharpen it. Second, the size: `--observe` restricts negatives too, and usually must. The ground universe is every fluent and every action, so on a *toy* 6-place, 3-package problem one slice alone carries 341 literals (45 fluents + 296 actions) against 8 true ones; over six slices that is ~1750, and a realistic instance reaches 10<sup>5</sup>. With `--observe "fly,in"` the same slice is 11 literals.
+
+**Driving `recognize.sh`.** `--recognition 1` makes the file usable by `bin/recognize.sh` — it writes the literals as **one** `(and …)` form instead of one per line. That single-form shape is the whole requirement: `recognize.sh` builds the does-not-comply case by wrapping the file's contents in `(not …)`, and `(not A B)` is not a formula. Then:
+
+```sh
+SatPlan/evgen.sh --problem sg.pddl --solution sg.answer --evidence ev.txt \
+                 --slices "1-2" --observe "recon,break-into" --recognition 1
+bin/recognize.sh domain.pddl problem.pddl ev.txt --evidence-kind fifo --horizon 6
+```
+
+Three restrictions come with it, and they are about the observation model, not the syntax.
+
+*Prefer action names.* An action observed at slice *s* means slice *s* at any horizon, but a **fluent at the final slice** means "at the end" only at the horizon it came from — at a longer horizon the same literal means "mid-plan". Since `recognize.sh` picks one horizon for all hypotheses, `--observe` over action names is the portable choice, and the closest analogue to `occur-in-order`.
+
+*The horizon has a floor.* Slice-pinned evidence cannot hold at a horizon shorter than the largest slice it names; every `c(O)` would come back infinite and every posterior 0. `recognize.sh` raises the horizon to that floor and says so.
+
+*No negative evidence.* `--recognition 1` refuses `--negative-evidence 1`. Complete observability pins the trajectory, so `c(O)` becomes the cost of that one trajectory — finite for the hypotheses that can produce it, infinite for the rest — and the posterior collapses to 0/1. Meanwhile the does-not-comply case becomes "at least one of thousands of literals differs", which almost any plan satisfies, so `c(¬O)` is just the unconstrained optimum for every hypothesis. A *graded* difference is the entire point of the recognizer.
+
+One thing you get for free: **evgen can never leak a hypothesis.** The `hypI` predicates are derived, and evgen emits from the `fluents` domain, which derived predicates are deliberately kept out of — so a hypothesis predicate cannot appear among the observations meant to infer it.
 
 **Everything emitted is checked**, against the problem's real ground universe — re-derived from the problem rather than read from the `.map` beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes. evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set.
 

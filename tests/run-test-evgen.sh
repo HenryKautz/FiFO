@@ -37,8 +37,10 @@ pass() { echo "PASS"; PASS=$((PASS+1)); }
 fail() { echo "FAIL ($1)"; FAIL=$((FAIL+1)); }
 pycheck() { python3 - "$@"; }
 
-ev()    { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" "$@" 2>/dev/null; }
-everr() { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" "$@" 2>&1 >/dev/null \
+# SRC is set below, after the fixture is solved; every case reads that snapshot
+# rather than the live <problem>.answer, which planner.sh overwrites.
+ev()    { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "$@" 2>/dev/null; }
+everr() { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "$@" 2>&1 >/dev/null \
             | grep -v 'STYLE-WARNING\|^;\|^$' | tr '\n' ' '; }
 
 # ---------------------------------------------------------------- fixture ---
@@ -59,8 +61,12 @@ if [[ ! -f "$ANSWER" ]]; then
   echo "=== summary: 0 passed, 0 failed (skipped) ==="
   exit 0
 fi
-HORIZON=$(grep -oE '\) [0-9]+\)$' "$ANSWER" | grep -oE '[0-9]+' | sort -n | tail -1)
-BASE_COST=$(grep -oE '\(\*OBJECTIVE\* [0-9]+\)' "$ANSWER" | grep -oE '[0-9]+')
+# planner.sh rewrites <problem>.answer on every run, and the binding cases below
+# run it WITH evidence -- so keep a pristine copy and generate from that, or a
+# later case silently observes an earlier case's conditioned plan.
+SRC="$TMP/pb-source.answer"; cp "$ANSWER" "$SRC"
+HORIZON=$(grep -oE '\) [0-9]+\)$' "$SRC" | grep -oE '[0-9]+' | sort -n | tail -1)
+BASE_COST=$(grep -oE '\(\*OBJECTIVE\* [0-9]+\)' "$SRC" | grep -oE '[0-9]+')
 
 echo "=== evgen.sh (fixture: horizon $HORIZON, cost $BASE_COST) ==="
 
@@ -68,7 +74,7 @@ echo "=== evgen.sh (fixture: horizon $HORIZON, cost $BASE_COST) ==="
 
 name "emits exactly the true literals at the requested slices"
 ev --evidence "$TMP/a.txt" --slices "1-3,5" >/dev/null
-if pycheck "$ANSWER" "$TMP/a.txt" <<'EOF'
+if pycheck "$SRC" "$TMP/a.txt" <<'EOF'
 import sys,re
 ans=open(sys.argv[1]).read(); ev=open(sys.argv[2]).read()
 want=set()
@@ -153,7 +159,7 @@ then pass; else fail "slice N-1 should carry actions"; fi
 
 name "--negative-evidence partitions the restricted universe exactly"
 ev --evidence "$TMP/n.txt" --slices "3" --observe "in,fly" --negative-evidence 1 >/dev/null
-if pycheck "$TMP/n.txt" "$ANSWER" <<'EOF'
+if pycheck "$TMP/n.txt" "$SRC" <<'EOF'
 import sys,re
 ev=open(sys.argv[1]).read(); ans=open(sys.argv[2]).read()
 pos={(k,t) for k,t,s in re.findall(r'^\((holds|occurs) (\([^)]*\)) (\d+)\)',ev,re.M)}
@@ -212,7 +218,8 @@ if [[ -z "$RT_BAD" ]]; then pass; else fail "did not replay: $RT_BAD"; fi
 # ------------------------------------------------------------ defaults -----
 
 name "--solution defaults to <problem>.answer"
-ev --evidence "$TMP/d.txt" --slices "2" >/dev/null
+bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" \
+     --evidence "$TMP/d.txt" --slices "2" >/dev/null 2>&1
 if grep -q ";;   --solution .*pb\.answer$" "$TMP/d.txt"; then pass
 else fail "default solution path wrong"; fi
 
@@ -247,6 +254,131 @@ BAD_COST="$(run_cost "$TMP/bad.txt")"
 if [[ -n "$BAD_COST" && "$BAD_COST" -gt "$BASE_COST" ]]; then pass
 else fail "shifted observation gave cost '$BAD_COST' vs base $BASE_COST"; fi
 
+# ---------------------------------------------------- recognition mode -----
+
+echo
+echo "=== --recognition (for bin/recognize.sh) ==="
+
+name "--recognition 1 emits exactly ONE form"
+ev --evidence "$TMP/r.txt" --slices "1-3" --observe "drive,fly,load" --recognition 1 >/dev/null
+NF=$(sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil) (n 0))
+       (with-open-file (i \"$TMP/r.txt\") (loop for f = (read i nil :eof) until (eq f :eof) do (incf n)))
+       (princ n))" 2>/dev/null | tr -dc '0-9')
+# one form is the whole requirement: recognize.sh negates the file by wrapping
+# its contents in (not ...), and (not A B) is not a formula
+if [[ "$NF" == "1" ]] && grep -q '^(and$' "$TMP/r.txt"; then pass
+else fail "$NF top-level form(s)"; fi
+
+name "the default is still one literal per line"
+ev --evidence "$TMP/rd.txt" --slices "1-3" --observe "drive,fly,load" >/dev/null
+NF=$(sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil) (n 0))
+       (with-open-file (i \"$TMP/rd.txt\") (loop for f = (read i nil :eof) until (eq f :eof) do (incf n)))
+       (princ n))" 2>/dev/null | tr -dc '0-9')
+if [[ "$NF" -gt 1 ]] && ! grep -q '^(and$' "$TMP/rd.txt"; then pass
+else fail "default mode changed shape ($NF forms)"; fi
+
+name "--recognition carries the same literals as the default"
+if pycheck "$TMP/r.txt" "$TMP/rd.txt" <<'EOF'
+import sys,re
+a=open(sys.argv[1]).read(); b=open(sys.argv[2]).read()
+lit=lambda t: sorted(re.findall(r'\((?:holds|occurs) \([^)]*\) \d+\)',t))
+assert lit(a)==lit(b) and lit(a), (len(lit(a)),len(lit(b)))
+EOF
+then pass; else fail "the two modes disagree on content"; fi
+
+name "--recognition never emits a derived predicate"
+# Free by construction: evgen emits from the FLUENTS domain, and derived
+# predicates are deliberately kept out of it -- so a hypI hypothesis predicate,
+# which is derived, can never leak into the observations it is meant to infer.
+if ! grep -qiE '\(holds \((hyp|clear-d|spells)' "$TMP/r.txt"; then pass
+else fail "a derived predicate reached the evidence"; fi
+
+name "--recognition 1 with --negative-evidence 1 is refused"
+if everr --evidence "$TMP/x.txt" --slices "2" --recognition 1 --negative-evidence 1 \
+   | grep -q "do not go together"; then pass
+else fail "should refuse complete observability in recognition mode"; fi
+
+name "--recognition 2 is refused"
+if everr --evidence "$TMP/x.txt" --slices "2" --recognition 2 | grep -q "must be 0 or 1"
+then pass; else fail "should reject a non-boolean"; fi
+
+name "the recognition header replays byte for byte"
+cp "$TMP/r.txt" "$TMP/r-orig.txt"
+eval "bash '$EVGEN' $(sed -n 's/^;;   //p' "$TMP/r.txt" | tr '\n' ' ')" 2>/dev/null
+if diff -q "$TMP/r-orig.txt" "$TMP/r.txt" >/dev/null; then pass
+else fail "did not replay"; fi
+
+name "recognize.sh's negation of it is a valid formula"
+# The mechanism, without the 3n planner runs a full recognize.sh does: comply
+# must reproduce the plan's cost, not-comply must differ.
+{ echo "(not"; grep -v '^[[:space:]]*;;' "$TMP/r.txt"; echo ")"; } > "$TMP/rneg.txt"
+CO="$(run_cost "$TMP/r.txt")"
+CN="$(run_cost "$TMP/rneg.txt")"
+if [[ "$CO" == "$BASE_COST" && -n "$CN" && "$CN" != "$CO" ]]; then pass
+else fail "c(O)=$CO (want $BASE_COST), c(notO)=$CN"; fi
+
+name "and the not-comply case is the more expensive one"
+# c(notO) > c(O) is what makes this hypothesis' likelihood exceed one half.
+if [[ "$CN" -gt "$CO" ]]; then pass
+else fail "c(notO)=$CN is not above c(O)=$CO"; fi
+
+# --------------------------------------------------- recognize.sh guards ---
+# The full pipeline is 3n planner runs, far too slow for a suite; these are the
+# fast guards that decide whether an evidence file is usable at all.
+
+echo
+echo "=== bin/recognize.sh, FiFO evidence ==="
+RECOGNIZE="$REPO/bin/recognize.sh"
+RPROB="$REPO/SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/problem.pddl"
+RDOM="$REPO/SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/intrusion-detection-costs.pddl"
+
+name "a multi-form evidence file is refused, with the fix named"
+# The not-comply case is (not <the file>), and (not A B) is not a formula.
+if bash "$RECOGNIZE" "$RDOM" "$RPROB" "$TMP/rd.txt" --evidence-kind fifo \
+     --out "$TMP/rg" 2>&1 >/dev/null | grep -q "must hold exactly one"; then pass
+else fail "accepted a file it cannot negate"; fi
+
+name "the refusal points at --recognition 1"
+if bash "$RECOGNIZE" "$RDOM" "$RPROB" "$TMP/rd.txt" --evidence-kind fifo \
+     --out "$TMP/rg" 2>&1 >/dev/null | grep -q -- "--recognition 1"; then pass
+else fail "the message does not say how to fix it"; fi
+
+# The guard must also NOT reject valid input.  A full run is 3n planner calls, so
+# start one and stop it as soon as it has passed the guard and settled a horizon.
+run_until_horizon() {   # run_until_horizon <log> <extra args>...
+  local log="$1"; shift
+  bash "$RECOGNIZE" "$RDOM" "$RPROB" "$TMP/r.txt" --evidence-kind fifo \
+       --out "$TMP/rg2" "$@" >"$log" 2>&1 &
+  local pid=$!
+  local i
+  for i in $(seq 1 120); do
+    grep -q "Horizon H =" "$log" 2>/dev/null && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+}
+
+name "a single-form file gets past that guard"
+run_until_horizon "$TMP/rg2.log" --horizon 6
+if grep -q "Horizon H =" "$TMP/rg2.log" \
+   && ! grep -q "must hold exactly one" "$TMP/rg2.log"; then pass
+else fail "rejected a single (and ...) form"; head -3 "$TMP/rg2.log" | sed 's/^/      | /'; fi
+
+name "the horizon is raised to the largest slice observed"
+# Slice-pinned evidence cannot hold at a shorter horizon: every c(O) would come
+# back infinite and every posterior 0.
+MAXOBS=$(grep -oE '\) [0-9]+\)' "$TMP/r.txt" | grep -oE '[0-9]+' | sort -n | tail -1)
+run_until_horizon "$TMP/rg3.log" --horizon 1
+if grep -q "Raising horizon 1 -> $MAXOBS" "$TMP/rg3.log" \
+   && grep -q "Horizon H = $MAXOBS" "$TMP/rg3.log"; then pass
+else fail "did not raise the horizon to $MAXOBS"; head -3 "$TMP/rg3.log" | sed 's/^/      | /'; fi
+
+name "an unknown --evidence-kind is refused"
+if bash "$RECOGNIZE" "$RDOM" "$RPROB" "$TMP/r.txt" --evidence-kind lisp \
+     --out "$TMP/rg" 2>&1 >/dev/null | grep -q "must be 'pddl' or 'fifo'"; then pass
+else fail "accepted an unknown evidence kind"; fi
+
 # --------------------------------------------------------------- errors ----
 
 err() { name "$1"; shift; local want="$1"; shift
@@ -271,8 +403,11 @@ err "--negative-evidence 2 is refused"  "must be 0 or 1" \
     --evidence "$TMP/x.txt" --slices "1-3" --negative-evidence 2
 err "an empty selection is refused, not written" "no observations selected" \
     --evidence "$TMP/x.txt" --slices "$HORIZON" --observe "fly"
-err "a missing solution file is reported" "solution file not found" \
-    --evidence "$TMP/x.txt" --slices "2" --solution "$TMP/nope.answer"
+name "a missing solution file is reported"
+if bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --evidence "$TMP/x.txt" \
+     --slices "2" --solution "$TMP/nope.answer" 2>&1 >/dev/null \
+   | grep -q "solution file not found"; then pass
+else fail "should report a missing solution"; fi
 err "an unknown flag is reported"       "unknown option" \
     --evidence "$TMP/x.txt" --slices "2" --bogus 1
 
@@ -283,7 +418,8 @@ if [[ ! -e "$TMP/x.txt" ]]; then pass; else fail "wrote a file despite erroring"
 
 name "an UNSAT solution file is refused"
 printf 'UNSAT\n' > "$TMP/unsat.answer"
-if everr --evidence "$TMP/x.txt" --slices "2" --solution "$TMP/unsat.answer" \
+if bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --evidence "$TMP/x.txt" \
+     --slices "2" --solution "$TMP/unsat.answer" 2>&1 >/dev/null \
    | grep -q "not SAT"; then pass; else fail "accepted a solution with no plan"; fi
 
 name "missing --evidence is reported"
