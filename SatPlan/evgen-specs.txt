@@ -1,0 +1,27 @@
+evgen.lisp and evgen.sh are used to create evidence files for plan
+recognition.  The arguments are:
+
+--problem FILENAME - the pddl problem instance file. Required
+--solution FILENAME - the solution file name. Default value is
+	inferred from the problem file name.
+--domain FILE - the pddl domain file. Default value is taken from the
+	problem file.
+--evidence FILE - the file where the evidence will be saved. required.
+--slices "string" required
+	a string specifying the slices that are observed.  It contains
+	integers, dashes, and commas.  For example,
+	"1-3,5" means that observations are from slices 1, 2, 3, and
+	5.
+--observe "string" default ""
+	a string restricting the observations to the names of actions
+	and fluents in the string, separated by commas. For example,
+	"fly,in" means observations are restricted to instances of the
+	action fly and the fluent in.  An empty string means no
+	restrictions, return all true fluents and actions for the time
+	slices.
+--negative-evidence <0 | 1> default 0
+	If 1, then all of the false fluents and actions for the time
+	slices are included in the evidence file.
+
+The evidence file should include comments specifying all the arguments
+used to create it.

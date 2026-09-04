@@ -17,6 +17,7 @@
 - [Example: a small logistics problem](#example-a-small-logistics-problem)
 - [Translating PDDL to FiFO with pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo)
 - [Generating problems with ppgen](#generating-problems-with-ppgen)
+- [Generating evidence with evgen](#generating-evidence-with-evgen)
 - [Learning and Inference](#learning-and-inference)
 - [References](#references)
 
@@ -462,6 +463,69 @@ bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl --maxslices 12
 ```
 
 The generator is `SatPlan/ppgen.lisp`; the shell script is a thin argument-parsing wrapper around `(ppgen:ppgen ...)`, which takes the same settings as keyword arguments and writes to a stream. Both live under `SatPlan/` rather than `lisp/` and `bin/`, since they are specific to this domain rather than part of the installable library. `tests/run-test-ppgen.sh` is the regression suite.
+
+### Generating evidence with evgen
+
+Plan recognition conditions a planning problem on *observations*. `SatPlan/evgen.sh` builds those observations from a plan you already have: give it a PDDL problem and the `.answer` file `planner.sh` wrote for it, name the time slices that were observed, and it writes the fluents and actions true at those slices as an evidence file.
+
+```sh
+bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl --maxslices 12
+SatPlan/evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-3,5"
+bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl \
+               --numslices 6 --evidence-file ev.txt
+```
+
+`--slices` takes integers and `A-B` ranges separated by commas. `--solution` defaults to `<problem>.answer`, and `--domain` to the `(:domain …)` the problem names, resolved as `<name>.pddl` beside it — the same rule [pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo) uses.
+
+The output is FiFO evidence forms, which is the syntax the `.answer` file already uses:
+
+```lisp
+(holds (at pkg1 c1-p2) 3)
+(occurs (fly plane1 c2-air c1-air) 4)
+```
+
+**Why not the PDDL modal evidence language.** `--pddl-evidence` (see [Conditioning on evidence and marginal inference](#conditioning-on-evidence-and-marginal-inference)) is the other channel, but it cannot express these observations: its `(at <slice> <action>)` takes an **action**, and `hold-during` takes a *range*, so nothing there pins a **fluent** to a single slice, and nothing expresses negative evidence. The two are complementary — `(occur-in-order …)` says *what* happened without saying *when*, and is therefore independent of the horizon, which is what R&G recognition wants; evgen's evidence says exactly when, which is a stronger and more brittle claim. `bin/recognize.sh` uses the `occur-in-order` form and does not read evgen files.
+
+**Fluents and actions live on different slice ranges.** A plan with horizon *N* has fluents at slices 1…*N* but actions only at 1…*N*−1 (`slices` and `actslices` in [the axioms](#domain-independent-satplan-axioms)). So `--slices "N"` legitimately produces fluents and no actions. evgen says so in the file's header.
+
+**Restricting what is observed.** `--observe` takes a comma-separated list of fluent and action names — a partially observable world where only some predicates are visible:
+
+```sh
+SatPlan/evgen.sh --problem pb.pddl --evidence ev.txt --slices "2-4" --observe "fly,in"
+```
+
+emits only `(occurs (fly …) s)` and `(holds (in …) s)`. A name matching no fluent or action in the problem is an **error**, not a silently smaller file — see below.
+
+**Negative evidence.** `--negative-evidence 1` additionally records `(not …)` for everything *false* at those slices:
+
+```lisp
+(holds (in pkg1 truck1) 4)
+(not (holds (in pkg1 truck2) 4))
+(not (holds (in pkg1 plane1) 4))
+```
+
+Two warnings. First, this is not a "more evidence" knob — it asserts **complete observability**, that nothing you did not see happened. That pins the trajectory almost entirely, and in a recognition setting it will collapse the posterior rather than sharpen it. Second, the size: `--observe` restricts negatives too, and usually must. The ground universe is every fluent and every action, so on a *toy* 6-place, 3-package problem one slice alone carries 341 literals (45 fluents + 296 actions) against 8 true ones; over six slices that is ~1750, and a realistic instance reaches 10<sup>5</sup>. With `--observe "fly,in"` the same slice is 11 literals.
+
+**Everything emitted is checked.** This matters more than it sounds, because slice-pinned evidence fails *silently* downstream: a slice past the horizon, or a misspelled predicate, is not an error — it becomes a fresh unconstrained atom, and the planner returns its **unconditioned** answer with no warning at all. So evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set, and it verifies every literal against the problem's real ground universe before writing. That universe is re-derived from the problem rather than read from the `.map` file beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes.
+
+Every generated file opens with the settings that made it, so it can be regenerated exactly:
+
+```
+;; Generated by evgen.sh -- edit the generator, not this file.
+;; Solution horizon: 6 slices (fluents 1-6, actions 1-5); 33 literals.
+;;
+;; Every setting used, defaults included; re-run with these to reproduce it:
+;;
+;;   --problem pb.pddl
+;;   --evidence ev.txt
+;;   --solution pb.answer
+;;   --domain clara-logistics.pddl
+;;   --slices 1-3,5
+;;   --observe ""
+;;   --negative-evidence 0
+```
+
+The generator is `SatPlan/evgen.lisp`; the shell script is a thin wrapper around `(evgen …)`, which takes the same settings as keyword arguments. `tests/run-test-evgen.sh` is the regression suite — behavioral, including the case that matters most: conditioning on the true observations reproduces the plan's cost, while shifting one observed action to a different slice costs more.
 
 ### Learning and Inference
 
