@@ -695,6 +695,17 @@ else
   echo "  (skipping: could not solve the recognition fixture)"
 fi
 
+  name "all three outputs can be written in one run"
+  # satplan.md says so; the counts differ legitimately, since obs.dat is
+  # actions-only while the other two carry fluents too.
+  rm -rf "$TMP/all3"
+  if bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-2" \
+       --evidence "$TMP/all3/ev.txt" --recognition 1 \
+       --export-dataset "$TMP/all3/ds" --export-constraints "$TMP/all3/xc" >/dev/null 2>&1 \
+     && [[ -s "$TMP/all3/ev.txt" && -s "$TMP/all3/ds/obs.dat" && -s "$TMP/all3/xc/problem.pddl" ]]
+  then pass; else fail "the three outputs do not combine"; fi
+
 name "it works on a plain problem, with no hypotheses needed"
 # Unlike --export-dataset, this needs no recognition instance.
 if ev --evidence "$TMP/ignore.txt" --slices "2" --export-constraints "$TMP/xp" >/dev/null 2>&1 \

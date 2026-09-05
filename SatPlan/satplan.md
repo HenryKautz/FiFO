@@ -475,6 +475,18 @@ bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl \
                --numslices 6 --evidence-file ev.txt
 ```
 
+It can write that in three shapes, and which you want depends on who reads it:
+
+| output | flag | for |
+|---|---|---|
+| **FiFO evidence** | `--evidence <file>` | `planner.sh --evidence-file`, `--marginals`, and — with `--recognition 1` — `bin/recognize.sh` |
+| **R&G dataset** | `--export-dataset <dir>` | any plan-recognition tool chain. `domain.pddl` + `template.pddl` + `hyps.dat` + `obs.dat`. Actions in order, **no times**; needs a recognition instance |
+| **PDDL constraints** | `--export-constraints <dir>` | a planner, directly. The problem with the observations in `(:constraints …)` at their **exact slices**; actions need the non-standard `occur-sometime` |
+
+They share `--slices`, `--observe` and the validation below, and can be combined
+in one run. The rest of this section takes them in that order.
+
+
 `--slices` takes integers and `A-B` ranges separated by commas. `--solution` defaults to `<problem>.answer`, and `--domain` to the `(:domain …)` the problem names, resolved as `<name>.pddl` beside it — the same rule [pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo) uses.
 
 The output is FiFO evidence forms, which is the syntax the `.answer` file already uses:
