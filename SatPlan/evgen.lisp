@@ -411,7 +411,8 @@ but a real PDDL parser does not, so that is put back too."
     (setf text (evgen--replace-all text ":parameters nil" ":parameters ()"))
     (with-open-file (out path :direction :output :if-exists :supersede
                               :if-does-not-exist :create)
-      (dolist (line header) (format out ";; ~a~%" line))
+      (dolist (line header)
+        (if (string= line "") (format out ";;~%") (format out ";; ~a~%" line)))
       (when header (terpri out))
       (write-string text out))))
 
@@ -681,16 +682,18 @@ observations as trajectory constraints.  Returns the constraint count."
 ;;; satisfy, and the exported problem could come back unsatisfiable.  That is a
 ;;; fidelity break rather than a footnote, so a tie is refused.
 
-(defun evgen--ordering-observations (requested horizon true actions)
-  "The observed actions as (action . slice), in slice order.  Errors on two at
-the same slice."
+(defun evgen--ordering-observations (requested horizon true actions strict)
+  "The observed actions as (action . slice), in slice order.  Under STRICT, two
+at the same slice are an error -- occur-in-order cannot represent simultaneity.
+occur-in-nonstrict-order can, so non-strict accepts them."
   (let ((obs (loop for s in requested
                    when (< s horizon)
                      nconc (loop for a in actions
                                  when (gethash (list :occurs a s) true)
                                    collect (cons a s)))))
-    (let ((dup (loop for (a . s) in obs
-                     when (> (count s obs :key #'cdr) 1) return s)))
+    (let ((dup (and strict
+                    (loop for (a . s) in obs
+                          when (> (count s obs :key #'cdr) 1) return s))))
       (when dup
         (error "slice ~d holds ~d observed actions, and occur-in-order needs ~
                 STRICTLY increasing slices.~%  ~
@@ -702,29 +705,42 @@ the same slice."
                 fewer action names (note it filters by NAME, so it cannot ~
                 separate two groundings of the same action) -- or use ~
                 --export-constraints, which pins each observation to its own ~
-                slice and handles parallel ones natively."
+                slice -- or --nonstrict-ordering 1, whose operator lets ~
+                observations share a slice."
                dup (count dup obs :key #'cdr))))
     obs))
 
-(defparameter *evgen-occur-in-order-note*
-  '("NOTE: (occur-in-order M N <action>+) is NOT part of PDDL 3.0.  Every"
-    "standard con-GD operator takes a STATE formula, so the standard has no way"
-    "to say that an action occurred, let alone that several occurred in order;"
-    "occur-in-order is a FiFO extension.  A planner must support it to read this"
-    "problem.  It asserts an order-preserving embedding: there are strictly"
-    "increasing slices in [M, N] at which the listed actions occur, in this"
-    "order, with anything else allowed in between.  N = -1 means no upper bound.")
-  "Always emitted -- unlike hold-during, there is no standard fallback here.")
+(defun evgen--ordering-note (strict)
+  "The portability comment.  Always emitted -- unlike hold-during, there is no
+standard fallback here at all."
+  (let ((op (if strict "occur-in-order" "occur-in-nonstrict-order")))
+    (append
+     (list (format nil "NOTE: (~a M N <action>+) is NOT part of PDDL 3.0.  Every" op)
+           "standard con-GD operator takes a STATE formula, so the standard has no"
+           "way to say that an action occurred, let alone that several occurred in"
+           (format nil "order.  ~a is a FiFO extension; a planner must" op)
+           "support it to read this problem."
+           ""
+           "It asserts an order-preserving embedding: the listed actions occur in")
+     (if strict
+         (list "this order, at STRICTLY increasing slices within [M, N], so no two"
+               "of them share a slice.  Anything else may happen in between.")
+         (list "this order, at NON-DECREASING slices within [M, N], so two of them"
+               "MAY share a slice -- which is what a parallel plan needs.  Two"
+               "ADJACENT identical actions still may not: an action either occurs"
+               "at a slice or it does not, so one occurrence cannot stand for two."))
+     (list "N = -1 means no upper bound."))))
 
 (defun evgen--ordering-readme (problem-path domain-path solution-path
-                               obs m n slices observe horizon)
+                               obs m n slices observe horizon strict)
   (append
    (list "# Observations as an ordering constraint"
          ""
-         (format nil "~d observed action~:p, as one (occur-in-order ~d ~d ...) ~
-                      constraint: their ORDER, and the span of the source plan ~
-                      they fell in, without pinning any of them to a slice."
-                 (length obs) m n)
+         (format nil "~d observed action~:p, as one (~a ~d ~d ...) constraint: ~
+                      their ORDER, and the span of the source plan they fell in, ~
+                      without pinning any of them to a slice."
+                 (length obs)
+                 (if strict "occur-in-order" "occur-in-nonstrict-order") m n)
          ""
          "| file | contents |"
          "|---|---|"
@@ -739,11 +755,18 @@ the same slice."
          ""
          "## What it does and does not say"
          ""
-         (format nil "The actions occur in the order listed, at strictly increasing~%~
+         (format nil "The actions occur in the order listed, at ~a~%~
                       slices somewhere in [~d, ~d].  It does NOT say which slice each~%~
                       one falls at, nor that they are consecutive -- anything may~%~
-                      happen in between.  Slices are the source plan's, 1 to ~d."
-                 m n horizon)
+                      happen in between.  Slices are the source plan's, 1 to ~d.~a"
+                 (if strict "strictly increasing" "non-decreasing")
+                 m n horizon
+                 (if strict
+                     ""
+                     (format nil "~%~%Two observations MAY share a slice, which is what a parallel~%~
+                                  plan needs.  Two ADJACENT identical actions still may not:~%~
+                                  an action either occurs at a slice or does not, so one~%~
+                                  occurrence cannot stand for two observations.")))
          ""
          "## Provenance"
          ""
@@ -755,17 +778,18 @@ the same slice."
          (format nil "slices    ~a" slices)
          (format nil "observe   ~a"
                  (if (string= (string-trim " " observe) "") "(all actions)" observe))
+         (format nil "ordering  ~a" (if strict "strict" "non-strict"))
          "```")))
 
 (defun evgen--export-ordering (dir problem-path domain-path solution-path
-                               requested horizon true actions slices observe)
+                               requested horizon true actions slices observe strict)
   "Write domain.pddl + problem.pddl into DIR, the problem carrying the
 observations as a single occur-in-order constraint.  Returns their count."
   (let* ((problem-def (let ((*read-eval* nil))
                         (with-open-file (in problem-path) (read in))))
          (domain-def (let ((*read-eval* nil))
                        (with-open-file (in domain-path) (read in))))
-         (obs (evgen--ordering-observations requested horizon true actions)))
+         (obs (evgen--ordering-observations requested horizon true actions strict)))
     (when (null obs)
       (error "no action observations selected: slices ~a~@[ restricted to ~a~] ~
               produced none.~%  An ordering constraint records ACTIONS; a fluent ~
@@ -773,28 +797,32 @@ observations as a single occur-in-order constraint.  Returns their count."
              slices (and (string/= (string-trim " " observe) "") observe)))
     (let* ((m (reduce #'min obs :key #'cdr))
            (n (reduce #'max obs :key #'cdr))
-           (form (list* 'occur-in-order m n (mapcar #'car obs))))
+           (form (list* (if strict 'occur-in-order 'occur-in-nonstrict-order)
+                        m n (mapcar #'car obs))))
       (ensure-directories-exist (merge-pathnames "x" dir))
       (evgen--write-pddl (merge-pathnames "domain.pddl" dir)
                          (evgen--add-requirement domain-def :constraints))
       (evgen--write-pddl (merge-pathnames "problem.pddl" dir)
                          (evgen--add-constraints problem-def (list form))
-                         *evgen-occur-in-order-note*)
+                         (evgen--ordering-note strict))
       (evgen--write-lines
        (merge-pathnames "README.md" dir)
        (evgen--ordering-readme problem-path domain-path solution-path
-                               obs m n slices observe horizon))
+                               obs m n slices observe horizon strict))
       (length obs))))
 
 (defun evgen (&key problem solution domain evidence slices (observe "")
                    (negative-evidence 0) (recognition nil) export-dataset
-                   export-constraints export-ordering (satplan "satplan.wff"))
+                   export-constraints export-ordering (nonstrict-ordering 0)
+                   (satplan "satplan.wff"))
   "Write an evidence file from a solved PDDL problem.  See the file header."
   (unless problem  (error "--problem is required: the PDDL problem instance"))
   (unless (or evidence export-dataset export-constraints export-ordering)
     (error "nothing to write: give --evidence <file>, --export-dataset <dir>, ~
             --export-constraints <dir>, --export-ordering-constraints <dir>, ~
             or several"))
+  (unless (member nonstrict-ordering '(0 1))
+    (error "--nonstrict-ordering must be 0 or 1, got ~a" nonstrict-ordering))
   (unless (member negative-evidence '(0 1))
     (error "--negative-evidence must be 0 or 1, got ~a" negative-evidence))
   ;; Complete observability pins the trajectory, so c(O) becomes the cost of that
@@ -881,9 +909,10 @@ observations as a single occur-in-order constraint.  Returns their count."
                     (let ((n (evgen--export-ordering export-ordering problem-path
                                (or domain (evgen--resolved-domain problem-path))
                                solution-path requested horizon true actions
-                               slices observe)))
-                      (format *error-output* "Wrote ~a (~d observation~:p, ordered)~%"
-                              export-ordering n)))
+                               slices observe (= nonstrict-ordering 0))))
+                      (format *error-output* "Wrote ~a (~d observation~:p, ~a order)~%"
+                              export-ordering n
+                              (if (= nonstrict-ordering 0) "strict" "non-strict"))))
                   (when export-constraints
                     (let ((n (evgen--export-constraints export-constraints problem-path
                                (or domain (evgen--resolved-domain problem-path))

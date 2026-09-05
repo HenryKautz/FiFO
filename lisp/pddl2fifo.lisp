@@ -713,6 +713,25 @@ so its fluents come via collect-goal-fluents."
 ;; further down, where check-observed-action and friends are.
 (declaim (ftype function translate-occur-in-order))
 
+(defun occur-in-order-operator-p (head)
+  "True for both ordered-observation operators.  They differ only in whether
+consecutive observations may share a slice."
+  (and (symbolp head)
+       (or (sym-name= head "OCCUR-IN-ORDER")
+           (sym-name= head "OCCUR-IN-NONSTRICT-ORDER"))))
+
+(defun occur-in-order-strict-p (head)
+  (sym-name= head "OCCUR-IN-ORDER"))
+
+(defun check-occur-in-order-context (c bindings context)
+  (when bindings
+    (error "~(~a~) takes ground actions only, so it cannot appear under forall; ~
+            got ~s under bindings ~s in ~a"
+           (first c) c (mapcar #'car bindings) context))
+  (unless *constraint-env*
+    (error "~(~a~) in ~a needs the problem context; this looks like an internal ~
+            error" (first c) context)))
+
 (defun translate-constraint (c bindings forbidden effect-preds context)
   "Translate one con-GD from the :constraints section into a FiFO formula over
 the slice timeline.  Supported: the modals always, at-end, hold-during, and
@@ -733,26 +752,20 @@ occur-sometime, combined with (and ...) and universal (forall ...)."
              (t2 (constraint-time-bound (third c) "second time bound" c)))
          `(exists s actslices (and (>= s ,t1) (<= s ,t2))
             (occurs ,(substitute-terms (fourth c) bindings context) s))))
-      ((and (consp c) (sym-name= (first c) "OCCUR-IN-ORDER"))
+      ((and (consp c) (occur-in-order-operator-p (first c)))
        ;; Ordered action observations, optionally confined to a slice window.
        ;; Ground actions only, so it cannot sit under a forall.
-       (when bindings
-         (error "occur-in-order takes ground actions only, so it cannot appear ~
-                 under forall; got ~s under bindings ~s in ~a"
-                c (mapcar #'car bindings) context))
-       (unless *constraint-env*
-         (error "occur-in-order in ~a needs the problem context; this looks like ~
-                 an internal error" context))
+       (check-occur-in-order-context c bindings context)
        (translate-occur-in-order (rest c) *constraint-env* effect-preds
+                                 :strict (occur-in-order-strict-p (first c))
                                  :context context))
       ((and (consp c) (sym-name= (first c) "NOT")
-            (consp (second c)) (sym-name= (first (second c)) "OCCUR-IN-ORDER"))
-       (when bindings
-         (error "occur-in-order takes ground actions only, so it cannot appear ~
-                 under forall; got ~s under bindings ~s in ~a"
-                c (mapcar #'car bindings) context))
+            (consp (second c)) (occur-in-order-operator-p (first (second c))))
+       (check-occur-in-order-context (second c) bindings context)
        (translate-occur-in-order (rest (second c)) *constraint-env* effect-preds
-                                 :negate t :context context))
+                                 :negate t
+                                 :strict (occur-in-order-strict-p (first (second c)))
+                                 :context context))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all
          (parse-quantifier-pairs (second c) context)
@@ -767,7 +780,7 @@ occur-sometime, combined with (and ...) and universal (forall ...)."
               c context))
       (t (error "Unsupported trajectory constraint ~s in ~a~@
                  (supported: always, at-end, hold-during, occur-sometime, ~
-                  occur-in-order, combined with and / forall)" c context)))))
+                  occur-in-order, occur-in-nonstrict-order, occur-in-nonstrict-order, combined with and / forall)" c context)))))
 
 ;;; PDDL-syntax evidence (planner --pddl-evidence / --pddl-evidence-file).  The
 ;;; same modal language as :constraints, but the translated formulas are NOT
@@ -870,7 +883,8 @@ N = -1 means unbounded above.  Returns (values inside outside)."
       (values `(and (>= s ,m) (<= s ,n))
               (if (= m 1) `(> s ,n) `(or (< s ,m) (> s ,n))))))
 
-(defun translate-occur-in-order (args env effect-preds &key negate (context "occur-in-order"))
+(defun translate-occur-in-order (args env effect-preds
+                                 &key negate (strict t) (context "occur-in-order"))
   "Translate (occur-in-order [M [N]] a1 ... ak) into the monitor-fluent FiFO
 formula described in the section comment above.  Observation indices are
 unrolled to literal integers; only the slice variable s stays symbolic.
@@ -899,21 +913,57 @@ count-neutral."
         `(and
            ;; Slice 1: nothing has been observed yet.
            ,@(loop for i from 1 to k collect `(not (ObsDone ,chain ,i 1)))
-           ;; Inside the window: the first i observations are explained by slice
-           ;; s+1 iff they were explained by s, or the first i-1 were and a_i
-           ;; occurs at s.
-           ,@(loop for i from 1 to k
-                   for a in actions
-                   collect `(all s actslices ,inside
-                              (equiv (ObsDone ,chain ,i (+ s 1))
-                                     (or (ObsDone ,chain ,i s)
-                                         ,(if (= i 1)
-                                              `(occurs ,a s)
-                                              `(and (ObsDone ,chain ,(1- i) s)
-                                                    (occurs ,a s)))))))
+           ,@(if strict
+                 ;; STRICT.  Inside the window, the first i observations are
+                 ;; explained by slice s+1 iff they were explained by s, or the
+                 ;; first i-1 were and a_i occurs at s.  Since "explained by s"
+                 ;; means "by actions BEFORE s", a_i lands strictly after a_i-1.
+                 (loop for i from 1 to k
+                       for a in actions
+                       collect `(all s actslices ,inside
+                                  (equiv (ObsDone ,chain ,i (+ s 1))
+                                         (or (ObsDone ,chain ,i s)
+                                             ,(if (= i 1)
+                                                  `(occurs ,a s)
+                                                  `(and (ObsDone ,chain ,(1- i) s)
+                                                        (occurs ,a s)))))))
+                 ;; NON-STRICT.  A second family closes over the current slice:
+                 ;; (ObsAt c i s) is "the first i are explained by actions up to
+                 ;; and INCLUDING s", so a_i may share a slice with a_i-1.  The
+                 ;; within-slice recursion is on i, which is unrolled to literal
+                 ;; integers here, so the emitted clauses are acyclic.
+                 (append
+                  (loop for i from 1 to k
+                        for a in actions
+                        for prev = (and (> i 1) (nth (- i 2) actions))   ; a_i-1, NIL at i=1
+                        collect `(all s actslices ,inside
+                                   (equiv (ObsAt ,chain ,i s)
+                                          (or (ObsDone ,chain ,i s)
+                                              ,(cond
+                                                 ((= i 1) `(occurs ,a s))
+                                                 ;; Occurs is boolean per
+                                                 ;; (action, slice) -- there is no
+                                                 ;; "twice at s" -- so two ADJACENT
+                                                 ;; identical observations must not
+                                                 ;; share a slice, or one occurrence
+                                                 ;; would satisfy both.  Force
+                                                 ;; strictness for that pair only.
+                                                 ((equal a prev)
+                                                  `(and (ObsDone ,chain ,(1- i) s)
+                                                        (occurs ,a s)))
+                                                 (t
+                                                  `(and (ObsAt ,chain ,(1- i) s)
+                                                        (occurs ,a s))))))))
+                  ;; carry the within-slice result into the next slice
+                  (loop for i from 1 to k
+                        collect `(all s actslices ,inside
+                                   (equiv (ObsDone ,chain ,i (+ s 1))
+                                          (ObsAt ,chain ,i s))))))
            ;; Outside it: the chain cannot advance.  Omitted entirely when the
            ;; window is the whole timeline, so the unwindowed encoding is
-           ;; unchanged.
+           ;; unchanged.  ObsAt is both defined and used only under <inside>, so
+           ;; no orphan atom is ever created outside the window -- one would be
+           ;; free, and a free atom doubles the weighted model count.
            ,@(when outside
                (loop for i from 1 to k
                      collect `(all s actslices ,outside
@@ -943,22 +993,24 @@ actions."
       ((and (consp c) (sym-name= (first c) "AT"))
        `(occurs ,(substitute-terms (third c) bindings context)
                 ,(constraint-time-bound (second c) "slice" c)))
-      ((and (consp c) (sym-name= (first c) "OCCUR-IN-ORDER"))
+      ((and (consp c) (occur-in-order-operator-p (first c)))
        (when bindings
-         (error "occur-in-order evidence must be at the top level, not under ~
+         (error "~(~a~) evidence must be at the top level, not under ~
                  forall: it takes ground actions only, got ~s under bindings ~s"
-                c (mapcar #'car bindings)))
+                (first c) c (mapcar #'car bindings)))
        (translate-occur-in-order (rest c) env effect-preds
+                                 :strict (occur-in-order-strict-p (first c))
                                  :context "PDDL evidence"))
       ;; (not (occur-in-order ...)) -- the observations are NOT embedded in order
       ;; (R&G's c(G,not-O) / does-not-comply case).
       ((and (consp c) (sym-name= (first c) "NOT")
-            (consp (second c)) (sym-name= (first (second c)) "OCCUR-IN-ORDER"))
+            (consp (second c)) (occur-in-order-operator-p (first (second c))))
        (when bindings
-         (error "occur-in-order evidence must be at the top level, not under ~
+         (error "~(~a~) evidence must be at the top level, not under ~
                  forall: it takes ground actions only, got ~s under bindings ~s"
-                c (mapcar #'car bindings)))
+                (first (second c)) c (mapcar #'car bindings)))
        (translate-occur-in-order (rest (second c)) env effect-preds :negate t
+                                 :strict (occur-in-order-strict-p (first (second c)))
                                  :context "PDDL evidence"))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all

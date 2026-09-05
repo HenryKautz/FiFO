@@ -487,6 +487,55 @@ open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])"
      && "$(ev3 "(occur-in-order 1 5 $A $C)")" == "cost 16" \
      && "$(ev3 "(occur-in-order 3 -1 $A $C)")" == "UNSATISFIABLE" ]]; then pass
   else fail "the windowed form should work in evidence too"; fi
+
+  # --- occur-in-nonstrict-order: observations may share a slice ------------
+  # The plan does A and B in PARALLEL at slice 1.  Strict ordering forces them
+  # apart, claiming an order the plan never asserted; non-strict does not.
+  PA='(load pkg2 truck1 c1-air)'; PB='(load pkg3 truck2 c2-p1)'
+
+  printf '  %-52s ... ' "strict ordering serializes parallel observations"
+  if [[ "$(cio "(and (occur-in-order $PA $PB))")" == "cost 17" ]]; then pass
+  else fail "expected the +1 of serializing what the plan did at once"; fi
+
+  printf '  %-52s ... ' "non-strict lets them stay in the same slice"
+  if [[ "$(cio "(and (occur-in-nonstrict-order $PA $PB))")" == "cost 16" ]]; then pass
+  else fail "non-strict should cost what the unconstrained plan does"; fi
+
+  printf '  %-52s ... ' "and the plan really does keep them together"
+  mkprob "$CDIR/ns.pddl" "(and (occur-in-nonstrict-order $PA $PB))"
+  WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/ns.pddl" \
+    --domain "$CDIR/dom.pddl" --numslices 6 >/dev/null 2>&1
+  # NOTE the sed: the action names carry digits of their own (PKG2, TRUCK1,
+  # C1-AIR), so only the trailing slice number may be taken.
+  SA=$(grep -oE '\(OCCURS \(LOAD PKG2 TRUCK1 C1-AIR\) [0-9]+\)' "$CDIR/ns.answer" \
+       | sed 's/.*) \([0-9]*\))/\1/')
+  SB=$(grep -oE '\(OCCURS \(LOAD PKG3 TRUCK2 C2-P1\) [0-9]+\)' "$CDIR/ns.answer" \
+       | sed 's/.*) \([0-9]*\))/\1/')
+  if [[ -n "$SA" && "$SA" == "$SB" ]]; then pass
+  else fail "landed at slices $SA and $SB, so nothing was gained"; fi
+
+  printf '  %-52s ... ' "two identical observations still need two occurrences"
+  # Occurs is boolean per (action, slice) -- there is no "twice at s" -- so one
+  # occurrence must not satisfy two adjacent identical observations.  Without
+  # the adjacent-duplicate rule the single load at slice 1 would satisfy both.
+  if [[ "$(cio "(and (occur-in-nonstrict-order $PA $PA))")" == "UNSATISFIABLE" ]]; then pass
+  else fail "one occurrence satisfied two observations"; fi
+
+  printf '  %-52s ... ' "one observation of it is of course fine"
+  if [[ "$(cio "(and (occur-in-nonstrict-order $PA))")" == "cost 16" ]]; then pass
+  else fail "a single non-strict observation should not constrain"; fi
+
+  printf '  %-52s ... ' "non-strict takes the same window and negation"
+  NSW="$(cio "(and (occur-in-nonstrict-order 1 5 $PA $PB))")"
+  NSL="$(cio "(and (occur-in-nonstrict-order 3 -1 $PA $PB))")"
+  NSN="$(cio "(and (not (occur-in-nonstrict-order 1 5 $PA $PB)))")"
+  if [[ "$NSW" == "cost 16" && "$NSL" == "UNSATISFIABLE" && "$NSN" != "cost 16" ]]; then pass
+  else fail "window=$NSW late=$NSL negated=$NSN"; fi
+
+  printf '  %-52s ... ' "it works as --pddl-evidence too"
+  if [[ "$(ev3 "(occur-in-nonstrict-order $PA $PB)")" == "cost 16" \
+     && "$(ev3 "(occur-in-order $PA $PB)")" == "cost 17" ]]; then pass
+  else fail "the two orderings should differ in evidence as in constraints"; fi
 else
   echo "  (skipping: no MaxSAT solver)"
 fi

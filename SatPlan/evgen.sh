@@ -87,6 +87,14 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           no ordering form -- and two observed at the SAME slice
                           are refused, since occur-in-order needs strictly
                           increasing slices and FiFO's are parallel
+  --nonstrict-ordering <0|1>
+                          with --export-ordering-constraints, emit
+                          (occur-in-nonstrict-order ...) instead, whose
+                          observations may SHARE a slice.  Default 0 (strict).
+                          Non-strict is what a parallel plan needs: strict
+                          ordering forces simultaneous observations onto
+                          different slices, claiming an order the plan never
+                          asserted, which is why strict refuses a tie
   --help, -h              this message
 
 examples:
@@ -107,7 +115,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
-RECOGNITION="0" EXPORT_DIR="" CONS_DIR="" ORD_DIR=""
+RECOGNITION="0" EXPORT_DIR="" CONS_DIR="" ORD_DIR="" NONSTRICT="0"
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -125,6 +133,7 @@ while [[ $# -gt 0 ]]; do
     --export-dataset)    need "$@"; EXPORT_DIR="$2"; shift 2 ;;
     --export-constraints) need "$@"; CONS_DIR="$2"; shift 2 ;;
     --export-ordering-constraints) need "$@"; ORD_DIR="$2"; shift 2 ;;
+    --nonstrict-ordering) need "$@"; NONSTRICT="$2"; shift 2 ;;
     -h|--help)           print_usage; exit 0 ;;
     *)                   die "unknown option '$1' (try --help)" ;;
   esac
@@ -140,6 +149,9 @@ if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
 fi
 if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
   die "--recognition must be 0 or 1, got '$RECOGNITION'"
+fi
+if [[ "$NONSTRICT" != "0" && "$NONSTRICT" != "1" ]]; then
+  die "--nonstrict-ordering must be 0 or 1, got '$NONSTRICT'"
 fi
 if [[ -n "$ORD_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-ordering-constraints and --negative-evidence 1 do not go together: an ordering constraint records only what did happen"
@@ -211,6 +223,7 @@ sbcl --noinform --disable-debugger \
                             :export-dataset $(lisp_string "$EXPORT_DIR")
                             :export-constraints $(lisp_string "$CONS_DIR")
                             :export-ordering $(lisp_string "$ORD_DIR")
+                            :nonstrict-ordering $NONSTRICT
                             :slices \"$SLICES\"
                             :observe \"$OBSERVE\"
                             :negative-evidence $NEGATIVE

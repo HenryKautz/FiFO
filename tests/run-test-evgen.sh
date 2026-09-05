@@ -40,6 +40,10 @@ pycheck() { python3 - "$@"; }
 
 # SRC is set below, after the fixture is solved; every case reads that snapshot
 # rather than the live <problem>.answer, which planner.sh overwrites.
+# note_text <file> : the leading ;; comment block, flattened to one line, so an
+# assertion on its prose does not break when the wrapping changes.
+note_text() { sed -n 's/^;;[[:space:]]*//p' "$1" | tr '\n' ' ' | tr -s ' '; }
+
 ev()    { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "$@" 2>/dev/null; }
 everr() { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "$@" 2>&1 >/dev/null \
             | grep -v 'STYLE-WARNING\|^;\|^$' | tr '\n' ' '; }
@@ -659,9 +663,10 @@ EOF
   else fail "requirements wrong"; fi
 
   name "an action observation carries the occur-sometime caveat"
+  XC_TXT="$(note_text "$XC/problem.pddl")"
   if grep -q 'occur-sometime' "$XC/problem.pddl" \
-     && head -6 "$XC/problem.pddl" | grep -q 'NOT part of' \
-     && grep -q 'must support it' "$XC/problem.pddl"; then pass
+     && echo "$XC_TXT" | grep -q 'NOT part of PDDL 3.0' \
+     && echo "$XC_TXT" | grep -q 'must support it'; then pass
   else fail "no portability note beside the non-standard operator"; fi
 
   name "a fluents-only export is standard PDDL 3.0, with no caveat"
@@ -720,6 +725,9 @@ echo
 echo "=== --export-ordering-constraints ==="
 XO="$TMP/xo"
 
+RHORIZON=$(grep -oE '\) [0-9]+\)$' "$TMP/sg.answer" | grep -oE '[0-9]+' | sort -n | tail -1)
+RCOST=$(grep -oE '\(\*OBJECTIVE\* [0-9]+\)' "$TMP/sg.answer" | grep -oE '[0-9]+')
+
 name "refuses two observations in the same slice"
 # occur-in-order needs strictly increasing slices and FiFO's are parallel, so a
 # tie cannot be written as a sequence without claiming more than the plan does.
@@ -769,9 +777,11 @@ then pass; else fail "narrowing the window changed nothing (cost $BCOST)"; fi
 
 name "the occur-in-order caveat is always present"
 # Unlike hold-during there is no standard fallback, so the note is unconditional.
-if head -8 "$XO/problem.pddl" | grep -q "NOT part of" \
-   && grep -q "must support it" "$XO/problem.pddl" \
-   && grep -q "order-preserving embedding" "$XO/problem.pddl" \
+NOTE_TXT="$(note_text "$XO/problem.pddl")"
+if echo "$NOTE_TXT" | grep -q "NOT part of PDDL 3.0" \
+   && echo "$NOTE_TXT" | grep -q "planner must support it" \
+   && echo "$NOTE_TXT" | grep -q "order-preserving embedding" \
+   && echo "$NOTE_TXT" | grep -q "STRICTLY increasing" \
    && grep -q "strictly increasing" "$XO/README.md" \
    && grep -q "does NOT say which slice" "$XO/README.md"; then pass
 else fail "no portability note"; fi
@@ -784,6 +794,48 @@ name "--negative-evidence 1 is refused"
 if everr --slices "3,4" --observe "load,fly" --negative-evidence 1 \
          --export-ordering-constraints "$TMP/xon" | grep -q "only what did happen"
 then pass; else fail "should refuse negative evidence"; fi
+
+name "--nonstrict-ordering 1 accepts a tie strict refuses"
+  # The whole point: on a parallel plan, strict cannot export at all.
+  rm -rf "$TMP/xns"
+  if bash "$EVGEN" --problem "$TMP/problem.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" \
+       --export-ordering-constraints "$TMP/xns" --nonstrict-ordering 1 >/dev/null 2>&1 \
+     && grep -q 'occur-in-nonstrict-order' "$TMP/xns/problem.pddl"; then pass
+  else fail "non-strict should export the parallel observations"; fi
+
+  name "the non-strict export solves at the source plan's cost"
+  NSCOST=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$TMP/xns/problem.pddl" \
+             --domain "$TMP/xns/domain.pddl" --numslices "$RHORIZON" 2>&1 \
+           | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+  if [[ -n "$NSCOST" && "$NSCOST" == "$RCOST" ]]; then pass
+  else fail "non-strict cost '$NSCOST' vs source '$RCOST'"; fi
+
+  name "the same observations under STRICT are unsatisfiable"
+  # 6 observations cannot be serialized into the source plan's horizon, which is
+  # exactly why strict refuses to export them.
+  sed 's/occur-in-nonstrict-order/occur-in-order/' "$TMP/xns/problem.pddl" > "$TMP/xns/st.pddl"
+  if WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$TMP/xns/st.pddl" \
+       --domain "$TMP/xns/domain.pddl" --numslices "$RHORIZON" 2>&1 | grep -qi unsatisfiable
+  then pass; else fail "strict should not fit 6 observations in $RHORIZON slices"; fi
+
+  name "the non-strict caveat names the right operator"
+  NS_TXT="$(note_text "$TMP/xns/problem.pddl")"
+  if echo "$NS_TXT" | grep -q "occur-in-nonstrict-order" \
+     && echo "$NS_TXT" | grep -q "NON-DECREASING" \
+     && echo "$NS_TXT" | grep -q "ADJACENT identical actions still may not" \
+     && grep -q "MAY share a slice" "$TMP/xns/README.md"; then pass
+  else fail "portability note not adapted"; fi
+
+  name "the strict refusal points at --nonstrict-ordering"
+  if everr --slices "1-3" --export-ordering-constraints "$TMP/xr" \
+     | grep -q -- "--nonstrict-ordering 1"; then pass
+  else fail "the message should offer the operator that can express a tie"; fi
+
+  name "--nonstrict-ordering 2 is refused"
+  if everr --slices "3,4" --observe "load,fly" --nonstrict-ordering 2 \
+           --export-ordering-constraints "$TMP/xr2" | grep -q "must be 0 or 1"
+  then pass; else fail "should reject a non-boolean"; fi
 
 name "a fluents-only selection is refused"
 if everr --slices "3" --observe "at" --export-ordering-constraints "$TMP/xof" \
