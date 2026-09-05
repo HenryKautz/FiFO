@@ -712,6 +712,84 @@ if ev --evidence "$TMP/ignore.txt" --slices "2" --export-constraints "$TMP/xp" >
    && grep -q '(:constraints' "$TMP/xp/problem.pddl"; then pass
 else fail "should export any solved problem"; fi
 
+# --------------------------------------- ordering-constraints export -------
+# One (occur-in-order M N a1 ... ak) constraint: the observations' ORDER and the
+# span they fell in, without pinning any of them to a slice.
+
+echo
+echo "=== --export-ordering-constraints ==="
+XO="$TMP/xo"
+
+name "refuses two observations in the same slice"
+# occur-in-order needs strictly increasing slices and FiFO's are parallel, so a
+# tie cannot be written as a sequence without claiming more than the plan does.
+if everr --slices "1-3" --export-ordering-constraints "$XO" \
+   | grep -q "STRICTLY increasing slices"; then pass
+else fail "a same-slice tie should be refused, not flattened"; fi
+
+name "the refusal names the slice and the ways out"
+OUT="$(everr --slices "1-3" --export-ordering-constraints "$XO")"
+if echo "$OUT" | grep -q "slice 1 holds" \
+   && echo "$OUT" | grep -q -- "--export-constraints" \
+   && echo "$OUT" | grep -q "filters by NAME"; then pass
+else fail "message unhelpful: $OUT"; fi
+
+name "exports one constraint spanning first to last observed slice"
+# slices 3 and 4 each hold exactly one load/fly observation
+ev --slices "3,4" --observe "load,fly" --export-ordering-constraints "$XO" >/dev/null 2>&1
+if pycheck "$SRC" "$XO/problem.pddl" <<'EOF'
+import sys,re
+ans=open(sys.argv[1]).read(); prob=open(sys.argv[2]).read()
+m=re.search(r'\(occur-in-order (\d+) (-?\d+)((?:\s*\([^)]*\))+)\)',prob,re.S)
+assert m, "no occur-in-order constraint emitted"
+lo,hi=int(m.group(1)),int(m.group(2))
+acts=[a.strip().lower() for a in re.findall(r'\([^()]*\)',m.group(3))]
+want=[(int(s),t.lower()) for t,s in re.findall(r'\(OCCURS (\([^)]*\)) (\d+)\)',ans)
+      if int(s) in (3,4) and t.split()[0].lstrip('(').lower() in ('load','fly')]
+want.sort()
+assert lo==min(s for s,_ in want) and hi==max(s for s,_ in want), (lo,hi,want)
+assert acts==[t for _,t in want], (acts,want)
+EOF
+then pass; else fail "constraint wrong"; fi
+
+name "the exported problem solves at the source plan's cost"
+OCOST=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$XO/problem.pddl" \
+          --domain "$XO/domain.pddl" --numslices "$HORIZON" 2>&1 \
+        | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+if [[ -n "$OCOST" && "$OCOST" == "$BASE_COST" ]]; then pass
+else fail "exported cost '$OCOST' vs source '$BASE_COST'"; fi
+
+name "and it BINDS: a window excluding an observation breaks it"
+sed 's/(occur-in-order 3 4 /(occur-in-order 1 3 /' "$XO/problem.pddl" > "$XO/bad.pddl"
+BOUT=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$XO/bad.pddl" \
+         --domain "$XO/domain.pddl" --numslices "$HORIZON" 2>&1)
+BCOST=$(echo "$BOUT" | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+if echo "$BOUT" | grep -qi unsatisfiable || [[ -n "$BCOST" && "$BCOST" -gt "$BASE_COST" ]]
+then pass; else fail "narrowing the window changed nothing (cost $BCOST)"; fi
+
+name "the occur-in-order caveat is always present"
+# Unlike hold-during there is no standard fallback, so the note is unconditional.
+if head -8 "$XO/problem.pddl" | grep -q "NOT part of" \
+   && grep -q "must support it" "$XO/problem.pddl" \
+   && grep -q "order-preserving embedding" "$XO/problem.pddl" \
+   && grep -q "strictly increasing" "$XO/README.md" \
+   && grep -q "does NOT say which slice" "$XO/README.md"; then pass
+else fail "no portability note"; fi
+
+name ":constraints is added to the domain's requirements"
+if grep -q ':constraints' "$XO/domain.pddl"; then pass
+else fail "requirement missing"; fi
+
+name "--negative-evidence 1 is refused"
+if everr --slices "3,4" --observe "load,fly" --negative-evidence 1 \
+         --export-ordering-constraints "$TMP/xon" | grep -q "only what did happen"
+then pass; else fail "should refuse negative evidence"; fi
+
+name "a fluents-only selection is refused"
+if everr --slices "3" --observe "at" --export-ordering-constraints "$TMP/xof" \
+   | grep -q "no ordering form"; then pass
+else fail "a fluent has no ordering form; should say so"; fi
+
 # --------------------------------------------------------------- errors ----
 
 err() { name "$1"; shift; local want="$1"; shift

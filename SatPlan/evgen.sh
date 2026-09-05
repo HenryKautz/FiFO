@@ -79,6 +79,14 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           domain.pddl, problem.pddl and a README.
                           --negative-evidence 1 is refused: there is no
                           constraint form for "this action did not occur"
+  --export-ordering-constraints <dir>
+                          ALSO write the problem with the observations as ONE
+                          (occur-in-order M N a1 ... ak) constraint: their order
+                          and the span of the plan they fell in, without pinning
+                          any of them to a slice.  ACTIONS only -- a fluent has
+                          no ordering form -- and two observed at the SAME slice
+                          are refused, since occur-in-order needs strictly
+                          increasing slices and FiFO's are parallel
   --help, -h              this message
 
 examples:
@@ -99,7 +107,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
-RECOGNITION="0" EXPORT_DIR="" CONS_DIR=""
+RECOGNITION="0" EXPORT_DIR="" CONS_DIR="" ORD_DIR=""
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -116,14 +124,15 @@ while [[ $# -gt 0 ]]; do
     --recognition)       need "$@"; RECOGNITION="$2"; shift 2 ;;
     --export-dataset)    need "$@"; EXPORT_DIR="$2"; shift 2 ;;
     --export-constraints) need "$@"; CONS_DIR="$2"; shift 2 ;;
+    --export-ordering-constraints) need "$@"; ORD_DIR="$2"; shift 2 ;;
     -h|--help)           print_usage; exit 0 ;;
     *)                   die "unknown option '$1' (try --help)" ;;
   esac
 done
 
 [[ -n "$PROBLEM"  ]] || { print_usage >&2; exit 2; }
-if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" ]]; then
-  die "nothing to write: give --evidence <file>, --export-dataset <dir>, --export-constraints <dir>, or several"
+if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" && -z "$ORD_DIR" ]]; then
+  die "nothing to write: give --evidence <file>, --export-dataset <dir>, --export-constraints <dir>, --export-ordering-constraints <dir>, or several"
 fi
 [[ -n "$SLICES"   ]] || die "--slices is required, e.g. --slices \"1-3,5\""
 if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
@@ -131,6 +140,9 @@ if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
 fi
 if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
   die "--recognition must be 0 or 1, got '$RECOGNITION'"
+fi
+if [[ -n "$ORD_DIR" && "$NEGATIVE" == "1" ]]; then
+  die "--export-ordering-constraints and --negative-evidence 1 do not go together: an ordering constraint records only what did happen"
 fi
 if [[ -n "$CONS_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-constraints and --negative-evidence 1 do not go together: PDDL has no trajectory constraint saying an action did NOT occur"
@@ -177,6 +189,10 @@ if [[ -n "$CONS_DIR" ]]; then
   mkdir -p "$CONS_DIR"
   CONS_DIR="$(cd "$CONS_DIR" && pwd -P)/"
 fi
+if [[ -n "$ORD_DIR" ]]; then
+  mkdir -p "$ORD_DIR"
+  ORD_DIR="$(cd "$ORD_DIR" && pwd -P)/"
+fi
 
 # Lisp string literals for the optional arguments; NIL when not given, so the
 # generator applies its own default.
@@ -194,6 +210,7 @@ sbcl --noinform --disable-debugger \
                             :evidence $(lisp_string "$EVIDENCE")
                             :export-dataset $(lisp_string "$EXPORT_DIR")
                             :export-constraints $(lisp_string "$CONS_DIR")
+                            :export-ordering $(lisp_string "$ORD_DIR")
                             :slices \"$SLICES\"
                             :observe \"$OBSERVE\"
                             :negative-evidence $NEGATIVE

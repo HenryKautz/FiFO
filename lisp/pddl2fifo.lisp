@@ -64,6 +64,13 @@
     "CONSTRAINT-FLUENTS" "PREF-FLUENTS" "FLUENTCOST-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
+(defvar *constraint-env* nil
+  "Problem context -- (:domain-def :object-pairs :type-table :static-init) --
+bound while the :constraints section is translated, so occur-in-order can
+validate its ground actions there exactly as it does in evidence.  The other
+constraint modals need no context, which is why it was not threaded through
+TRANSLATE-CONSTRAINT's arguments.")
+
 (defparameter *reserved-formula-variables* '(s)
   "Variables the translator itself emits inside quantified formula bodies (the
 slice variable of trajectory constraints and action probabilities); PDDL
@@ -701,6 +708,11 @@ so its fluents come via collect-goal-fluents."
              :test #'equal))
           (t '()))))
 
+;; Forward reference: occur-in-order is a constraint operator as well as an
+;; evidence one, but its translator lives with the other observation machinery
+;; further down, where check-observed-action and friends are.
+(declaim (ftype function translate-occur-in-order))
+
 (defun translate-constraint (c bindings forbidden effect-preds context)
   "Translate one con-GD from the :constraints section into a FiFO formula over
 the slice timeline.  Supported: the modals always, at-end, hold-during, and
@@ -721,6 +733,26 @@ occur-sometime, combined with (and ...) and universal (forall ...)."
              (t2 (constraint-time-bound (third c) "second time bound" c)))
          `(exists s actslices (and (>= s ,t1) (<= s ,t2))
             (occurs ,(substitute-terms (fourth c) bindings context) s))))
+      ((and (consp c) (sym-name= (first c) "OCCUR-IN-ORDER"))
+       ;; Ordered action observations, optionally confined to a slice window.
+       ;; Ground actions only, so it cannot sit under a forall.
+       (when bindings
+         (error "occur-in-order takes ground actions only, so it cannot appear ~
+                 under forall; got ~s under bindings ~s in ~a"
+                c (mapcar #'car bindings) context))
+       (unless *constraint-env*
+         (error "occur-in-order in ~a needs the problem context; this looks like ~
+                 an internal error" context))
+       (translate-occur-in-order (rest c) *constraint-env* effect-preds
+                                 :context context))
+      ((and (consp c) (sym-name= (first c) "NOT")
+            (consp (second c)) (sym-name= (first (second c)) "OCCUR-IN-ORDER"))
+       (when bindings
+         (error "occur-in-order takes ground actions only, so it cannot appear ~
+                 under forall; got ~s under bindings ~s in ~a"
+                c (mapcar #'car bindings) context))
+       (translate-occur-in-order (rest (second c)) *constraint-env* effect-preds
+                                 :negate t :context context))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all
          (parse-quantifier-pairs (second c) context)
@@ -735,7 +767,7 @@ occur-sometime, combined with (and ...) and universal (forall ...)."
               c context))
       (t (error "Unsupported trajectory constraint ~s in ~a~@
                  (supported: always, at-end, hold-during, occur-sometime, ~
-                  combined with and / forall)" c context)))))
+                  occur-in-order, combined with and / forall)" c context)))))
 
 ;;; PDDL-syntax evidence (planner --pddl-evidence / --pddl-evidence-file).  The
 ;;; same modal language as :constraints, but the translated formulas are NOT
@@ -805,38 +837,93 @@ checks.)"
                             executable: its static precondition ~s fails"
                            a (if neg (list 'not ground) ground))))))))))))
 
-(defun translate-occur-in-order (actions env effect-preds &key negate)
-  "Translate (occur-in-order a1 ... ak) into the monitor-fluent FiFO formula
-described in the section comment above.  Observation indices are unrolled to
-literal integers; only the slice variable s stays symbolic.  With NEGATE, the
-final assertion is flipped -- (not (ObsDone c k numslices)) -- expressing
-(not (occur-in-order ...)): the ordered observation sequence is NOT embedded in
-the trace (does-not-comply, R&G's c(G,not-O) case).  The monitor biconditionals
-are identical either way, so ObsDone stays fully determined and count-neutral."
-  (unless actions
-    (error "occur-in-order evidence requires at least one action"))
-  (dolist (a actions) (check-observed-action a env effect-preds))
-  (let ((chain (incf *evidence-sequence-counter*))
-        (k (length actions)))
-    `(and
-       ;; Slice 1: nothing has been observed yet.
-       ,@(loop for i from 1 to k collect `(not (ObsDone ,chain ,i 1)))
-       ;; Progression: the first i observations are explained by slice s+1 iff
-       ;; they were explained by s, or the first i-1 were and a_i occurs at s.
-       ,@(loop for i from 1 to k
-               for a in actions
-               collect `(all s actslices true
-                          (equiv (ObsDone ,chain ,i (+ s 1))
-                                 (or (ObsDone ,chain ,i s)
-                                     ,(if (= i 1)
-                                          `(occurs ,a s)
-                                          `(and (ObsDone ,chain ,(1- i) s)
-                                                (occurs ,a s)))))))
-       ;; The evidence itself: all k observations explained by the final slice
-       ;; (or, negated, NOT all explained -- the sequence is not embedded).
-       ,(if negate
-            `(not (ObsDone ,chain ,k numslices))
-            `(ObsDone ,chain ,k numslices)))))
+(defun parse-occur-in-order-args (args context)
+  "Split (occur-in-order [M [N]] a1 ... ak)'s arguments into (values M N actions).
+Leading INTEGERS are the slice window, everything after is an action -- the two
+never collide, since an action is always a list.  M defaults to 1 and N to -1,
+and N = -1 means no upper bound."
+  (let ((m 1) (n -1) (rest args))
+    (when (integerp (first rest)) (setf m (pop rest)))
+    (when (integerp (first rest)) (setf n (pop rest)))
+    (when (integerp (first rest))
+      (error "occur-in-order takes at most two slice bounds in ~a; got a third ~
+              integer ~s.~%  Forms: (occur-in-order a1 ...), ~
+              (occur-in-order M a1 ...), (occur-in-order M N a1 ...)"
+             context (first rest)))
+    (unless rest
+      (error "occur-in-order requires at least one action in ~a" context))
+    (when (< m 1)
+      (error "occur-in-order's first slice bound must be at least 1 in ~a, got ~d"
+             context m))
+    (unless (or (= n -1) (>= n m))
+      (error "occur-in-order's window [~d, ~d] in ~a is empty; the second bound ~
+              must be at least the first, or -1 for no upper bound"
+             m n context))
+    (values m n rest)))
+
+(defun occur-in-order-guards (m n)
+  "The quantifier guards for slices inside the window [M, N] and outside it.
+N = -1 means unbounded above.  Returns (values inside outside)."
+  (if (= n -1)
+      (values (if (= m 1) 'true `(>= s ,m))
+              (if (= m 1) nil `(< s ,m)))
+      (values `(and (>= s ,m) (<= s ,n))
+              (if (= m 1) `(> s ,n) `(or (< s ,m) (> s ,n))))))
+
+(defun translate-occur-in-order (args env effect-preds &key negate (context "occur-in-order"))
+  "Translate (occur-in-order [M [N]] a1 ... ak) into the monitor-fluent FiFO
+formula described in the section comment above.  Observation indices are
+unrolled to literal integers; only the slice variable s stays symbolic.
+
+The window is a quantifier GUARD, with a second, complementary quantifier that
+freezes the chain outside it -- deliberately, rather than naming slices M and
+N+1 in the base case and the final assertion.  Naming a slice that may not exist
+at the current horizon would mint an unconstrained ObsDone atom and the whole
+constraint would go quietly vacuous; guarding cannot, and it makes the
+unwindowed form (1, -1) reduce to exactly the original clauses, with the
+outside-quantifier empty.  A window too short for k observations, or one wholly
+past the horizon, leaves ObsDone(k, numslices) unreachable, so the theory is
+UNSAT -- which is the right answer and matches how occur-sometime's empty
+EXISTS fails.
+
+With NEGATE, the final assertion is flipped -- (not (ObsDone c k numslices)) --
+expressing (not (occur-in-order ...)): the ordered observation sequence is NOT
+embedded in the trace (does-not-comply, R&G's c(G,not-O) case).  The monitor
+biconditionals are identical either way, so ObsDone stays fully determined and
+count-neutral."
+  (multiple-value-bind (m n actions) (parse-occur-in-order-args args context)
+    (dolist (a actions) (check-observed-action a env effect-preds))
+    (multiple-value-bind (inside outside) (occur-in-order-guards m n)
+      (let ((chain (incf *evidence-sequence-counter*))
+            (k (length actions)))
+        `(and
+           ;; Slice 1: nothing has been observed yet.
+           ,@(loop for i from 1 to k collect `(not (ObsDone ,chain ,i 1)))
+           ;; Inside the window: the first i observations are explained by slice
+           ;; s+1 iff they were explained by s, or the first i-1 were and a_i
+           ;; occurs at s.
+           ,@(loop for i from 1 to k
+                   for a in actions
+                   collect `(all s actslices ,inside
+                              (equiv (ObsDone ,chain ,i (+ s 1))
+                                     (or (ObsDone ,chain ,i s)
+                                         ,(if (= i 1)
+                                              `(occurs ,a s)
+                                              `(and (ObsDone ,chain ,(1- i) s)
+                                                    (occurs ,a s)))))))
+           ;; Outside it: the chain cannot advance.  Omitted entirely when the
+           ;; window is the whole timeline, so the unwindowed encoding is
+           ;; unchanged.
+           ,@(when outside
+               (loop for i from 1 to k
+                     collect `(all s actslices ,outside
+                                (equiv (ObsDone ,chain ,i (+ s 1))
+                                       (ObsDone ,chain ,i s)))))
+           ;; The assertion: all k observations explained by the final slice
+           ;; (or, negated, NOT all explained -- the sequence is not embedded).
+           ,(if negate
+                `(not (ObsDone ,chain ,k numslices))
+                `(ObsDone ,chain ,k numslices)))))))
 
 (defun translate-evidence-form (c bindings forbidden effect-preds env)
   "Translate one PDDL-style evidence form C into a horizon-independent FiFO
@@ -861,7 +948,8 @@ actions."
          (error "occur-in-order evidence must be at the top level, not under ~
                  forall: it takes ground actions only, got ~s under bindings ~s"
                 c (mapcar #'car bindings)))
-       (translate-occur-in-order (rest c) env effect-preds))
+       (translate-occur-in-order (rest c) env effect-preds
+                                 :context "PDDL evidence"))
       ;; (not (occur-in-order ...)) -- the observations are NOT embedded in order
       ;; (R&G's c(G,not-O) / does-not-comply case).
       ((and (consp c) (sym-name= (first c) "NOT")
@@ -870,7 +958,8 @@ actions."
          (error "occur-in-order evidence must be at the top level, not under ~
                  forall: it takes ground actions only, got ~s under bindings ~s"
                 c (mapcar #'car bindings)))
-       (translate-occur-in-order (rest (second c)) env effect-preds :negate t))
+       (translate-occur-in-order (rest (second c)) env effect-preds :negate t
+                                 :context "PDDL evidence"))
       ((and (consp c) (sym-name= (first c) "FORALL"))
        (translate-quantified 'all
          (parse-quantifier-pairs (second c) context)
@@ -1605,11 +1694,12 @@ none)."
                                      :test #'equal))
                ;; PDDL evidence: translated FiFO forms (returned, not written) and
                ;; the fluents they reference (registered for Holds vars + frame axioms).
-               (evidence-fifo (let ((*evidence-sequence-counter* 0)
-                                    (env (list :domain-def domain-def
-                                               :object-pairs all-object-pairs
-                                               :type-table type-table
-                                               :static-init static-init)))
+               (evidence-fifo (let* ((*evidence-sequence-counter* 0)
+                                     (env (list :domain-def domain-def
+                                                :object-pairs all-object-pairs
+                                                :type-table type-table
+                                                :static-init static-init))
+                                     (*constraint-env* env))
                                 (mapcar (lambda (c)
                                           (translate-evidence-form c '() forbidden effect-preds env))
                                         pddl-evidence)))
@@ -1851,9 +1941,13 @@ none)."
               (when constraints
                 (terpri out)
                 (format out ";; Trajectory constraints (:constraints)~%")
-                (dolist (c constraints)
-                  (write-form out (translate-constraint c '() forbidden effect-preds
-                                                        "the :constraints section"))))
+                (let ((*constraint-env* (list :domain-def domain-def
+                                              :object-pairs all-object-pairs
+                                              :type-table type-table
+                                              :static-init static-init)))
+                  (dolist (c constraints)
+                    (write-form out (translate-constraint c '() forbidden effect-preds
+                                                          "the :constraints section")))))
               ;; Preferences: reify each body's satisfaction with (pref-violated
               ;; <name>) and charge its violation weight via a soft (weight ...).
               (when active-prefs

@@ -669,14 +669,132 @@ observations as trajectory constraints.  Returns the constraint count."
                                   forms nactions slices observe horizon))
       (length forms))))
 
+;;; ------------------------------------- ordering-constraints export
+
+;;; The observations as ONE (occur-in-order M N a1 ... ak) constraint: their
+;;; order, and the coarse span the solution showed, without pinning each action
+;;; to a slice.  Actions only -- there is no ordering form for a fluent.
+;;;
+;;; occur-in-order needs STRICTLY INCREASING slices, and FiFO's are PARALLEL, so
+;;; two observations sharing a slice cannot be written as a sequence: doing so
+;;; would demand they occupy different slices, which the source plan does not
+;;; satisfy, and the exported problem could come back unsatisfiable.  That is a
+;;; fidelity break rather than a footnote, so a tie is refused.
+
+(defun evgen--ordering-observations (requested horizon true actions)
+  "The observed actions as (action . slice), in slice order.  Errors on two at
+the same slice."
+  (let ((obs (loop for s in requested
+                   when (< s horizon)
+                     nconc (loop for a in actions
+                                 when (gethash (list :occurs a s) true)
+                                   collect (cons a s)))))
+    (let ((dup (loop for (a . s) in obs
+                     when (> (count s obs :key #'cdr) 1) return s)))
+      (when dup
+        (error "slice ~d holds ~d observed actions, and occur-in-order needs ~
+                STRICTLY increasing slices.~%  ~
+                Exporting them as a sequence would demand they happen at ~
+                different slices -- a claim the source plan does not make, and ~
+                the exported problem could be unsatisfiable.~%  ~
+                Narrow the selection until at most one action is observed per ~
+                slice -- --slices to drop the crowded ones, --observe to keep ~
+                fewer action names (note it filters by NAME, so it cannot ~
+                separate two groundings of the same action) -- or use ~
+                --export-constraints, which pins each observation to its own ~
+                slice and handles parallel ones natively."
+               dup (count dup obs :key #'cdr))))
+    obs))
+
+(defparameter *evgen-occur-in-order-note*
+  '("NOTE: (occur-in-order M N <action>+) is NOT part of PDDL 3.0.  Every"
+    "standard con-GD operator takes a STATE formula, so the standard has no way"
+    "to say that an action occurred, let alone that several occurred in order;"
+    "occur-in-order is a FiFO extension.  A planner must support it to read this"
+    "problem.  It asserts an order-preserving embedding: there are strictly"
+    "increasing slices in [M, N] at which the listed actions occur, in this"
+    "order, with anything else allowed in between.  N = -1 means no upper bound.")
+  "Always emitted -- unlike hold-during, there is no standard fallback here.")
+
+(defun evgen--ordering-readme (problem-path domain-path solution-path
+                               obs m n slices observe horizon)
+  (append
+   (list "# Observations as an ordering constraint"
+         ""
+         (format nil "~d observed action~:p, as one (occur-in-order ~d ~d ...) ~
+                      constraint: their ORDER, and the span of the source plan ~
+                      they fell in, without pinning any of them to a slice."
+                 (length obs) m n)
+         ""
+         "| file | contents |"
+         "|---|---|"
+         "| `domain.pddl` | the domain, unchanged except that `:constraints` is in `:requirements` |"
+         "| `problem.pddl` | the problem, plus the ordering constraint |"
+         ""
+         "## Portability"
+         ""
+         "`occur-in-order` is a FiFO extension -- PDDL 3.0 has no operator for an"
+         "action occurring, so there is no standard form for this.  A planner must"
+         "support it.  The problem file repeats this in a comment."
+         ""
+         "## What it does and does not say"
+         ""
+         (format nil "The actions occur in the order listed, at strictly increasing~%~
+                      slices somewhere in [~d, ~d].  It does NOT say which slice each~%~
+                      one falls at, nor that they are consecutive -- anything may~%~
+                      happen in between.  Slices are the source plan's, 1 to ~d."
+                 m n horizon)
+         ""
+         "## Provenance"
+         ""
+         "```")
+   (list (format nil "problem   ~a" (file-namestring problem-path))
+         (format nil "domain    ~a" (file-namestring domain-path))
+         (format nil "solution  ~a (horizon ~d slices)"
+                 (file-namestring solution-path) horizon)
+         (format nil "slices    ~a" slices)
+         (format nil "observe   ~a"
+                 (if (string= (string-trim " " observe) "") "(all actions)" observe))
+         "```")))
+
+(defun evgen--export-ordering (dir problem-path domain-path solution-path
+                               requested horizon true actions slices observe)
+  "Write domain.pddl + problem.pddl into DIR, the problem carrying the
+observations as a single occur-in-order constraint.  Returns their count."
+  (let* ((problem-def (let ((*read-eval* nil))
+                        (with-open-file (in problem-path) (read in))))
+         (domain-def (let ((*read-eval* nil))
+                       (with-open-file (in domain-path) (read in))))
+         (obs (evgen--ordering-observations requested horizon true actions)))
+    (when (null obs)
+      (error "no action observations selected: slices ~a~@[ restricted to ~a~] ~
+              produced none.~%  An ordering constraint records ACTIONS; a fluent ~
+              has no ordering form."
+             slices (and (string/= (string-trim " " observe) "") observe)))
+    (let* ((m (reduce #'min obs :key #'cdr))
+           (n (reduce #'max obs :key #'cdr))
+           (form (list* 'occur-in-order m n (mapcar #'car obs))))
+      (ensure-directories-exist (merge-pathnames "x" dir))
+      (evgen--write-pddl (merge-pathnames "domain.pddl" dir)
+                         (evgen--add-requirement domain-def :constraints))
+      (evgen--write-pddl (merge-pathnames "problem.pddl" dir)
+                         (evgen--add-constraints problem-def (list form))
+                         *evgen-occur-in-order-note*)
+      (evgen--write-lines
+       (merge-pathnames "README.md" dir)
+       (evgen--ordering-readme problem-path domain-path solution-path
+                               obs m n slices observe horizon))
+      (length obs))))
+
 (defun evgen (&key problem solution domain evidence slices (observe "")
                    (negative-evidence 0) (recognition nil) export-dataset
-                   export-constraints (satplan "satplan.wff"))
+                   export-constraints export-ordering (satplan "satplan.wff"))
   "Write an evidence file from a solved PDDL problem.  See the file header."
   (unless problem  (error "--problem is required: the PDDL problem instance"))
-  (unless (or evidence export-dataset export-constraints)
+  (unless (or evidence export-dataset export-constraints export-ordering)
     (error "nothing to write: give --evidence <file>, --export-dataset <dir>, ~
-            --export-constraints <dir>, or several"))
+            --export-constraints <dir>, --export-ordering-constraints <dir>, ~
+            or several"))
   (unless (member negative-evidence '(0 1))
     (error "--negative-evidence must be 0 or 1, got ~a" negative-evidence))
   ;; Complete observability pins the trajectory, so c(O) becomes the cost of that
@@ -699,6 +817,9 @@ observations as trajectory constraints.  Returns the constraint count."
   ;; (hold-during t t (not f)) would express a negative FLUENT, but there is no
   ;; con-GD form for "this action did not occur" -- and honouring half of the
   ;; request silently would be worse than declining it.
+  (when (and export-ordering (= negative-evidence 1))
+    (error "--export-ordering-constraints and --negative-evidence 1 do not go ~
+            together: an ordering constraint records only what did happen."))
   (when (and export-constraints (= negative-evidence 1))
     (error "--export-constraints and --negative-evidence 1 do not go together: ~
             PDDL has no trajectory constraint saying an action did NOT occur."))
@@ -756,6 +877,13 @@ observations as trajectory constraints.  Returns the constraint count."
                                                  true fluents actions slices observe
                                                  negative-evidence recognition)
                       (setf written f n c)))
+                  (when export-ordering
+                    (let ((n (evgen--export-ordering export-ordering problem-path
+                               (or domain (evgen--resolved-domain problem-path))
+                               solution-path requested horizon true actions
+                               slices observe)))
+                      (format *error-output* "Wrote ~a (~d observation~:p, ordered)~%"
+                              export-ordering n)))
                   (when export-constraints
                     (let ((n (evgen--export-constraints export-constraints problem-path
                                (or domain (evgen--resolved-domain problem-path))

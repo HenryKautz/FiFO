@@ -387,6 +387,110 @@ else
   echo "  (skipping: no MaxSAT solver '$SOLVER' on PATH)"
 fi
 
+# ---------------------------------------------------------------------------
+# occur-in-order as a :constraints operator, with an optional slice window.
+#
+#   (occur-in-order a1 ... ak)       anywhere            = 1 -1
+#   (occur-in-order M a1 ... ak)     not before M        = M -1
+#   (occur-in-order M N a1 ... ak)   within [M, N];  N = -1 is unbounded
+#
+# The window is a quantifier GUARD with a complementary one freezing the chain
+# outside it, rather than naming slices M and N+1 -- naming a slice that may not
+# exist at the current horizon would mint an unconstrained ObsDone atom and the
+# constraint would go quietly vacuous.  Case 4 below is what that buys.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== occur-in-order as a windowed trajectory constraint ==="
+
+if command -v "${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" >/dev/null 2>&1; then
+  CDIR="$TMP/cio"; mkdir -p "$CDIR"; cd "$CDIR"
+  sed 's/:disjunctive-preconditions/:constraints :disjunctive-preconditions/' \
+      "$REPO/SatPlan/clara-logistics.pddl" > dom.pddl
+  bash "$REPO/SatPlan/ppgen.sh" --style clique --clique-size 3 --number-cliques 2 \
+       --packages 3 --trucks 2 --airplanes 1 --preferences 1 6 \
+       --goals-per-package 2 1 --seed 23 -o base.pddl 2>/dev/null
+  # the plan puts A at slice 1, B at 2, C at 4; unconstrained cost 16
+  A='(load pkg2 truck1 c1-air)'; B='(drive truck1 c1-air c1-p2)'; C='(fly plane1 c2-air c1-air)'
+  mkprob() {   # mkprob <file> <constraint>
+    python3 -c "
+import sys
+s=open('base.pddl').read(); i=s.index('  (:goal')
+open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])" "$1" "$2"
+  }
+  cio() {   # cio <constraint> -> cost or UNSAT
+    mkprob "$CDIR/c.pddl" "$1"
+    WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/c.pddl" \
+      --domain "$CDIR/dom.pddl" --numslices 6 2>&1 \
+      | grep -oE 'cost [0-9]+|UNSATISFIABLE' | tail -1
+  }
+  BASE="$(cio '(and (always (at pkg1 c1-p2)))' >/dev/null; cio "(and (occur-in-order $A $B $C))")"
+
+  printf '  %-52s ... ' "the three arities agree when the window is the whole plan"
+  M1="$(cio "(and (occur-in-order 1 $A $B $C))")"
+  M2="$(cio "(and (occur-in-order 1 -1 $A $B $C))")"
+  if [[ "$BASE" == "cost 16" && "$M1" == "$BASE" && "$M2" == "$BASE" ]]; then pass
+  else fail "bare=$BASE  M=$M1  M,N=$M2"; fi
+
+  printf '  %-52s ... ' "a window containing the plan leaves the cost alone"
+  if [[ "$(cio "(and (occur-in-order 1 5 $A $B $C))")" == "cost 16" ]]; then pass
+  else fail "window [1,5] should not constrain this plan"; fi
+
+  printf '  %-52s ... ' "a window starting after the first observation is UNSAT"
+  if [[ "$(cio "(and (occur-in-order 3 -1 $A $B $C))")" == "UNSATISFIABLE" ]]; then pass
+  else fail "the first action is at slice 1, so [3,-1] cannot hold it"; fi
+
+  printf '  %-52s ... ' "a window too short for k observations is UNSAT"
+  if [[ "$(cio "(and (occur-in-order 1 2 $A $B $C))")" == "UNSATISFIABLE" ]]; then pass
+  else fail "3 observations cannot embed in 2 slices"; fi
+
+  printf '  %-52s ... ' "a window past the horizon is UNSAT, not vacuous"
+  # The case the guard-and-freeze encoding exists for: naming slice 20 would have
+  # minted an unconstrained atom and the constraint would have done nothing.
+  if [[ "$(cio "(and (occur-in-order 20 30 $A $B $C))")" == "UNSATISFIABLE" ]]; then pass
+  else fail "a window entirely past the horizon went vacuous"; fi
+
+  printf '  %-52s ... ' "negation with a window flips exactly that window"
+  NIN="$(cio "(and (not (occur-in-order 1 5 $A $B $C)))")"
+  NOUT="$(cio "(and (not (occur-in-order 3 -1 $A $B $C)))")"
+  # not(embeds in [1,5]) must force a deviation; not(embeds in [3,-1]) is already true
+  if [[ "$NIN" != "cost 16" && "$NIN" != "UNSATISFIABLE" && "$NOUT" == "cost 16" ]]; then pass
+  else fail "negated in=$NIN out=$NOUT"; fi
+
+  cioerr() {   # cioerr <constraint> -> first matching error text
+    mkprob "$CDIR/e.pddl" "$1"
+    bash "$PLANNER" "$CDIR/e.pddl" --domain "$CDIR/dom.pddl" --numslices 6 2>&1 \
+      | grep -oE "occur-in-order[^\"]{0,70}" | head -1
+  }
+  printf '  %-52s ... ' "an empty window [5,2] is refused"
+  if cioerr "(and (occur-in-order 5 2 $A $B))" | grep -q "is empty"; then pass
+  else fail "should reject a backwards window"; fi
+
+  printf '  %-52s ... ' "a first bound below 1 is refused"
+  if cioerr "(and (occur-in-order 0 3 $A))" | grep -q "at least 1"; then pass
+  else fail "slices are numbered from 1"; fi
+
+  printf '  %-52s ... ' "a third integer bound is refused"
+  if cioerr "(and (occur-in-order 1 2 3 $A))" | grep -q "at most two slice bounds"; then pass
+  else fail "should reject three bounds"; fi
+
+  printf '  %-52s ... ' "bounds with no actions are refused"
+  if cioerr "(and (occur-in-order 1 3))" | grep -q "at least one action"; then pass
+  else fail "should require an action"; fi
+
+  printf '  %-52s ... ' "the same three arities work as --pddl-evidence"
+  ev3() { WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/base.pddl" \
+            --domain "$CDIR/dom.pddl" --numslices 6 --pddl-evidence "$1" 2>&1 \
+          | grep -oE 'cost [0-9]+|UNSATISFIABLE' | tail -1; }
+  if [[ "$(ev3 "(occur-in-order $A $C)")" == "cost 16" \
+     && "$(ev3 "(occur-in-order 1 $A $C)")" == "cost 16" \
+     && "$(ev3 "(occur-in-order 1 5 $A $C)")" == "cost 16" \
+     && "$(ev3 "(occur-in-order 3 -1 $A $C)")" == "UNSATISFIABLE" ]]; then pass
+  else fail "the windowed form should work in evidence too"; fi
+else
+  echo "  (skipping: no MaxSAT solver)"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]
