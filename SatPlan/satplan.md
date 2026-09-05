@@ -549,7 +549,41 @@ Two limits, which the exported README repeats:
 - **Actions only.** `obs.dat` has no way to say a fluent held, so a fluent name in `--observe` is an error rather than a silent narrowing, and `--negative-evidence 1` is refused.
 - **Order, not time.** FiFO's slices are *parallel* — a slice may hold several actions — while `obs.dat` is a linear sequence. Actions from one slice come out consecutive in an arbitrary order. That is sound for a sequential recipient, since they do not interfere, but it is a total order the source plan never asserted.
 
-**Why not `:constraints`.** Encoding the observations in the problem's `(:constraints …)` section is the obvious idea and does not work. Every PDDL 3.0 con-GD operand is a *state* formula, so there is no standard operator saying an action occurred — FiFO's `occur-sometime` is its own extension with no PDDL counterpart (see [Trajectory constraints](#trajectory-constraints)), and action observations are most recognition evidence. Beyond that, a FiFO slice index means nothing to a sequential planner, and few current planners read `:constraints` at all. The dataset format sidesteps all three.
+**`--export-dataset` versus `--export-constraints`.** The other export (below) keeps the exact slice numbers by writing the observations into the problem's `(:constraints …)` section. The two make opposite trades, so pick by what your recipient runs:
+
+| | `--export-dataset` | `--export-constraints` |
+|---|---|---|
+| observations | actions, order only, no times | actions *and* fluents, at exact slices |
+| read by | any plan-recognition tool chain | a planner that supports PDDL 3.0 `:constraints` — and, for action observations, FiFO's non-standard `occur-sometime` |
+| domain | shipped unchanged | unchanged but for the `:constraints` requirement |
+
+The reason the dataset format drops the times is not fastidiousness: PDDL 3.0's con-GD operands are all *state* formulas, so the standard has no way to say an action occurred, and a FiFO slice index has no counterpart in a sequential planner's plan anyway (slices are parallel). If your recipient will not extend their planner, `--export-dataset` is the one that works.
+
+**Exporting the observations as trajectory constraints.** `--export-constraints <dir>` writes the problem with the observations asserted in a `(:constraints …)` section, each pinned to the slice the solution puts it at:
+
+```lisp
+(:constraints
+  (and (occur-sometime 1 1 (recon leo))            ; action observed at slice 1
+       (hold-during 2 2 (recon-performed leo))     ; fluent observed at slice 2
+       (occur-sometime 3 3 (gain-root leo))))
+```
+
+It writes `domain.pddl` (unchanged but for `:constraints` in `:requirements`), `problem.pddl`, and a README. Unlike `--export-dataset` it needs no recognition instance — any solved problem works — and it keeps fluent observations, which `obs.dat` cannot represent. See [Trajectory constraints](#trajectory-constraints) for the operators.
+
+**One of the two operators is not standard, and the file says so.** `(hold-during t t φ)` is standard PDDL 3.0. `(occur-sometime t t a)` is a FiFO extension — every standard con-GD operand is a state formula, so the standard cannot say an action occurred. A problem containing action observations therefore opens with a comment naming the requirement, so a recipient learns it from the file rather than from a parse error:
+
+```
+;; NOTE: the (occur-sometime t1 t2 <action>) constraints below are NOT part of
+;; PDDL 3.0.  Every standard con-GD operator takes a STATE formula, so the
+;; standard has no way to say that an action occurred; occur-sometime is a
+;; FiFO extension.  A planner must support it to read this problem.
+```
+
+A fluents-only export — `--observe` restricted to fluent names — omits the note and is plain PDDL 3.0.
+
+Two things to know. `--negative-evidence 1` is refused: `(hold-during t t (not φ))` would express a negative *fluent*, but no constraint form says an action did **not** occur, and honouring half the request silently would be worse than declining it. And the slice numbers are FiFO's, which are **parallel** — a slice may hold several actions — so a constraint at slice *t* does not mean "the *t*-th step of a sequential plan". The README repeats both.
+
+Because FiFO reads this dialect, the export is checked by *solving* it: `tests/run-test-evgen.sh` confirms the exported problem hits the source plan's cost, and that moving one constraint to another slice breaks it — the test that proves the constraints actually bind.
 
 **Everything emitted is checked**, against the problem's real ground universe — re-derived from the problem rather than read from the `.map` beside the solution, since `.map` is a byproduct `bin/cleanupfifo.sh` deletes. evgen refuses a slice beyond the solution's horizon, an `--observe` name that matches nothing, a solution file that is not `SAT`, and an empty result set.
 

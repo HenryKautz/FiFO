@@ -398,16 +398,22 @@ the .answer, so this is read rather than guessed; NIL if none is reported."
              (write-string new o)
              (setf start (+ pos (length old))))))
 
-(defun evgen--write-pddl (path define-form)
-  "Print a PDDL define form.  PDDL is case-insensitive, so :downcase is only a
-convention -- except for the <HYPOTHESIS> placeholder, which the published
-datasets write in caps and which readers may well match as text, so it is put
-back after printing."
+(defun evgen--write-pddl (path define-form &optional header)
+  "Print a PDDL define form, preceded by HEADER as ;; comment lines.  PDDL is
+case-insensitive, so :downcase is only a convention -- except for the
+<HYPOTHESIS> placeholder, which the published datasets write in caps and which
+readers may well match as text, so it is put back after printing.  A 0-ary
+:parameters prints from Lisp as NIL, which a Lisp reader takes as the empty list
+but a real PDDL parser does not, so that is put back too."
   (let ((text (let ((*print-case* :downcase) (*print-right-margin* 78))
                 (with-output-to-string (o) (pprint define-form o) (terpri o)))))
+    (setf text (evgen--replace-all text "<hypothesis>" "<HYPOTHESIS>"))
+    (setf text (evgen--replace-all text ":parameters nil" ":parameters ()"))
     (with-open-file (out path :direction :output :if-exists :supersede
                               :if-does-not-exist :create)
-      (write-string (evgen--replace-all text "<hypothesis>" "<HYPOTHESIS>") out))))
+      (dolist (line header) (format out ";; ~a~%" line))
+      (when header (terpri out))
+      (write-string text out))))
 
 (defun evgen--write-lines (path lines)
   (with-open-file (out path :direction :output :if-exists :supersede
@@ -509,13 +515,168 @@ back after printing."
                               names observations true-hyp slices observe horizon))
       (length observations))))
 
+;;; ---------------------------------------------- :constraints export
+
+;;; Observations as PDDL 3.0 trajectory constraints, at the EXACT slices the
+;;; solution puts them at:
+;;;
+;;;   fluent f true at slice t  ->  (hold-during t t f)      standard PDDL 3.0
+;;;   action a occurs at slice t ->  (occur-sometime t t a)  NOT standard
+;;;
+;;; The asymmetry is the whole story: every PDDL 3.0 con-GD operand is a STATE
+;;; formula, so there is no standard way to say an action occurred.
+;;; occur-sometime is FiFO's own extension, and a problem carrying one is
+;;; readable only by a planner that has been taught it -- which the emitted file
+;;; says in a comment, so a recipient learns it from the file rather than from a
+;;; parse error.  A fluents-only export is plain PDDL 3.0 and carries no note.
+
+(defparameter *evgen-occur-sometime-note*
+  '("NOTE: the (occur-sometime t1 t2 <action>) constraints below are NOT part of"
+    "PDDL 3.0.  Every standard con-GD operator takes a STATE formula, so the"
+    "standard has no way to say that an action occurred; occur-sometime is a"
+    "FiFO extension.  A planner must support it to read this problem."
+    "The (hold-during t t <fluent>) constraints ARE standard and need nothing.")
+  "Emitted only when the observations include actions.")
+
+(defun evgen--constraint-forms (requested horizon true fluents actions)
+  "The con-GD forms for the observations, slice by slice.  Returns
+(values forms action-count)."
+  (let ((forms '()) (nactions 0))
+    (dolist (s requested)
+      (dolist (f fluents)
+        (when (gethash (list :holds f s) true)
+          (push (list 'hold-during s s f) forms)))
+      (when (< s horizon)
+        (dolist (a actions)
+          (when (gethash (list :occurs a s) true)
+            (push (list 'occur-sometime s s a) forms)
+            (incf nactions)))))
+    (values (nreverse forms) nactions)))
+
+(defun evgen--add-requirement (domain-def name)
+  "DOMAIN-DEF with NAME in its :requirements, added only if absent."
+  (list* (first domain-def) (second domain-def)
+         (mapcar (lambda (s)
+                   (if (and (consp s) (symbolp (first s))
+                            (string-equal (symbol-name (first s)) "REQUIREMENTS")
+                            (notany (lambda (r) (and (symbolp r)
+                                                     (string-equal (symbol-name r)
+                                                                   (symbol-name name))))
+                                    (rest s)))
+                       (append s (list name))
+                       s))
+                 (cddr domain-def))))
+
+(defun evgen--conjuncts (form)
+  (if (and (consp form) (symbolp (first form))
+           (string-equal (symbol-name (first form)) "AND"))
+      (rest form)
+      (list form)))
+
+(defun evgen--add-constraints (problem-def forms)
+  "PROBLEM-DEF with a (:constraints (and ...)) section.  An existing section is
+extended rather than replaced, so an export of an already-constrained problem
+keeps what it had."
+  (let ((existing (evgen--section problem-def "CONSTRAINTS")))
+    (if existing
+        (list* (first problem-def) (second problem-def)
+               (mapcar (lambda (s)
+                         (if (eq s existing)
+                             (list (first s) (cons 'and (append (evgen--conjuncts (second s))
+                                                                forms)))
+                             s))
+                       (cddr problem-def)))
+        ;; place it before :goal, where PDDL 3.0 puts it
+        (let ((goal (evgen--section problem-def "GOAL")))
+          (list* (first problem-def) (second problem-def)
+                 (loop for s in (cddr problem-def)
+                       when (eq s goal) collect (list :constraints (cons 'and forms))
+                       collect s))))))
+
+(defun evgen--constraints-readme (problem-path domain-path solution-path
+                                  forms nactions slices observe horizon)
+  (let ((nfluents (- (length forms) nactions)))
+    (list*
+     "# Observations as PDDL 3.0 trajectory constraints"
+     ""
+     (format nil "~d constraint~:p: ~d fluent observation~:p and ~d action observation~:p, ~
+                  each pinned to the slice the source plan puts it at."
+             (length forms) nfluents nactions)
+     ""
+     "| file | contents |"
+     "|---|---|"
+     "| `domain.pddl` | the domain, unchanged except that `:constraints` is in `:requirements` |"
+     "| `problem.pddl` | the problem, plus a `(:constraints (and ...))` section |"
+     ""
+     (append
+      (if (plusp nactions)
+          (list "## Portability"
+                ""
+                "A fluent observation is `(hold-during t t <fluent>)`, which is standard"
+                "PDDL 3.0.  An action observation is `(occur-sometime t t <action>)`, which"
+                "is **not**: every standard con-GD operator takes a state formula, so the"
+                "standard cannot say an action occurred.  This file contains action"
+                "observations, so a planner must support `occur-sometime` to read it."
+                "")
+          (list "## Portability"
+                ""
+                "Every constraint here is `(hold-during t t <fluent>)`, which is standard"
+                "PDDL 3.0.  No extension is needed."
+                ""))
+      (list "## Times"
+            ""
+            (format nil "Slices are the source plan's, numbered from 1 to ~d.  They are~%~
+                         PARALLEL: a slice may hold several actions at once, so a constraint~%~
+                         at slice t does not mean \"the t-th step of a sequential plan\"."
+                    horizon)
+            ""
+            "## Provenance"
+            ""
+            "```"
+            (format nil "problem   ~a" (file-namestring problem-path))
+            (format nil "domain    ~a" (file-namestring domain-path))
+            (format nil "solution  ~a (horizon ~d slices)"
+                    (file-namestring solution-path) horizon)
+            (format nil "slices    ~a" slices)
+            (format nil "observe   ~a"
+                    (if (string= (string-trim " " observe) "") "(everything)" observe))
+            "```")))))
+
+(defun evgen--export-constraints (dir problem-path domain-path solution-path
+                                  requested horizon true fluents actions
+                                  slices observe)
+  "Write domain.pddl + problem.pddl into DIR, the problem carrying the
+observations as trajectory constraints.  Returns the constraint count."
+  (let* ((problem-def (let ((*read-eval* nil))
+                        (with-open-file (in problem-path) (read in))))
+         (domain-def (let ((*read-eval* nil))
+                       (with-open-file (in domain-path) (read in)))))
+    (multiple-value-bind (forms nactions)
+        (evgen--constraint-forms requested horizon true fluents actions)
+      (when (null forms)
+        (error "no observations selected: slices ~a~@[ restricted to ~a~] produced ~
+                nothing, so there is nothing to constrain."
+               slices (and (string/= (string-trim " " observe) "") observe)))
+      (ensure-directories-exist (merge-pathnames "x" dir))
+      (evgen--write-pddl (merge-pathnames "domain.pddl" dir)
+                         (evgen--add-requirement domain-def :constraints))
+      (evgen--write-pddl (merge-pathnames "problem.pddl" dir)
+                         (evgen--add-constraints problem-def forms)
+                         (when (plusp nactions) *evgen-occur-sometime-note*))
+      (evgen--write-lines
+       (merge-pathnames "README.md" dir)
+       (evgen--constraints-readme problem-path domain-path solution-path
+                                  forms nactions slices observe horizon))
+      (length forms))))
+
 (defun evgen (&key problem solution domain evidence slices (observe "")
                    (negative-evidence 0) (recognition nil) export-dataset
-                   (satplan "satplan.wff"))
+                   export-constraints (satplan "satplan.wff"))
   "Write an evidence file from a solved PDDL problem.  See the file header."
   (unless problem  (error "--problem is required: the PDDL problem instance"))
-  (unless (or evidence export-dataset)
-    (error "nothing to write: give --evidence <file>, --export-dataset <dir>, or both"))
+  (unless (or evidence export-dataset export-constraints)
+    (error "nothing to write: give --evidence <file>, --export-dataset <dir>, ~
+            --export-constraints <dir>, or several"))
   (unless (member negative-evidence '(0 1))
     (error "--negative-evidence must be 0 or 1, got ~a" negative-evidence))
   ;; Complete observability pins the trajectory, so c(O) becomes the cost of that
@@ -535,6 +696,12 @@ back after printing."
   (when (and export-dataset (= negative-evidence 1))
     (error "--export-dataset and --negative-evidence 1 do not go together: ~
             obs.dat records only what was observed to HAPPEN."))
+  ;; (hold-during t t (not f)) would express a negative FLUENT, but there is no
+  ;; con-GD form for "this action did not occur" -- and honouring half of the
+  ;; request silently would be worse than declining it.
+  (when (and export-constraints (= negative-evidence 1))
+    (error "--export-constraints and --negative-evidence 1 do not go together: ~
+            PDDL has no trajectory constraint saying an action did NOT occur."))
   (let ((problem-path (probe-file problem)))
     (unless problem-path (error "problem file not found: ~a" problem))
     (let* ((requested (evgen--parse-slices slices))
@@ -589,6 +756,13 @@ back after printing."
                                                  true fluents actions slices observe
                                                  negative-evidence recognition)
                       (setf written f n c)))
+                  (when export-constraints
+                    (let ((n (evgen--export-constraints export-constraints problem-path
+                               (or domain (evgen--resolved-domain problem-path))
+                               solution-path requested horizon true fluents actions
+                               slices observe)))
+                      (format *error-output* "Wrote ~a (~d constraint~:p)~%"
+                              export-constraints n)))
                   (when export-dataset
                     (let ((obs (evgen--export-dataset export-dataset problem-path
                                  (or domain (evgen--resolved-domain problem-path))

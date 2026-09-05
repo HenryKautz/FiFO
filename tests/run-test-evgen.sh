@@ -599,6 +599,108 @@ name "neither --evidence nor --export-dataset is an error"
 if bash "$EVGEN" --problem "$PROB" --slices "2" 2>&1 >/dev/null | grep -q "nothing to write"
 then pass; else fail "should require one of the two outputs"; fi
 
+# ------------------------------------------------ :constraints export ------
+# The observations as PDDL 3.0 trajectory constraints at their EXACT slices.
+# FiFO reads this dialect, so unlike the dataset export it can be checked by
+# solving the exported problem, which is the test that matters: the constraints
+# must actually bind.
+
+echo
+echo "=== --export-constraints (PDDL 3.0 trajectory constraints) ==="
+XC="$TMP/xc"
+
+if [[ "$RSOLVED" -eq 1 ]]; then
+  bash "$EVGEN" --problem "$TMP/sg.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "1-3" --export-constraints "$XC" >/dev/null 2>&1
+
+  name "writes domain.pddl, problem.pddl and a README"
+  if [[ -s "$XC/domain.pddl" && -s "$XC/problem.pddl" && -s "$XC/README.md" ]]; then pass
+  else fail "missing files"; fi
+
+  name "constraints are exactly the solution's literals at those slices"
+  if pycheck "$TMP/sg.answer" "$XC/problem.pddl" <<'EOF'
+import sys,re
+ans=open(sys.argv[1]).read(); prob=open(sys.argv[2]).read()
+sec=prob.split('(:constraints')[1].split('(:goal')[0]
+got=set()
+for op,t1,t2,term in re.findall(r'\((hold-during|occur-sometime) (\d+) (\d+) (\([^)]*\))',sec):
+    assert t1==t2, (op,t1,t2)          # an observation is a point, not a window
+    got.add((op,int(t1),term.lower()))
+want=set()
+for kind,term,s in re.findall(r'\((HOLDS|OCCURS) (\([^)]*\)) (\d+)\)',ans):
+    if int(s) in (1,2,3):
+        op='hold-during' if kind=='HOLDS' else 'occur-sometime'
+        want.add((op,int(s),term.lower()))
+assert got==want, ("missing",sorted(want-got)[:2],"extra",sorted(got-want)[:2])
+EOF
+  then pass; else fail "constraint set does not match the solution"; fi
+
+  name "the exported problem solves at the source plan's cost"
+  # The constraints must be satisfiable by the very plan they came from.
+  SRCCOST=$(grep -oE '\(\*OBJECTIVE\* [0-9]+\)' "$TMP/sg.answer" | grep -oE '[0-9]+')
+  XCOST=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$XC/problem.pddl" \
+            --domain "$XC/domain.pddl" --numslices 6 2>&1 \
+          | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+  if [[ -n "$XCOST" && "$XCOST" == "$SRCCOST" ]]; then pass
+  else fail "exported cost '$XCOST' vs source '$SRCCOST'"; fi
+
+  name "and they BIND: a constraint moved to another slice breaks it"
+  sed 's/(occur-sometime 3 3 (gain-root leo))/(occur-sometime 1 1 (gain-root leo))/' \
+      "$XC/problem.pddl" > "$XC/bad.pddl"
+  BADOUT=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$XC/bad.pddl" \
+             --domain "$XC/domain.pddl" --numslices 6 2>&1)
+  BADCOST=$(echo "$BADOUT" | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+  if echo "$BADOUT" | grep -qi unsatisfiable || [[ -n "$BADCOST" && "$BADCOST" -gt "$SRCCOST" ]]
+  then pass; else fail "a wrong-slice constraint changed nothing (cost $BADCOST)"; fi
+
+  name ":constraints is added to the domain's requirements, once"
+  if grep -q ':constraints' "$XC/domain.pddl" \
+     && [[ "$(grep -o ':constraints' "$XC/domain.pddl" | wc -l | tr -d ' ')" -eq 1 ]]; then pass
+  else fail "requirements wrong"; fi
+
+  name "an action observation carries the occur-sometime caveat"
+  if grep -q 'occur-sometime' "$XC/problem.pddl" \
+     && head -6 "$XC/problem.pddl" | grep -q 'NOT part of' \
+     && grep -q 'must support it' "$XC/problem.pddl"; then pass
+  else fail "no portability note beside the non-standard operator"; fi
+
+  name "a fluents-only export is standard PDDL 3.0, with no caveat"
+  bash "$EVGEN" --problem "$TMP/sg.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "2-3" \
+       --observe "recon-performed,access-obtained" --export-constraints "$TMP/xf" >/dev/null 2>&1
+  if [[ "$(grep -c 'occur-sometime' "$TMP/xf/problem.pddl")" -eq 0 ]] \
+     && ! grep -q 'NOT part of' "$TMP/xf/problem.pddl" \
+     && grep -q 'No extension is needed' "$TMP/xf/README.md" \
+     && grep -q 'hold-during' "$TMP/xf/problem.pddl"; then pass
+  else fail "fluents-only export still looks non-standard"; fi
+
+  name "the goal and everything else are left alone"
+  if grep -q '(:goal (hyp3))' "$XC/problem.pddl" \
+     && grep -q '(:init (dummy)' "$XC/problem.pddl"; then pass
+  else fail "the export changed more than the constraints"; fi
+
+  name "--negative-evidence 1 is refused"
+  if bash "$EVGEN" --problem "$TMP/sg.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "2" --negative-evidence 1 \
+       --export-constraints "$TMP/xn" 2>&1 >/dev/null \
+     | grep -q "did NOT occur"; then pass
+  else fail "should refuse: no constraint says an action did not occur"; fi
+
+  name "--export-constraints alone needs no --evidence"
+  if bash "$EVGEN" --problem "$TMP/sg.pddl" --domain "$TMP/intrusion-detection-costs.pddl" \
+       --solution "$TMP/sg.answer" --slices "2" --export-constraints "$TMP/xa" >/dev/null 2>&1 \
+     && [[ -s "$TMP/xa/problem.pddl" ]]; then pass
+  else fail "--evidence should be optional here"; fi
+else
+  echo "  (skipping: could not solve the recognition fixture)"
+fi
+
+name "it works on a plain problem, with no hypotheses needed"
+# Unlike --export-dataset, this needs no recognition instance.
+if ev --evidence "$TMP/ignore.txt" --slices "2" --export-constraints "$TMP/xp" >/dev/null 2>&1 \
+   && grep -q '(:constraints' "$TMP/xp/problem.pddl"; then pass
+else fail "should export any solved problem"; fi
+
 # --------------------------------------------------------------- errors ----
 
 err() { name "$1"; shift; local want="$1"; shift

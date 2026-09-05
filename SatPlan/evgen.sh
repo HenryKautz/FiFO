@@ -67,6 +67,18 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           predicates).  obs.dat holds ACTIONS in order, so a
                           fluent named in --observe is an error, and
                           --negative-evidence 1 is refused
+  --export-constraints <dir>
+                          ALSO write the problem with the observations asserted
+                          as PDDL 3.0 trajectory constraints AT THEIR EXACT
+                          SLICES -- (hold-during t t <fluent>) for a fluent,
+                          (occur-sometime t t <action>) for an action.
+                          hold-during is standard; occur-sometime is NOT (every
+                          standard con-GD operator takes a state formula, so the
+                          standard cannot say an action occurred), and a file
+                          containing one says so in a comment.  Writes
+                          domain.pddl, problem.pddl and a README.
+                          --negative-evidence 1 is refused: there is no
+                          constraint form for "this action did not occur"
   --help, -h              this message
 
 examples:
@@ -77,6 +89,7 @@ examples:
   evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-5" \
            --observe "drive,fly" --recognition 1
   evgen.sh --problem pb.pddl --slices "1-5" --export-dataset out/
+  evgen.sh --problem pb.pddl --slices "1-3,5" --export-constraints out/
 
   planner.sh pb.pddl --domain d.pddl --numslices <N> --evidence-file ev.txt
 
@@ -86,7 +99,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
-RECOGNITION="0" EXPORT_DIR=""
+RECOGNITION="0" EXPORT_DIR="" CONS_DIR=""
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -102,14 +115,15 @@ while [[ $# -gt 0 ]]; do
     --negative-evidence) need "$@"; NEGATIVE="$2"; shift 2 ;;
     --recognition)       need "$@"; RECOGNITION="$2"; shift 2 ;;
     --export-dataset)    need "$@"; EXPORT_DIR="$2"; shift 2 ;;
+    --export-constraints) need "$@"; CONS_DIR="$2"; shift 2 ;;
     -h|--help)           print_usage; exit 0 ;;
     *)                   die "unknown option '$1' (try --help)" ;;
   esac
 done
 
 [[ -n "$PROBLEM"  ]] || { print_usage >&2; exit 2; }
-if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" ]]; then
-  die "nothing to write: give --evidence <file>, --export-dataset <dir>, or both"
+if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" ]]; then
+  die "nothing to write: give --evidence <file>, --export-dataset <dir>, --export-constraints <dir>, or several"
 fi
 [[ -n "$SLICES"   ]] || die "--slices is required, e.g. --slices \"1-3,5\""
 if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
@@ -117,6 +131,9 @@ if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
 fi
 if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
   die "--recognition must be 0 or 1, got '$RECOGNITION'"
+fi
+if [[ -n "$CONS_DIR" && "$NEGATIVE" == "1" ]]; then
+  die "--export-constraints and --negative-evidence 1 do not go together: PDDL has no trajectory constraint saying an action did NOT occur"
 fi
 if [[ -n "$EXPORT_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-dataset and --negative-evidence 1 do not go together: obs.dat records only what was observed to happen"
@@ -156,6 +173,10 @@ if [[ -n "$EXPORT_DIR" ]]; then
   mkdir -p "$EXPORT_DIR"
   EXPORT_DIR="$(cd "$EXPORT_DIR" && pwd -P)/"
 fi
+if [[ -n "$CONS_DIR" ]]; then
+  mkdir -p "$CONS_DIR"
+  CONS_DIR="$(cd "$CONS_DIR" && pwd -P)/"
+fi
 
 # Lisp string literals for the optional arguments; NIL when not given, so the
 # generator applies its own default.
@@ -172,6 +193,7 @@ sbcl --noinform --disable-debugger \
                             :domain $(lisp_string "$DOMAIN")
                             :evidence $(lisp_string "$EVIDENCE")
                             :export-dataset $(lisp_string "$EXPORT_DIR")
+                            :export-constraints $(lisp_string "$CONS_DIR")
                             :slices \"$SLICES\"
                             :observe \"$OBSERVE\"
                             :negative-evidence $NEGATIVE
