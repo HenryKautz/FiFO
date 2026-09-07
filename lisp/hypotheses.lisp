@@ -63,8 +63,9 @@
 ;; the same treatment planner.lisp gives marginals / marginals-addmc.
 (declaim (ftype (function (t &rest t) t) ddnnf-marginals marginals-mcsat))
 
-(defparameter *hypothesis-counters* '("maxent" "addmc" "ddnnf" "d4" "mc-sat" "max-term")
-  "The back ends :counter accepts.  A counter is NAMED, never a path.")
+(defparameter *hypothesis-counters* (counter-names)
+  "The back ends :counter accepts, from the shared solvers.dat table.  A counter
+is NAMED, never a path.")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Small helpers
@@ -442,6 +443,7 @@ Results print as (HYPOTHESIS <atom> :posterior p ...), deliberately NOT as
                      :init-cutoff init-cutoff :init-tries init-tries
                      :seed-from-sat seed-from-sat))
          (*maxterm-solver* (or maxsat-solver *maxterm-solver*)))
+    (setq counter (resolve-table-name counter "counter"))
     (unless (member counter *hypothesis-counters* :test #'string-equal)
       (error "unknown counter ~S -- expected one of ~{~A~^, ~}~%~
               (a counter is named, not a path; put the binary on PATH under its own name)"

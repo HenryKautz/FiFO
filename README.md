@@ -690,7 +690,7 @@ Keeping them out of the `.wff` is what lets `solve.sh` and `map.sh` guarantee th
 | `*solver-timeout*` | Seconds before the solver is stopped with `SIGTERM`. `0`, `-1` and `nil` all mean no limit. See [Solver time limits](#solver-time-limits) | `600` | `:timeout 60` | `--eval '(setq *solver-timeout* 60)'` |
 | `*preprocessor*` | MaxPre 2 binary used to preprocess a weighted CNF before solving, reconstructing the model afterwards; `nil` for none. See [Preprocessing with MaxPre 2](#preprocessing-with-maxpre-2) | `nil` | `:preprocessor "maxpre"` | `--eval '(setq *preprocessor* "maxpre")'` |
 | `*preprocessor-techniques*` | MaxPre's `-techniques=` string; `nil` uses MaxPre's own default | `nil` | `:preprocessor-techniques "[bu]#[buvsrg]"` | `--eval '(setq *preprocessor-techniques* "[bu]#[buvsrg]")'` |
-| `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`; full names must be strings. Resolved by `solve`'s `:solver` | `tt-glucose`, `tt-intelsat`, `nuwls`, `evalmaxsat` | — | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
+| `*solver-abbreviations*` | Table of `(abbreviation full-name)` pairs for `*solver*`, **derived from `lisp/solvers.dat`** at load time — the same file `bin/fifo-solvers.sh` reads, so the shell and the Lisp cannot drift. The supported way to add a solver is to edit that file; `setq` still works for a one-off. | `tt-glucose`, `tt-intelsat`, `nuwls`, `evalmaxsat`, `rc2` | — | `--eval '(setq *solver-abbreviations* (quote (("ms" "minisat-2.2"))))'` |
 
 **The `-techniques=` string.** FiFO passes `*preprocessor-techniques*` through to MaxPre unchanged and never inspects it, so the format is MaxPre's. It is a small schedule language, not a flag list:
 

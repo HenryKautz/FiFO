@@ -5,17 +5,85 @@
 ;; SAT program used by satisfy
 (defvar *solver* "kissat")
 
+;;; ---------------------------------------------------------------------------
+;;; The solver / counter table
+;;; ---------------------------------------------------------------------------
+;;;
+;;; Which solvers and marginal counters exist, what they are called, what they
+;;; may be abbreviated to and which kind they are, all live in solvers.dat beside
+;;; this file -- which bin/fifo-solvers.sh reads too.  ONE source of truth, so
+;;; the shell and the Lisp cannot drift: adding a solver means editing that file
+;;; and nothing else.  (It used to be two hand-kept copies with a comment asking
+;;; that they be kept in step, which is a request, not a mechanism.)
+
+(defun fifo--split (string char)
+  "STRING split on CHAR, dropping empty pieces."
+  (let ((out '()) (start 0) (n (length string)))
+    (dotimes (i n)
+      (when (char= (char string i) char)
+        (when (> i start) (push (subseq string start i) out))
+        (setq start (1+ i))))
+    (when (< start n) (push (subseq string start) out))
+    (nreverse out)))
+
+(defun fifo--read-solver-table (path)
+  "Parse solvers.dat into a list of plists (:type :name :kind :flags :abbrevs
+:install).  FLAGS and ABBREVS are lists of strings; \"-\" means empty."
+  (unless (probe-file path)
+    (error "FiFO's solver table is missing: ~A~@
+            It lists the solvers and counters the scripts accept and is part of~@
+            the library.  Run 'make install', or point FIFO_LISP at a checkout's~@
+            lisp/ directory."
+           path))
+  (with-open-file (in path :direction :input)
+    (loop for line = (read-line in nil)
+          while line
+          for stripped = (let ((h (position #\# line))) (if h (subseq line 0 h) line))
+          for fields = (fifo--split stripped #\Space)
+          ;; tabs too, without assuming which the file uses
+          for cols = (loop for f in fields append (fifo--split f #\Tab))
+          when (= (length cols) 6)
+            collect (list :type (first cols) :name (second cols) :kind (third cols)
+                          :flags (unless (string= (fourth cols) "-")
+                                   (fifo--split (fourth cols) #\,))
+                          :abbrevs (unless (string= (fifth cols) "-")
+                                     (fifo--split (fifth cols) #\,))
+                          :install (unless (string= (sixth cols) "-") (sixth cols))))))
+
+(defvar *solver-table*
+  (fifo--read-solver-table
+   (merge-pathnames "solvers.dat" (or *load-pathname* *default-pathname-defaults*)))
+  "Every entry of solvers.dat, as plists.  See fifo--read-solver-table.")
+
+(defun solver-table-entries (type)
+  (remove-if-not (lambda (e) (string-equal (getf e :type) type)) *solver-table*))
+
+(defun counter-names (&optional context)
+  "The counter names, in file order.  CONTEXT :planner drops the ones flagged
+no-planner -- max-term needs a NAMED query, while --marginals reports every atom,
+which for it would be 1+n MaxSAT solves."
+  (loop for e in (solver-table-entries "counter")
+        unless (and (eq context :planner)
+                    (member "no-planner" (getf e :flags) :test #'string=))
+          collect (getf e :name)))
+
+(defun resolve-table-name (name type)
+  "NAME resolved through the table's abbreviations, or NAME unchanged."
+  (or (loop for e in (solver-table-entries type)
+            when (or (string-equal name (getf e :name))
+                     (member name (getf e :abbrevs) :test #'string-equal))
+              return (getf e :name))
+      name))
+
 ;; Abbreviations for solver names: a list of (abbreviation full-name) pairs
-;; (binary lists, not an association list).  SOLVE's :solver keyword resolves an
-;; abbreviation through this table; a .wff cannot set either (see
-;; *solve-policy-options*), so extend it with setq from the calling program.
+;; (binary lists, not an association list), derived from the table above.  SOLVE's
+;; :solver keyword resolves an abbreviation through this; a .wff cannot set either
+;; (see *solve-policy-options*), so extend it with setq from the calling program
+;; -- though the supported way to add a solver is to edit solvers.dat, which the
+;; shell reads as well.
 (defvar *solver-abbreviations*
-  '(("tt-glucose" "tt-open-wbo-inc-Glucose4_1")
-    ("tt-intelsat" "tt-open-wbo-inc-IntelSATSolver")
-    ("nuwls" "nuwls-c")
-    ;; Exact (complete) MaxSAT: unlike the anytime solvers above, these prove
-    ;; optimality and print "s OPTIMUM FOUND".
-    ("evalmaxsat" "EvalMaxSAT_bin")))
+  (loop for e in (solver-table-entries "solver")
+        append (loop for a in (getf e :abbrevs) collect (list a (getf e :name)))))
 
 ;; Wall-clock limit in seconds for a single solver run.  NIL, 0 or -1 all mean
 ;; "no limit".

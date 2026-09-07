@@ -112,19 +112,12 @@ done
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 [[ -z "$STATICFILE" || -f "$STATICFILE" ]] || die "static file not found: $STATICFILE"
 
-# Refuse a solver that cannot answer this question.
-_fifo_require_solver_kind "$SOLVER" maxsat map.sh solve.sh || exit 2
-
-SOLVER_BIN="$(_fifo_resolve_solver "$SOLVER")"
-if ! command -v "$SOLVER_BIN" >/dev/null 2>&1 && [[ ! -x "$SOLVER_BIN" ]]; then
-  die "MaxSAT solver not found: '$SOLVER_BIN'${SOLVER_BIN:+$([[ "$SOLVER_BIN" != "$SOLVER" ]] && echo " (from '$SOLVER')")}
-  Install one with:  bin/install-solvers.sh --only tt-open-wbo-inc
-  or:                bin/install-solvers.sh --only nuwls-c"
-fi
-if [[ -n "$PREPROCESSOR" ]] && ! command -v "$PREPROCESSOR" >/dev/null 2>&1 \
-   && [[ ! -x "$PREPROCESSOR" ]]; then
-  die "preprocessor not found: '$PREPROCESSOR'
-  Install MaxPre 2 with:  bin/install-solvers.sh --only maxpre"
+# Resolve the abbreviation, refuse an unknown name or the wrong kind, and check
+# the binary is actually there -- all of it against lisp/solvers.dat.
+SOLVER_BIN="$(_fifo_require_solver "$SOLVER" maxsat map.sh)" || exit 2
+SOLVER="$SOLVER_BIN"
+if [[ -n "$PREPROCESSOR" ]]; then
+  PREPROCESSOR="$(_fifo_require_preprocessor "$PREPROCESSOR" map.sh)" || exit 2
 fi
 
 [[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"

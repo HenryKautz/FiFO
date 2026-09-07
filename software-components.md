@@ -16,7 +16,7 @@
   - [The files](#the-files) · [Which script runs which part](#which-script-runs-which-part)
 - [Conventions shared by every script](#conventions-shared-by-every-script)
 - [The scripts](#the-scripts)
-  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [fifo-answer.sh](#fifo-answersh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
+  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [lisp/solvers.dat](#lispsolversdat) · [fifo-answer.sh](#fifo-answersh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
 - [The Lisp modules](#the-lisp-modules)
 - [Solvers and external tools](#solvers-and-external-tools)
   - [How FiFO finds a solver](#how-fifo-finds-a-solver)
@@ -61,9 +61,10 @@ than down it.
     SAT solver               MaxSAT solver                   └─ max-term  1+n MaxSAT runs
     kissat                   anytime  tt-open-wbo-inc,       │
     │                                 nuwls-c                │
-    │                        exact    wmaxcdcl, rc2          ▼
-    │                        │                               (MARGINAL <atom> <p>)  or
-    └───▶ .satout ◀──────────┘                               (MAXTERM-MARGINAL <atom> <p>)
+    │                        exact    wmaxcdcl, rc2,         ▼
+    │                                 evalmaxsat             (MARGINAL <atom> <p>)  or
+    │                        │                               (MAXTERM-MARGINAL <atom> <p>)
+    └───▶ .satout ◀──────────┘
                │
            interpret
                │
@@ -403,7 +404,7 @@ marginals.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
-| `--solver <name>` | Back end: `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58), `max-term` (**approximate, and a different quantity** — see below). |
+| `--solver <name>` | Back end, validated against [`lisp/solvers.dat`](#lispsolversdat) and accepting its abbreviations (`dnnf`, `mcsat`, `maxterm`): `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58), `max-term` (**approximate, and a different quantity** — see below). |
 | `--weighted-only` | Report (and enumerate) only the weighted atoms. Much cheaper when there are many state atoms. Also reveals the internal `(WEIGHTED-FORMULA n)` atoms carrying formula weights. |
 | `--out <file>` | Also write the `(MARGINAL ...)` lines to a file. |
 | `--node-limit <int>` | Search-effort cap: enumeration nodes for `maxent` (default 5 000 000), circuit nodes for `ddnnf` (default 2 000 000). Not accepted by `addmc`/`d4`/`mc-sat`. |
@@ -429,7 +430,7 @@ marginals.sh <file.scnf> [options]
 | `--prior <atom>=<p>` | *(max-term, or any back end with `--hypotheses`)* A prior. Under max-term without `--hypotheses` it is a log-odds shift that **replaces** that atom's own weight, costing no re-solving; under `--baseline per-hypothesis` it is the π of Bayes' rule. Repeatable. |
 | `--priors <file>` | A file of `atom = p` lines, as for `--prior`. |
 | `--groups auto\|none` | *(max-term)* Detect groups of queried atoms the **theory** makes mutually exclusive and renormalise over each. Default `auto`. |
-| `--maxsat-solver <name>` | *(max-term)* The MaxSAT solver. Default `bin/rc2-maxsat.py`, which is **exact** and terminates with a proof. An anytime solver may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
+| `--maxsat-solver <name>` | *(max-term)* **Any** MaxSAT solver — there is no whitelist. Default `bin/rc2-maxsat.py`; `wmaxcdcl` and `EvalMaxSAT_bin` are the other **exact** ones, terminating with a proof. An anytime solver (`tt-open-wbo-inc-*`, `nuwls-c`) may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
 | `--verify-groups` | *(max-term)* Additionally *prove* each group by SAT entailment, catching encodings the syntactic scan misses. |
 | `--hypotheses <atom>` | Treat these atoms as **competing hypotheses** and report a posterior over them instead of a marginal per atom. Repeatable; works with every `--solver`. |
 | `--hypotheses-file <f>` | A file of such atoms, one per line. |
@@ -692,21 +693,67 @@ exactly.
 
 ### `fifo-solvers.sh`
 
-Not a command — a helper the task drivers **source**. It classifies a solver name
-as `sat`, `maxsat`, or `unknown` (`_fifo_solver_kind`), and refuses a mismatch
-with an explanation (`_fifo_require_solver_kind`). Matching is on the basename,
-case-insensitively, and checks the MaxSAT patterns first, so
-`tt-open-wbo-inc-Glucose4_1` classifies as MaxSAT rather than being caught by
-"glucose". An unrecognised name is `unknown` and allowed through — a locally
-built binary is the user's business.
+Not a command — a helper every driver **sources**. Every place a CLI accepts a
+solver, counter or preprocessor name goes through it, so the checking and the
+accepted spellings are identical everywhere:
 
-It also mirrors FiFO's `*solver-abbreviations*` (`_fifo_resolve_solver`), so the
-shell can check that `nuwls` really means `nuwls-c` before reporting it missing.
-Keep that table in step with `lisp/FiFO.lisp`.
+| Function | Does |
+|---|---|
+| `_fifo_require_solver <name> <sat\|maxsat> <script>` | resolve the abbreviation, refuse an unknown name or the wrong kind, check the binary is installed; prints the resolved name |
+| `_fifo_require_counter <name> <marginals\|planner> <script>` | the same for counters; the `planner` context excludes the ones flagged `no-planner` |
+| `_fifo_require_preprocessor <name> <script>` | the same for MaxPre |
+| `_fifo_resolve_solver`, `_fifo_solver_kind` | the pieces, for callers that want them separately |
 
-The check matters because the failure it prevents is silent rather than loud:
-weights written into a plain `.cnf` become `cw` comment lines, which a SAT
-solver ignores while cheerfully returning a **non-optimal** model.
+Everything it knows comes from [`lisp/solvers.dat`](#lispsolversdat), which
+`lisp/FiFO.lisp` reads as well — one table, so the shell and the Lisp cannot
+disagree. `FIFO_LISP` is **authoritative** when set: the table must come from the
+same directory as the `FiFO.lisp` about to be loaded, and no other location is
+tried, since resolving names from one table while the Lisp reads another is the
+exact drift this arrangement removes.
+
+Two carve-outs. A name containing `/` is an explicit path the caller pointed at
+— checked for existence and classified by basename, but needing no table entry
+(`marginals.sh`'s own default, `bin/rc2-maxsat.py`, is one). And a solver flagged
+`bundled` is looked for beside the scripts rather than on `PATH`.
+
+For binaries the table does not name, the old pattern lists still classify by
+name, MaxSAT first, so `tt-open-wbo-inc-Glucose4_1` reads as MaxSAT rather than
+being caught by "glucose" — used now only to make an error message better.
+
+The kind check matters because the failure it prevents is silent rather than
+loud: weights written into a plain `.cnf` become `cw` comment lines, which a SAT
+solver ignores while cheerfully returning a **non-optimal** model. The
+*existence* check matters for a duller reason — before it, `planner.sh` accepted
+any string and the typo surfaced inside `sb-ext:run-program` after translation
+and instantiation, once per horizon, and `recognize.sh` forwarded it into 3n such
+runs.
+
+------
+
+### `lisp/solvers.dat`
+
+The single source of truth for which solvers and counters exist, what they may be
+abbreviated to, and which kind each is. Read by `bin/fifo-solvers.sh` and by
+`lisp/FiFO.lisp` (into `*solver-table*`, `*solver-abbreviations*` and
+`counter-names`), so **adding a solver means editing this file and nothing
+else**. It previously lived as two hand-maintained copies with a comment asking
+that they be kept in step — a request, not a mechanism.
+
+Whitespace-separated columns, `#` comments, `-` for an empty field:
+
+| Column | Meaning |
+|---|---|
+| `type` | `solver`, `counter` or `preproc` |
+| `name` | the executable or counter name, exactly as invoked |
+| `kind` | solver: `sat`/`maxsat`; counter: `exact`/`approx` |
+| `flags` | `exact`/`anytime`, `builtin`/`external`, `bundled` (ships in `bin/`), `no-planner` |
+| `abbrevs` | comma-separated accepted short names |
+| `install` | the `install-solvers.sh --only` name that provides it |
+
+`no-planner` carries the one context asymmetry: `marginals.sh --solver` offers
+six counters and `planner.sh --counter` five, because `max-term` needs a *named*
+query while `--marginals` reports every atom — which for it would be 1+n MaxSAT
+solves.
 
 ------
 
@@ -737,6 +784,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-hypotheses.sh` | `--hypotheses` and the two baselines, against a fixture counted by hand: h1 has four times the models of h2 but the evidence supports them equally, so best-rival gives 4/5 vs 1/5 while per-hypothesis gives 1/2 vs 1/2. Carries the identity's anchor (P(O\|h) recomputed a different way, by conditioning on h and reading the evidence atom's marginal), a positive control on a symmetric fixture where the two baselines must agree exactly, cross-back-end agreement, the max-term delta, and the error paths. The maxent/ddnnf cases need no binary; addmc/d4/max-term skip cleanly. |
+| `tests/run-test-solvers.sh` | The shared `lisp/solvers.dat` table and the validation every CLI does against it. The load-bearing case proves the *mechanism*: a solver and a counter appended to a copy of the table are picked up by **both** the shell and the Lisp with no code change. Also every entry point refusing an unknown name, the wrong kind and a missing binary; `planner.sh` failing before writing a `.wff`; `recognize.sh` failing up front rather than in 3n runs; the `no-planner` asymmetry; counter abbreviations; paths exempt from the name check; the bundled `rc2` resolving to `bin/`; a missing table naming the file from both sides; and bash 3.2. Needs no solver installed. |
 | `tests/run-test-evgen.sh` | `SatPlan/evgen.sh`, the evidence generator: behavioral, against a ppgen fixture solved by `planner.sh`. Emitted positives are exactly the solution's true literals at the requested slices; `--observe` restricts (including a mixed fluent+action list); positives and negatives partition the restricted universe; the settings header replays byte for byte; fifteen error paths fire. The two load-bearing cases: the true observations reproduce the plan's cost while a shifted observation costs more (so the evidence really binds), and the last slice carries no actions under `--negative-evidence` — checked there because the positives-only form of that assertion passes vacuously. Skips cleanly without a MaxSAT solver. Also the `--recognition` mode and the recognize.sh guards: one `(and ...)` form carrying the same literals as the default mode, `--negative-evidence` refused with it, a multi-form file rejected by recognize.sh with the fix named, and the horizon raised to the largest slice observed. `--export-dataset` gets a full round trip against a real benchmark: export from IntrusionDetectionCosts, diff `hyps.dat` against the published source dataset, re-import through make-recognition-instance.lisp, and solve the result under its own `obs.dat`. `--export-constraints` is verified by SOLVING the export: the constraints must be exactly the solution's literals at the requested slices, the exported problem must hit the source plan's cost, and moving one constraint to another slice must break it; plus the occur-sometime caveat comment appearing iff an action is observed. `--export-ordering-constraints` adds the same-slice refusal, the single spanning constraint, and a solve-and-perturb check, and `--nonstrict-ordering 1` exporting a tie that strict refuses, whose strict form is unsatisfiable at the same horizon |
 | `tests/run-test-cleanup.sh` | `bin/cleanupfifo.sh`'s guards, plus the scratch-file root. Every destructive case runs against a throwaway git repository in a temp directory, never the real checkout: byproducts swept, git-tracked fixtures kept, `tests/` untouched tracked or not, an explicit `tests/` target refused, `--dry-run`, a plain directory outside any repository, `-r`, an installed copy with and without `FIFO_LISP`, and a run under bash 3.2. One case starts four concurrent SBCLs and asserts four distinct scratch roots — before the pid was added they collapsed to one. Needs no solver and no sbcl (the last case skips without it). |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
@@ -1185,7 +1233,7 @@ scripts by pipeline stage and output; this table gives them by solver.
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
 | `marginals.sh --solver d4` | exact marginals | d4 (structure) + FiFO circuit evaluation |
 | `marginals.sh --solver mc-sat` | approximate marginals | WalkSAT v58 `-mcsat` (+ `kissat` to seed) |
-| `marginals.sh --solver max-term` | max-term pseudo-marginals | **exact** MaxSAT — `rc2-maxsat.py` (default) or `wmaxcdcl`; an anytime solver is selectable but unproven |
+| `marginals.sh --solver max-term` | max-term pseudo-marginals | **any** MaxSAT solver via `--maxsat-solver`. Exact ones — `rc2-maxsat.py` (the default), `wmaxcdcl`, `EvalMaxSAT_bin` — prove optimality; an anytime one (`tt-open-wbo-inc-*`, `nuwls-c`) runs fine but its solves are counted as unproved and warned about |
 | `wmc.sh` | partition function `Z` | ADDMC |
 | `learn.sh --method log-odds` | closed-form fit | none |
 | `learn.sh --method maxent` | exact iterative fit | none — built-in enumeration |

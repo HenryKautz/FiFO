@@ -248,6 +248,7 @@ NO_SAT_SEED=0
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-solvers.sh"
 _fifo_options_die() { die "$1"; }
 _fifo_expand_options "$@"
 set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
@@ -291,7 +292,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" || "$SOLVER" == "max-term" ]] || die "--solver must be maxent, addmc, ddnnf, d4, mc-sat or max-term, got: $SOLVER"
+# --solver names a COUNTER here; validated (and abbreviations resolved) against
+# lisp/solvers.dat, the same table the Lisp reads.
+SOLVER="$(_fifo_require_counter "$SOLVER" marginals marginals.sh)" || exit 2
 # --beta and the priors are max-term's alone on the plain marginals path, but on
 # the --hypotheses path they belong to the METHOD, not the back end: the priors
 # are the pi_i of the per-hypothesis posterior and beta scales its sigmoid.
@@ -393,11 +396,7 @@ else
   # score is a difference of two minima, so two upper bounds do not cancel.
   if [[ "$SOLVER" == "max-term" ]]; then
     MT_SOLVER="${MAXSAT_SOLVER:-$SELF_DIR/rc2-maxsat.py}"
-    if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
-      die "MaxSAT solver not found: '$MT_SOLVER'
-  The default, bin/rc2-maxsat.py, needs:  pip install python-sat
-  Or pass --maxsat-solver <name> to choose another."
-    fi
+    MT_SOLVER="$(_fifo_require_solver "$MT_SOLVER" maxsat marginals.sh)" || exit 2
     KW="$KW :maxsat-solver \"$MT_SOLVER\""
   fi
   # priors: "atom = p" pairs become an alist ((atom . p) ...)
@@ -470,15 +469,12 @@ if [[ "$SOLVER" == "max-term" ]]; then
   # An EXACT solver is the right default here.  max-term is a difference of two
   # minima, so an anytime solver's upper bounds do not cancel; rc2-maxsat.py
   # proves optimality, tt-open-wbo-inc does not.  Both remain selectable.
+  # max-term computes minimum COSTS, so it needs a weighted solver -- and one
+  # that PROVES optimality, since a difference of two upper bounds is not an
+  # upper bound on anything.  _fifo_require_solver enforces the kind; the
+  # exact/anytime split is warned about after the solves, not refused here.
   MT_SOLVER="${MAXSAT_SOLVER:-$SELF_DIR/rc2-maxsat.py}"
-  if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
-    die "MaxSAT solver not found: '$MT_SOLVER'
-  max-term computes minimum costs, so it needs a weighted solver, not a SAT one,
-  and one that PROVES optimality -- a difference of two upper bounds is not an
-  upper bound on anything.
-  The default, bin/rc2-maxsat.py, needs:  pip install python-sat
-  Or pass --maxsat-solver <name> to choose another."
-  fi
+  MT_SOLVER="$(_fifo_require_solver "$MT_SOLVER" maxsat marginals.sh)" || exit 2
   KW=":solver \"$MT_SOLVER\""
   ALLQ=0
   for q in ${QUERY[@]+"${QUERY[@]}"}; do [[ "$q" == "all" ]] && ALLQ=1; done

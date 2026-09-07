@@ -305,6 +305,13 @@ wff/scnf.  Progress is printed to STREAM."
             ;; working horizon (conjoined with any evidence) and run weighted
             ;; model counting, printing P(atom | evidence) for each atom.
             (when marginals
+              ;; Accept the same spellings the shell does, and validate against
+              ;; the shared table rather than a hand-written list.
+              (setq counter (resolve-table-name counter "counter"))
+              (unless (member counter (counter-names :planner) :test #'string=)
+                (error "unknown counter ~S -- expected one of ~{~A~^, ~}~@
+                        (a counter is named, not a path; the names live in solvers.dat)"
+                       counter (counter-names :planner)))
               (setq *satplan-numslices* lo *cnf-format* 'wcnf)
               (plan--instantiate wff lo scnf evidence-forms evidence-scnf)
               (let ((msc (plan--scnf-to-solve scnf evidence-forms evidence-scnf combined-scnf)))
@@ -325,11 +332,11 @@ wff/scnf.  Progress is printed to STREAM."
                       ((string-equal counter "addmc") (marginals-addmc msc))
                       ((string-equal counter "ddnnf") (ddnnf-marginals msc))
                       ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4))
-                      ;; A name, never a path: this used to accept a pathname and
-                      ;; run it as an ADDMC binary, which meant "--counter d4"
-                      ;; tried to run d4 AS an ADDMC.
-                      (t (error "unknown counter ~S -- expected maxent, addmc, ddnnf, d4 or mc-sat~@
-                                 (a counter is named, not a path; put the binary on PATH under its own name)"
+                      ;; Unreachable: the name was validated against the shared
+                      ;; table above.  A name, never a path -- this used to accept
+                      ;; a pathname and run it as an ADDMC binary, which meant
+                      ;; "--counter d4" tried to run d4 AS an ADDMC.
+                      (t (error "internal: counter ~S passed validation but has no branch"
                                 counter)))
                 (return-from plan (values :marginals lo msc))))
             ;; Phase 1: smallest horizon with a satisfying model (pure SAT).

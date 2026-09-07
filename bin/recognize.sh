@@ -61,6 +61,7 @@ usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$SELF/fifo-options.sh"
+source "$SELF/fifo-solvers.sh"
 _fifo_options_die() { echo "recognize.sh: $1" >&2; usage; }
 _fifo_expand_options "$@"
 set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
@@ -95,7 +96,13 @@ EVIDENCE="$(cd "$(dirname "$EVIDENCE")" && pwd)/$(basename "$EVIDENCE")"
 [[ -n "$OUT" ]] || OUT="$(dirname "$PROBLEM")/runs/recognize"
 mkdir -p "$OUT"
 
-SOLVER_ARG=(); [[ -n "$SOLVER" ]] && SOLVER_ARG=(--solver "$SOLVER")
+# Validate the solver ONCE, here, rather than letting an unchecked name be
+# forwarded into 3n planner.sh runs and fail in each of them.
+SOLVER_ARG=()
+if [[ -n "$SOLVER" ]]; then
+  SOLVER="$(_fifo_require_solver "$SOLVER" sat recognize.sh)" || exit 2
+  SOLVER_ARG=(--solver "$SOLVER")
+fi
 
 # --- run a planner.sh invocation in its own process group with a timeout ------
 TIMEOUT=900

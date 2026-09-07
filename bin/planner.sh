@@ -81,6 +81,7 @@ COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-solvers.sh"
 _fifo_options_die() { echo "planner.sh: $1" >&2; usage; }
 _fifo_expand_options "$@"
 set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
@@ -122,7 +123,11 @@ if { [[ ${#PDDL_EVIDENCE_FORMS[@]} -gt 0 ]] || [[ -n "$PDDL_EVFILE" ]]; } && [[ 
   echo "--pddl-evidence requires a PDDL problem, not a .wff (use --evidence with FiFO forms)" >&2; exit 2
 fi
 for v in MINSLICES MAXSLICES; do
-  if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then echo "--${v,,} must be a non-negative integer, got: ${!v}" >&2; exit 2; fi
+  # NB: ${v,,} is bash 4.0+, and this script's #!/bin/bash is 3.2 on macOS --
+  # the lowercasing has to go through tr or the error path itself errors.
+  if [[ -n "${!v}" && ! "${!v}" =~ ^[0-9]+$ ]]; then
+    echo "--$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]') must be a non-negative integer, got: ${!v}" >&2; exit 2
+  fi
 done
 if [[ -n "$MINSLICES" && -n "$MAXSLICES" ]] && (( MINSLICES > MAXSLICES )); then
   echo "--minslices ($MINSLICES) must not exceed --maxslices ($MAXSLICES)" >&2; exit 2
@@ -148,6 +153,16 @@ fi
 FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
 [[ -d "$FIFO_LISP" ]] || { echo "FiFO lisp directory not found: $FIFO_LISP" >&2
   echo "  run 'make install', or set FIFO_LISP to your lisp/ directory." >&2; exit 2; }
+
+# Solver / counter names, checked against lisp/solvers.dat before anything is
+# translated: a typo used to travel into the Lisp and die in sb-ext:run-program
+# after instantiation, once per horizon -- and recognize.sh forwards --solver
+# into 3n of these runs.
+SAT_SOLVER="$(_fifo_require_solver "$SAT_SOLVER" sat planner.sh)" || exit 2
+WEIGHTED_SOLVER="$(_fifo_require_solver "$WEIGHTED_SOLVER" maxsat planner.sh)" || exit 2
+if [[ -n "$COUNTER" ]]; then
+  COUNTER="$(_fifo_require_counter "$COUNTER" planner planner.sh)" || exit 2
+fi
 FIFO="$FIFO_LISP/FiFO.lisp"
 PDDL2FIFO="$FIFO_LISP/pddl2fifo.lisp"
 PLANNER="$FIFO_LISP/planner.lisp"

@@ -5,8 +5,11 @@
 # copies the shell scripts in bin/ into BINDIR and the lisp library in lisp/ into
 # LISPDIR, creating the directories as needed.  Defaults install the scripts to
 # ~/bin and the lisp (FiFO.lisp, pddl2fifo.lisp, planner.lisp, reweight.lisp,
-# maxent.lisp, satplan.wff) to ~/lib/fifo/lisp -- the location planner.sh looks in
-# by default.  Override either at install time, e.g.:
+# maxent.lisp, hypotheses.lisp, ..., plus the data files satplan.wff and
+# solvers.dat) to ~/lib/fifo/lisp -- the location planner.sh looks in by default.
+# Both data files are runtime dependencies: solvers.dat is the solver/counter
+# table that bin/fifo-solvers.sh and lisp/FiFO.lisp both read.
+# Override either at install time, e.g.:
 #
 #   make install BINDIR=/usr/local/bin LISPDIR=/usr/local/lib/fifo/lisp
 #

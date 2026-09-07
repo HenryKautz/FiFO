@@ -1,0 +1,58 @@
+# solvers.dat -- the external solvers and marginal counters FiFO knows about.
+#
+# THIS FILE IS THE SINGLE SOURCE OF TRUTH, read by both sides:
+#
+#   bin/fifo-solvers.sh   parses it to validate and resolve every --solver,
+#                         --weighted-solver, --maxsat-solver, --counter and
+#                         --preprocessor argument the CLIs accept
+#   lisp/FiFO.lisp        parses it into *solver-table*, *counter-table* and
+#                         *solver-abbreviations* (which resolve-solver-name uses)
+#
+# It used to be two hand-maintained tables with a comment asking that they be
+# kept in step.  They are now one file, so an entry added here is understood by
+# the shell and the Lisp at once, with no code change.
+#
+# TO ADD A SOLVER, add a line below.  Columns are whitespace-separated; "-" is an
+# empty field; abbrevs is comma-separated.  Nothing else needs editing.
+#
+#   type     one of: solver, counter, preproc
+#   name     the executable (or counter) name, exactly as invoked
+#   kind     solver: sat | maxsat        counter: exact | approx      preproc: -
+#   flags    comma-separated, or "-":
+#              exact       proves optimality, prints "s OPTIMUM FOUND"
+#              anytime     returns its best solution, NO optimality proof.  A
+#                          max-term score is a DIFFERENCE of two minima, so two
+#                          unproven bounds do not cancel -- these are counted and
+#                          warned about rather than refused
+#              builtin     needs no external binary (pure Lisp)
+#              needs:BIN   requires the executable BIN on PATH.  max-term has no
+#                          such flag on purpose: its MaxSAT solver is chosen with
+#                          --maxsat-solver and validated as a solver entry
+#              bundled     ships with FiFO, in bin/, rather than being installed
+#              no-planner  a marginals.sh counter that planner.sh --counter does
+#                          NOT offer (max-term needs a named query; --marginals
+#                          reports every atom, which would be 1+n MaxSAT solves)
+#   abbrevs  accepted short names, comma-separated
+#   install  the bin/install-solvers.sh --only name that provides it
+#
+# A name containing "/" is treated as an explicit path and taken as given: it is
+# checked for existence and classified by its basename, but needs no entry here.
+
+# type     name                             kind    flags                abbrevs      install
+
+solver     kissat                           sat     -                    -            kissat
+solver     tt-open-wbo-inc-Glucose4_1       maxsat  anytime              tt-glucose   tt-open-wbo-inc
+solver     tt-open-wbo-inc-IntelSATSolver   maxsat  anytime              tt-intelsat  tt-open-wbo-inc
+solver     nuwls-c                          maxsat  anytime              nuwls        nuwls-c
+solver     EvalMaxSAT_bin                   maxsat  exact                evalmaxsat   evalmaxsat
+solver     wmaxcdcl                         maxsat  exact                -            wmaxcdcl
+solver     rc2-maxsat.py                    maxsat  exact,bundled        rc2          rc2
+
+counter    maxent                           exact   builtin              -            -
+counter    ddnnf                            exact   builtin              dnnf         -
+counter    addmc                            exact   needs:addmc          -            addmc
+counter    d4                               exact   needs:d4             -            d4
+counter    mc-sat                           approx  needs:walksat        mcsat        walksat
+counter    max-term                         approx  no-planner           maxterm      rc2
+
+preproc    maxpre                           -       needs:maxpre         -            maxpre

@@ -88,14 +88,10 @@ done
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 [[ -z "$STATICFILE" || -f "$STATICFILE" ]] || die "static file not found: $STATICFILE"
 
-# Refuse a solver that cannot answer this question.
-_fifo_require_solver_kind "$SOLVER" sat solve.sh map.sh || exit 2
-
-SOLVER_BIN="$(_fifo_resolve_solver "$SOLVER")"
-if ! command -v "$SOLVER_BIN" >/dev/null 2>&1 && [[ ! -x "$SOLVER_BIN" ]]; then
-  die "SAT solver not found: '$SOLVER_BIN'
-  Install one with:  bin/install-solvers.sh --only kissat"
-fi
+# Resolve the abbreviation, refuse an unknown name or the wrong kind, and check
+# the binary is actually there -- all of it against lisp/solvers.dat.
+SOLVER_BIN="$(_fifo_require_solver "$SOLVER" sat solve.sh)" || exit 2
+SOLVER="$SOLVER_BIN"
 
 # 'none' is a friendlier spelling of the 0 / -1 that FiFO takes for "no limit".
 [[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"
