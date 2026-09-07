@@ -826,8 +826,8 @@ one thing that most often goes wrong.
 | a plan that respects what you know | `planner.sh --pddl-evidence …` | same, conditioned |
 | the single most likely explanation | `planner.sh --pddl-evidence …` | **MAP** — argmax P(trajectory \| evidence) |
 | how likely each fact is | `planner.sh --marginals` | marginal P(atom \| evidence), every atom at every slice — **very small problems only** |
-| a posterior over goal hypotheses, at scale | `recognize.sh` | R&G's approximation |
-| a posterior over goal hypotheses, exactly | `planner.sh --stop-after scnf` + `marginals.sh --hypotheses` | weighted model counting |
+| a posterior over goal hypotheses, from PDDL | `recognize.sh` | R&G's cheapest-plan approximation |
+| the same, choosing the method and the prior | `planner.sh --stop-after scnf` + `marginals.sh --hypotheses` | any of six back ends, exact or approximate; either baseline |
 
 Everything below assumes a costed domain: costs are what make one plan more
 probable than another, since `P(x) ∝ exp(−cost(x))`. On an uncosted domain every
@@ -987,15 +987,20 @@ cheap. So this ranks *hypotheses*, where recipe 3 returns the single best
 *trajectory* — and, as here, the two can disagree.
 
 It replaces each partition function with its cheapest-plan term, so it costs `2n`
-MaxSAT runs and **no counting** — which is why it works at horizons where recipe
-6 does not. `--priors FILE` for non-uniform priors, `--beta` for the temperature.
-`SatPlan/evgen.sh --recognition 1` writes evidence files for it.
+MaxSAT runs and **no counting** — which is why it works at horizons where exact
+counting does not. `--priors FILE` for non-uniform priors, `--beta` for the
+temperature. `SatPlan/evgen.sh --recognition 1` writes evidence files for it.
 
-#### 6. Plan recognition exactly, on a small instance
+Recipe 6 offers the same estimator on an scnf, and faster; what you get here in
+exchange is the PDDL front door — horizon selection, and observations given as
+`(occur-in-order …)` with the times unknown.
 
-When the instance is small enough to count, the same posterior is available
-exactly — and you can choose which prior is in play. Instantiate **without** the
-evidence, then hand the evidence to `marginals.sh`:
+#### 6. Plan recognition on an scnf: choosing the method and the prior
+
+Recipe 5 fixes one method. On an already instantiated `.scnf` you get the whole
+matrix instead: any of the six back ends, exact or approximate, under either
+baseline. Instantiate **without** the evidence, then hand the evidence to
+`marginals.sh`:
 
 ```sh
 # instantiate once at a fixed horizon -- no --pddl-evidence here
@@ -1027,11 +1032,25 @@ Two constraints, both easy to trip over:
   theory does not contain is refused rather than silently ignored. Ordered
   observations of unknown time are recipe 5's business.
 
-Exact counting does not reach the horizons planning does, so expect this on small
-domains and short horizons; at benchmark scale use recipe 5. Prefer `--solver d4`
-or `--solver addmc` on anything SatPlan-sized: the pure-Lisp `ddnnf` compiler is
-for small instances, and on a few-thousand-clause encoding it exhausts the
-control stack rather than stopping at `*ddnnf-node-limit*`.
+**Which back end scales is the whole question here.** The *exact* counters
+(`maxent`, `ddnnf`, `d4`, `addmc`) are for small domains and short horizons —
+counting is the expensive direction, as in recipe 4. `--solver max-term` is not:
+it is R&G's estimator, `1+n` or `2n` MaxSAT solves rather than a count, and it
+runs at benchmark scale. On the 3984-clause IntrusionDetection encoding at
+horizon 6, `--solver max-term --baseline per-hypothesis` over ten hypotheses
+takes about **3 seconds**, while a `d4` compile of the same file does not finish
+in minutes.
+
+That also makes it *faster than recipe 5* for the same estimator: `recognize.sh`
+spends `2n` full translate-instantiate-solve cycles through `planner.sh`, while
+this clamps `2n` solves on one already-built scnf. What recipe 5 gives you in
+exchange is the PDDL front door — horizon selection, and `(occur-in-order …)`
+observations, which cannot be passed here (see the second constraint above).
+
+Among the exact counters, prefer `--solver d4` or `--solver addmc` on anything
+SatPlan-sized: the pure-Lisp `ddnnf` compiler is for small instances, and on a
+few-thousand-clause encoding it exhausts the control stack rather than stopping
+at `*ddnnf-node-limit*`.
 
 #### Making problems and observations to test with
 
