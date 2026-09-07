@@ -19,6 +19,7 @@
 - [Generating problems with ppgen](#generating-problems-with-ppgen)
 - [Generating evidence with evgen](#generating-evidence-with-evgen)
 - [Learning and Inference](#learning-and-inference)
+- [Recipes for Planning and Plan Recognition](#recipes-for-planning-and-plan-recognition)
 - [References](#references)
 
 Planning as Satisfiability (SatPlan) encodes an AI planning problem as a propositional satisfiability problem. The idea is to fix a time horizon of *T* steps, assert the initial state, the goal state, and the action semantics, and let the SAT solver find a sequence of actions (a plan) that achieves the goal. FiFO's static predicates and quantified formulas make the encoding concise and readable.
@@ -661,6 +662,10 @@ We now describe our pipelines for
 - Cost-optimal planning and maximum likelihood plan recognition
 - Computing marginal probabilities from a planning domain together with evidence
 
+This section explains what each piece does; if you already know which question
+you want answered and just need the command, skip to
+[Recipes for Planning and Plan Recognition](#recipes-for-planning-and-plan-recognition).
+
 #### Computing costs and weights from probabilities
 
 Anywhere a cost or weight is specified, you can instead give a **`:probability <p>`** (with `0 < p < 1`) — the learnable alternative. The probability flows into the wff as a target marginal, is **tied** so related ground instances share one weight, and is learned by the weight pipeline. The three places, and what each becomes in the *learned* copy:
@@ -740,7 +745,7 @@ State formulas inside the operators may use `and`/`or`/`not`/`imply`/`forall`/`e
 
 **Ordered observations.** `(occur-in-order a₁ … aₖ)` is the evidence form for a plan-recognition observation trace whose *order* is known but whose *times* are not (partial observability): it asserts an order-preserving embedding — there are slices t₁ < t₂ < … < tₖ, strictly increasing, with each `aᵢ` occurring at `tᵢ`. The actions must be fully ground (no variables, no enclosing `forall`), and each is validated against the domain: unknown actions, wrong arities, objects of the wrong type, and actions whose static preconditions can never hold are all rejected at translation time. The compilation is the standard observation-monitor construction: fresh atoms `(ObsDone c i s)` — "the first *i* observations of chain *c* are explained by slice *s*" — with *biconditional* progression axioms `ObsDone(i, s+1) ⟺ ObsDone(i, s) ∨ (ObsDone(i−1, s) ∧ Occurs(aᵢ, s))` and the single evidence unit `ObsDone(k, numslices)`, O(k·numslices) clauses in all. Because the biconditionals make every monitor atom fully determined by the action trace, the monitors are **count-neutral** under weighted model counting — the same form conditions planning, `--marginals`, and repeated actions in the trace correctly (each element binds a distinct occurrence, so blocksworld-style pick-up/put-down repetitions are no problem). A sequence of k observations needs a horizon of at least k+1 slices; at smaller horizons the evidence is simply unsatisfiable, and the planner's horizon search moves past them. An optional slice window — `(occur-in-order M a₁ … aₖ)` or `(occur-in-order M N a₁ … aₖ)`, with `N = -1` for no upper bound — confines the embedding to `[M, N]`; it is a guard on the progression quantifier, with a complementary one freezing the chain outside, so no slice constant is ever emitted and a window past the horizon is unsatisfiable rather than vacuous. The same operator is available in `:constraints` (see [Trajectory constraints](#trajectory-constraints)). The negation `(not (occur-in-order a₁ … aₖ)))` flips the final assertion to `¬ObsDone(k, numslices)` — the sequence is *not* embedded in order (the plan does not comply with the observations). It is the does-not-comply case Ramírez & Geffner's recognizer needs: `bin/recognize.sh` computes each hypothesis's `c(G,O)` and `c(G,¬O)` with the two polarities and forms the calibrated posterior (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)).
 
-`--marginals` switches from planning to **inference**: instead of searching for a plan, the planner instantiates the problem (conjoined with any evidence) once at the working horizon and runs **weighted model counting**, printing `(MARGINAL <atom> <p>)` — the probability `P(atom | evidence)` of each atom under the Gibbs distribution defined by the action costs. The horizon is the fixed `--numslices`, or the reachability/`--minslices` lower bound. `--counter <name>` selects the model counter: `maxent` (the default, the built-in exact enumeration of `lisp/maxent.lisp`) or the name/path of an **ADDMC** binary (e.g. `--counter addmc`, or `--counter /path/to/addmc`), which scales much further. See [../Probability/probability.md](../Probability/probability.md) for the counting back ends and the weight-scale handling. If the evidence contradicts the problem, the count is 0 (no feasible set) and that is reported.
+`--marginals` switches from planning to **inference**: instead of searching for a plan, the planner instantiates the problem (conjoined with any evidence) once at the working horizon and runs **weighted model counting**, printing `(MARGINAL <atom> <p>)` — the probability `P(atom | evidence)` of each atom under the Gibbs distribution defined by the action costs. The horizon is the fixed `--numslices`, or the reachability/`--minslices` lower bound. `--counter <name>` selects the model counter: `maxent` (the default, the built-in exact enumeration of `lisp/maxent.lisp`), `addmc`, `ddnnf`, `d4` (also exact, and scaling much further), or `mc-sat` (approximate sampling). A counter is **named**, never a path — each external one is resolved on `PATH` under its own name, and an unrecognised name is an error. See [../Probability/probability.md](../Probability/probability.md) for the counting back ends and the weight-scale handling. If the evidence contradicts the problem, the count is 0 (no feasible set) and that is reported.
 
 #### Worked example: the Switch domain, end to end
 
@@ -805,6 +810,231 @@ The intermediate files the pipeline leaves behind (`.scnf`, `.cnf`, `.wcnf`, `.m
 The logic lives in `lisp/planner.lisp`: `(plan problem &key minslices maxslices sat-solver weighted-solver domain-file satplan-path stop-after longer evidence evidence-file pddl-evidence pddl-evidence-file marginals counter)` runs the search (or, with `marginals`, the inference) and returns the status, horizon, and answer/scnf-file path, and `(plan-and-report ...)` is the CLI helper the script calls. Load `lisp/FiFO.lisp`, `lisp/pddl2fifo.lisp`, and `lisp/planner.lisp` to call them from a Lisp listener.
 
 The smallest feasible horizon, CNF size, and optimal cost for each LogisticsCosts problem are tabulated in [benchmarks.md](../benchmarks.md#satplan-smallest-horizons-for-the-logisticscosts-problems).
+
+------
+
+### Recipes for Planning and Plan Recognition
+
+The same encoding answers several different questions, and which script you reach
+for depends on **what you want out**, not on the domain. This section is the
+index: one recipe per question, each with the command, what comes back, and the
+one thing that most often goes wrong.
+
+| You want… | Use | Question |
+|---|---|---|
+| a plan | `planner.sh` | is there a plan, and what is the cheapest one? |
+| a plan that respects what you know | `planner.sh --pddl-evidence …` | same, conditioned |
+| the single most likely explanation | `planner.sh --pddl-evidence …` | **MAP** — argmax P(trajectory \| evidence) |
+| how likely each fact is | `planner.sh --marginals` | marginal P(atom \| evidence) |
+| a posterior over goal hypotheses, at scale | `recognize.sh` | R&G's approximation |
+| a posterior over goal hypotheses, exactly | `planner.sh --stop-after scnf` + `marginals.sh --hypotheses` | weighted model counting |
+
+Everything below assumes a costed domain: costs are what make one plan more
+probable than another, since `P(x) ∝ exp(−cost(x))`. On an uncosted domain every
+feasible plan is equally likely and only the first two recipes mean anything.
+
+#### 1. Plan
+
+```sh
+bin/planner.sh problem.pddl --domain domain.pddl
+```
+
+Searches horizons upward for the smallest feasible one, then minimises cost
+there. `--numslices H` pins the horizon instead; `--minslices`/`--maxslices`
+bound the search.
+
+#### 2. Plan consistent with what you already know
+
+```sh
+bin/planner.sh problem.pddl --domain domain.pddl \
+    --pddl-evidence '(at 3 (turn-off s1))' \
+    --pddl-evidence '(never (turn-on s3))'
+```
+
+The evidence is a **hard** constraint, so this is the cheapest plan that also
+satisfies it — forbidding an action the shortest plan relies on can push the
+solution to a longer horizon that routes around it. Use `--evidence` for raw FiFO
+forms, `--pddl-evidence` for the modal language, `--pddl-evidence-file` for a
+file of them. See [Conditioning on evidence](#conditioning-on-evidence-and-marginal-inference).
+
+#### 3. MAP: the single most likely explanation given evidence
+
+This is recipe 2 read differently, and it deserves its own name. Because
+`P(x) ∝ exp(−cost(x))`, **minimising cost is maximising probability** — so the
+plan the planner returns under evidence *is* the maximum-a-posteriori
+trajectory, `argmax P(trajectory | evidence)`. No separate mode is needed: leave
+`--marginals` off.
+
+```sh
+bin/planner.sh problem.pddl --domain costs-domain.pddl --numslices 6 \
+    --pddl-evidence-file observations.txt
+```
+
+On `Examples/Plan_Recognition/IntrusionDetectionCosts` with the three
+observations of `evidence-3.txt`:
+
+```
+  6 time slices: cost 16
+SOLVED with 6 time slices.
+(OCCURS (RECON LEO) 1)
+(OCCURS (RECON TAURUS) 1)
+(OCCURS (BREAK-INTO LEO) 2)
+...
+```
+
+The `.answer` file holds the whole most-likely trajectory — every action at every
+slice, and every fluent that holds. On a recognition instance it also tells you
+which hypothesis that explanation commits to:
+
+```sh
+grep -o '(HOLDS (HYP[0-9]*) 6)' problem.answer     # -> (HOLDS (HYP3) 6)
+```
+
+Three things to know:
+
+- **Pin the horizon.** MAP is defined over a *fixed* set of variables, so it is a
+  question about one horizon. `planner.sh` otherwise stops at the smallest
+  feasible horizon, and a longer one may contain a cheaper plan. Use
+  `--numslices H`, or `--longer K` to also minimise at up to `K` horizons beyond
+  the smallest.
+- **MAP is not the most probable hypothesis.** The single best trajectory can
+  commit to one hypothesis while most of the probability mass sits on another.
+  On the very run above, MAP commits to `hyp3` — but the posterior argmax is
+  `hyp0` (recipe 5), because `hyp3` is merely *cheap to reach*: the observations
+  do not make it purposeful, and there is an even cheaper plan for it that
+  ignores them. When you want the hypothesis rather than the trajectory, use
+  recipe 5 or 6. This is the MAP / marginal-MAP distinction; see
+  [probability-background.md §3.3](../Probability/probability-background.md#33-map-inference-the-mode-of-the-distribution).
+- **Contradictory evidence reports `unsatisfiable`**, and a misspelled atom is an
+  error rather than a silently vacuous constraint — see the evidence-checking
+  table in [Conditioning on evidence](#conditioning-on-evidence-and-marginal-inference).
+
+If the problem is already instantiated, the same query on an `.scnf` is
+`bin/map.sh` (fix the weighted format and a MaxSAT solver); `planner.sh` is just
+the PDDL front door to it.
+
+#### 4. Marginals: how likely is each fact
+
+```sh
+bin/planner.sh problem.pddl --domain domain.pddl --numslices 3 \
+    --marginals --counter addmc \
+    --pddl-evidence '(occur-sometime 2 2 (turn-off s1))'
+```
+
+Prints `(MARGINAL <atom> <p>)` for every atom: `P(atom | evidence)` at that
+horizon, summing over *all* trajectories rather than picking the best one. This
+is the expensive direction — exact counting does not reach the horizons planning
+does — so `--counter` matters: `maxent` (exact enumeration, small instances),
+`addmc`, `ddnnf`, `d4` (exact), `mc-sat` (approximate sampling). The
+[Switch worked example](#worked-example-the-switch-domain-end-to-end) runs this
+end to end.
+
+#### 5. Plan recognition at scale: a posterior over hypotheses
+
+For an instance whose goal is `(or (hyp0) … (hypN))` over nullary derived
+predicates, with observations as an `(occur-in-order …)` file:
+
+```sh
+bin/recognize.sh costs-domain.pddl problem.pddl evidence-3.txt --horizon 6
+```
+
+Prints a table of `c(O)`, `c(¬O)`, likelihood and posterior per hypothesis, plus
+the argmax. On `IntrusionDetectionCosts` with `evidence-3.txt` at horizon 6:
+
+```
+hyp   c_O  c_notO  delta  likelihood  prior   posterior
+hyp0  20   20       0     0.5000      1.0000  0.3667
+hyp2  16   15      -1     0.2689      1.0000  0.1972
+hyp3  16   14      -2     0.1192      1.0000  0.0874
+...
+```
+
+Read the third and fourth columns together: `hyp3` has the *cheapest* complying
+plan (`c_O` = 16, and it is the MAP trajectory of recipe 3), yet scores low
+because an even cheaper plan for `hyp3` ignores the observations entirely
+(`c_notO` = 14). `hyp0` wins on `delta` = 0 — every plan that achieves it costs
+the same whether or not it complies, so the observations are exactly what a
+`hyp0`-seeking agent would do. That difference *within* each hypothesis is the
+point of the baseline: it cancels the goal's intrinsic reachability, so a
+hypothesis wins for making the observations purposeful rather than for being
+cheap. So this ranks *hypotheses*, where recipe 3 returns the single best
+*trajectory* — and, as here, the two can disagree.
+
+It replaces each partition function with its cheapest-plan term, so it costs `2n`
+MaxSAT runs and **no counting** — which is why it works at horizons where recipe
+6 does not. `--priors FILE` for non-uniform priors, `--beta` for the temperature.
+`SatPlan/evgen.sh --recognition 1` writes evidence files for it.
+
+#### 6. Plan recognition exactly, on a small instance
+
+When the instance is small enough to count, the same posterior is available
+exactly — and you can choose which prior is in play. Instantiate **without** the
+evidence, then hand the evidence to `marginals.sh`:
+
+```sh
+# instantiate once at a fixed horizon -- no --pddl-evidence here
+bin/planner.sh problem.pddl --domain costs-domain.pddl --numslices 6 --stop-after scnf
+
+# the posterior over the hypothesis atoms, conditioned on the observations
+bin/marginals.sh problem.scnf --solver d4 --baseline per-hypothesis \
+    --evidence '(occurs (recon taurus) 1)' \
+    --hypotheses '(holds (hyp0) 6)' --hypotheses '(holds (hyp1) 6)'    # … one per hypothesis
+```
+
+The hypothesis atoms are `(HOLDS (hypI) H)` at the horizon you pinned.
+`--baseline per-hypothesis` divides out the theory's implicit prior — the mass it
+puts on a hypothesis merely for being *easy to reach* — which is the baseline
+`recognize.sh` approximates; `--baseline best-rival` (the default) leaves that
+implicit prior in place. See
+[Hypothesis posteriors](../Probability/probability.md#hypothesis-posteriors-which-prior-is-in-play).
+
+Two constraints, both easy to trip over:
+
+- **Do not bake the evidence into the scnf.** The per-hypothesis baseline needs
+  a conditioned *and* an unconditioned count, so `marginals.sh` has to be the one
+  holding the evidence. (`--baseline best-rival` needs only the conditioned run,
+  so there a pre-conditioned scnf is fine.)
+- **The evidence must be ground FiFO forms over atoms the scnf already names** —
+  slice-pinned observations, which is exactly what `SatPlan/evgen.sh` writes.
+  The horizon-independent `(occur-in-order …)` cannot be passed this way: it
+  compiles to monitor atoms that exist only in the evidence scnf, and an atom the
+  theory does not contain is refused rather than silently ignored. Ordered
+  observations of unknown time are recipe 5's business.
+
+Exact counting does not reach the horizons planning does, so expect this on small
+domains and short horizons; at benchmark scale use recipe 5. Prefer `--solver d4`
+or `--solver addmc` on anything SatPlan-sized: the pure-Lisp `ddnnf` compiler is
+for small instances, and on a few-thousand-clause encoding it exhausts the
+control stack rather than stopping at `*ddnnf-node-limit*`.
+
+#### Making problems and observations to test with
+
+```sh
+# a random logistics problem, reproducible from its seed
+SatPlan/ppgen.sh --style clique --clique-size 3 --number-cliques 2 \
+                 --packages 2 --seed 1 -o pb.pddl
+
+# solve it -- evgen reads the plan, so this must run first
+bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl
+
+# turn the plan back into an observation file
+SatPlan/evgen.sh --problem pb.pddl --evidence obs.txt --slices "1-3" \
+                 --observe "fly,in" --recognition 1 \
+                 --domain SatPlan/clara-logistics.pddl
+```
+
+`ppgen` generates logistics problems — `--clique-size` and `--number-cliques` are
+required for the clique style, `--dimensions M N` for the grid style
+([Generating problems with ppgen](#generating-problems-with-ppgen)).
+
+`evgen` reads the `.answer` the planner just wrote and emits the fluents and
+actions true at the chosen slices; `--recognition 1` writes them as a single
+`(and …)` form, which is what `recognize.sh --evidence-kind fifo` needs (it
+builds the does-not-comply case by wrapping the file in `(not …)`, and `(not A B)`
+is not a formula). Give `--domain` explicitly unless the domain file sits beside
+the problem. `evgen` can also export the instance in Ramírez & Geffner's dataset
+format, or as PDDL 3.0 `:constraints`
+([Generating evidence with evgen](#generating-evidence-with-evgen)).
 
 ------
 
