@@ -825,7 +825,7 @@ one thing that most often goes wrong.
 | a plan | `planner.sh` | is there a plan, and what is the cheapest one? |
 | a plan that respects what you know | `planner.sh --pddl-evidence …` | same, conditioned |
 | the single most likely explanation | `planner.sh --pddl-evidence …` | **MAP** — argmax P(trajectory \| evidence) |
-| how likely each fact is | `planner.sh --marginals` | marginal P(atom \| evidence) |
+| how likely each fact is | `planner.sh --marginals` | marginal P(atom \| evidence), every atom at every slice — **very small problems only** |
 | a posterior over goal hypotheses, at scale | `recognize.sh` | R&G's approximation |
 | a posterior over goal hypotheses, exactly | `planner.sh --stop-after scnf` + `marginals.sh --hypotheses` | weighted model counting |
 
@@ -915,17 +915,43 @@ the PDDL front door to it.
 
 #### 4. Marginals: how likely is each fact
 
+This is **state estimation**, not recognition: `P(atom | evidence)` for each
+atom, summing over *all* trajectories rather than picking the best one. If what
+you want is a posterior over goal hypotheses, that is recipe 5 or 6 — reading
+`hypI` rows out of this output is only meaningful when the goal happens to be a
+disjunction of hypotheses.
+
 ```sh
 bin/planner.sh problem.pddl --domain domain.pddl --numslices 3 \
     --marginals --counter addmc \
     --pddl-evidence '(occur-sometime 2 2 (turn-off s1))'
 ```
 
-Prints `(MARGINAL <atom> <p>)` for every atom: `P(atom | evidence)` at that
-horizon, summing over *all* trajectories rather than picking the best one. This
-is the expensive direction — exact counting does not reach the horizons planning
-does — so `--counter` matters: `maxent` (exact enumeration, small instances),
-`addmc`, `ddnnf`, `d4` (exact), `mc-sat` (approximate sampling). The
+**Every atom at every slice** is reported — fluents at slices 1..N, actions at
+1..N−1 — not just the final slice. On the three-slice Switch problem that is all
+21 atoms:
+
+```
+(MARGINAL (HOLDS (ON S1) 1) 1.000000)      (MARGINAL (OCCURS (TURN-OFF S1) 1) 0.500000)
+(MARGINAL (HOLDS (ON S1) 2) 0.500000)      (MARGINAL (OCCURS (TURN-OFF S1) 2) 0.500000)
+(MARGINAL (HOLDS (ON S1) 3) 0.000000)      (MARGINAL (OCCURS (TURN-ON S2) 1) 0.500000)
+(MARGINAL (HOLDS (ON S2) 1) 0.000000)      (MARGINAL (OCCURS (TURN-ON S2) 2) 0.500000)
+(MARGINAL (HOLDS (ON S2) 2) 0.500000)      ...
+```
+
+`s1` is certainly on at slice 1 and certainly off at slice 3; at slice 2 it is
+even money, because its turn-off can fall in either slice for the same cost —
+which is the same fact the two `TURN-OFF S1` rows report from the action side.
+
+**Expect this to work only on very small problems.** It is the expensive
+direction: planning asks for one cheapest model, while counting sums over all of
+them, and the number of atoms grows with the horizon as well. The horizons that
+planning handles comfortably are far beyond what exact counting reaches — the
+recognition benchmarks time out, which is precisely why `recognize.sh` exists
+(see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)).
+So `--counter` matters: `maxent` (exact enumeration — toy instances only),
+`addmc`, `ddnnf`, `d4` (exact, and scaling further), `mc-sat` (approximate
+sampling, for horizons past exact counting). The
 [Switch worked example](#worked-example-the-switch-domain-end-to-end) runs this
 end to end.
 
