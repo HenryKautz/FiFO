@@ -714,7 +714,7 @@ The second is the baseline Ramírez & Geffner use, and what `recognize.sh`
 computes for PDDL plan recognition; `--hypotheses` makes it available for any
 FiFO theory and any back end. It is cheap because
 
-$$P(O \mid T, h) \thinspace = \thinspace \frac{P(h \mid T, O)\, P(O \mid T)}{P(h \mid T)}$$
+$$P(O \mid T, h) \thinspace = \thinspace \frac{P(h \mid T, O) \thinspace P(O \mid T)}{P(h \mid T)}$$
 
 and $P(O \mid T)$ does not depend on $h$, so it cancels on normalisation:
 
