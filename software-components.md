@@ -408,7 +408,7 @@ marginals.sh <file.scnf> [options]
 | `--out <file>` | Also write the `(MARGINAL ...)` lines to a file. |
 | `--node-limit <int>` | Search-effort cap: enumeration nodes for `maxent` (default 5 000 000), circuit nodes for `ddnnf` (default 2 000 000). Not accepted by `addmc`/`d4`/`mc-sat`. |
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header the learning pipeline records (1 if absent). `--scale 1` uses the raw weights. Applies to every back end. |
-| `--evidence <form>` | Condition on a **ground** FiFO formula, conjoined as a hard constraint, so the results become `P(atom \| form)`. Repeatable. `addmc`/`ddnnf`/`d4`/`mc-sat` only. |
+| `--evidence <form>` | Condition on a **ground** FiFO formula, conjoined as a hard constraint, so the results become `P(atom \| form)`. Repeatable. `addmc`/`ddnnf`/`d4`/`mc-sat`/`max-term`, or **any** back end together with `--hypotheses` (where evidence is conjoined into the theory rather than passed as a back-end keyword, so `maxent` works too). |
 | `--evidence-file <f>` | A file of ground FiFO formulas, conjoined with any `--evidence`. |
 | `--epsilon <e>` | *(addmc)* ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. A positive value trades exactness for speed/memory. |
 | `--save-circuit <f>` | *(ddnnf/d4)* After compiling, persist the circuit to `<f>`; this run still reports marginals. |
@@ -425,12 +425,15 @@ marginals.sh <file.scnf> [options]
 | `--no-sat-seed` | *(mc-sat)* Do **not** seed the initial assignment from the CDCL solver. On by default because local search alone cannot reach a model of a structured SatPlan encoding — and a CDCL UNSAT verdict is then a proof, reported at once. |
 | `--query <atom>` | *(max-term)* Atom to report; repeatable, or `all`. **Required** — each atom costs one MaxSAT solve. |
 | `--query-file <f>` | *(max-term)* A file of atoms, one per line. |
-| `--beta <r>` | *(max-term)* Inverse temperature; default `1/scale`. |
-| `--prior <atom>=<p>` | *(max-term)* Log-odds prior. **Replaces** that atom's own weight rather than stacking on it, and costs no re-solving. Repeatable. |
-| `--priors <file>` | *(max-term)* A file of `atom = p` lines. |
+| `--beta <r>` | *(max-term, or any back end with `--hypotheses`)* Inverse temperature; default `1/scale`. |
+| `--prior <atom>=<p>` | *(max-term, or any back end with `--hypotheses`)* A prior. Under max-term without `--hypotheses` it is a log-odds shift that **replaces** that atom's own weight, costing no re-solving; under `--baseline per-hypothesis` it is the π of Bayes' rule. Repeatable. |
+| `--priors <file>` | A file of `atom = p` lines, as for `--prior`. |
 | `--groups auto\|none` | *(max-term)* Detect groups of queried atoms the **theory** makes mutually exclusive and renormalise over each. Default `auto`. |
 | `--maxsat-solver <name>` | *(max-term)* The MaxSAT solver. Default `bin/rc2-maxsat.py`, which is **exact** and terminates with a proof. An anytime solver may be given instead, but offers no optimality guarantee — and since max-term is a *difference* of two minima, two unproven bounds do not cancel. Unproven solves are counted and warned about. |
 | `--verify-groups` | *(max-term)* Additionally *prove* each group by SAT entailment, catching encodings the syntactic scan misses. |
+| `--hypotheses <atom>` | Treat these atoms as **competing hypotheses** and report a posterior over them instead of a marginal per atom. Repeatable; works with every `--solver`. |
+| `--hypotheses-file <f>` | A file of such atoms, one per line. |
+| `--baseline best-rival\|per-hypothesis` | *(with `--hypotheses`)* Which posterior. See below. Default `best-rival`. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 
@@ -454,6 +457,58 @@ the **weights** contribute and discards what the **counting** contributes. On an
 unweighted theory every difference is zero and it returns 0.5 for everything.
 Output is labelled `(MAXTERM-MARGINAL …)` rather than `(MARGINAL …)` so that it
 cannot be mistaken for a Gibbs marginal by eye or by `grep`.
+
+**`--hypotheses` and `--baseline`: which prior is in play.** When the atoms you
+care about are *competing hypotheses*, `P(h | theory, evidence)` is already a
+posterior — but its prior is implicit, and equal to `P(h | theory)`: the theory's
+own mass on `h`. Where that mass is an artifact of the encoding rather than a
+belief — a goal that is cheap to reach, a fault with many consistent
+explanations, a hypothesis with more groundings — it tilts the answer regardless
+of what the evidence says.
+
+| `--baseline` | Computes | Prior |
+|---|---|---|
+| `best-rival` (default) | `P(h \| T, O)`, off one conditioned model | implicit: `P(h \| T)` |
+| `per-hypothesis` | the likelihood `P(O \| T, h)`, normalised | explicit: `--prior`, uniform by default |
+
+`per-hypothesis` is the baseline Ramírez & Geffner use, and what `recognize.sh`
+computes for PDDL plan recognition; this makes it available for any FiFO theory
+and any back end. For the **exact** counters it costs only one extra back-end run
+in total — not one per hypothesis — because
+
+```
+P(O | T, h)  =  P(h | T, O) · P(O | T) / P(h | T)
+```
+
+and `P(O | T)` is the same for every `h`, so it cancels on normalisation: the
+posterior is `prior · P(h | T, O) / P(h | T)`, two runs and a division. Dividing
+by `P(h | T)` is literally dividing out the implicit prior. Two consequences: the
+evidence need not be negatable or reified, so it may be any set of ground
+formulas, and it works on `maxent` too, which has no `:evidence` keyword, because
+conditioning is done by conjoining the evidence clauses into a combined scnf.
+
+`max-term` cannot use that identity — it drops the degeneracy term differently on
+each side, so it does not satisfy the log-odds algebra — and computes R&G's
+difference directly instead: `2n` clamped solves of `c_min(T ∧ O ∧ h)` against
+`c_min(T ∧ ¬O ∧ h)`. It is the only baseline/back-end pair that needs `¬O`, and
+even there the negation is built internally as `(not (and …))`, so several
+evidence forms are still fine.
+
+Choose `best-rival` when the theory's mass *is* your prior, when the hypotheses
+are equally "large" (the two then agree exactly), or when the atoms are not
+competing hypotheses at all. Choose `per-hypothesis` otherwise.
+
+Output is `(HYPOTHESIS <atom> :posterior p :prior π …)` — again deliberately not
+`(MARGINAL …)`. The header states whether exclusivity is **entailed** by the
+theory (an at-least-one clause plus the pairwise at-most-one clauses, detected by
+the same scan `--groups` uses) or merely **assumed**, since normalising over the
+set presumes the hypotheses are exclusive and exhaustive.
+
+Both a hypothesis atom and an evidence atom must already occur in the theory, or
+the run is refused. FiFO's parser mints a fresh proposition for an unknown atom,
+and that proposition occurs in no other clause — so the constraint would bind
+nothing and the answer would silently be the unconditioned one. This is the same
+failure `plan--resolve-evidence` exists to catch on the planner side.
 
 Two things it gets exactly right. A **backbone** atom — one whose opposite
 polarity is UNSAT — is reported as 0 or 1 and flagged `[proved]`. And a group of
@@ -681,6 +736,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-mcsat.sh` | The MC-SAT back end: each case fixes `--seed` and asserts the sampled marginals match the exact `maxent` ones to a tolerance. Skips cleanly (exit 0) when no WalkSAT v58 binary is found. |
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
+| `tests/run-test-hypotheses.sh` | `--hypotheses` and the two baselines, against a fixture counted by hand: h1 has four times the models of h2 but the evidence supports them equally, so best-rival gives 4/5 vs 1/5 while per-hypothesis gives 1/2 vs 1/2. Carries the identity's anchor (P(O\|h) recomputed a different way, by conditioning on h and reading the evidence atom's marginal), a positive control on a symmetric fixture where the two baselines must agree exactly, cross-back-end agreement, the max-term delta, and the error paths. The maxent/ddnnf cases need no binary; addmc/d4/max-term skip cleanly. |
 | `tests/run-test-evgen.sh` | `SatPlan/evgen.sh`, the evidence generator: behavioral, against a ppgen fixture solved by `planner.sh`. Emitted positives are exactly the solution's true literals at the requested slices; `--observe` restricts (including a mixed fluent+action list); positives and negatives partition the restricted universe; the settings header replays byte for byte; fifteen error paths fire. The two load-bearing cases: the true observations reproduce the plan's cost while a shifted observation costs more (so the evidence really binds), and the last slice carries no actions under `--negative-evidence` — checked there because the positives-only form of that assertion passes vacuously. Skips cleanly without a MaxSAT solver. Also the `--recognition` mode and the recognize.sh guards: one `(and ...)` form carrying the same literals as the default mode, `--negative-evidence` refused with it, a multi-form file rejected by recognize.sh with the fix named, and the horizon raised to the largest slice observed. `--export-dataset` gets a full round trip against a real benchmark: export from IntrusionDetectionCosts, diff `hyps.dat` against the published source dataset, re-import through make-recognition-instance.lisp, and solve the result under its own `obs.dat`. `--export-constraints` is verified by SOLVING the export: the constraints must be exactly the solution's literals at the requested slices, the exported problem must hit the source plan's cost, and moving one constraint to another slice must break it; plus the occur-sometime caveat comment appearing iff an action is observed. `--export-ordering-constraints` adds the same-slice refusal, the single spanning constraint, and a solve-and-perturb check, and `--nonstrict-ordering 1` exporting a tie that strict refuses, whose strict form is unsatisfiable at the same horizon |
 | `tests/run-test-cleanup.sh` | `bin/cleanupfifo.sh`'s guards, plus the scratch-file root. Every destructive case runs against a throwaway git repository in a temp directory, never the real checkout: byproducts swept, git-tracked fixtures kept, `tests/` untouched tracked or not, an explicit `tests/` target refused, `--dry-run`, a plain directory outside any repository, `-r`, an installed copy with and without `FIFO_LISP`, and a run under bash 3.2. One case starts four concurrent SBCLs and asserts four distinct scratch roots — before the pid was added they collapsed to one. Needs no solver and no sbcl (the last case skips without it). |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |

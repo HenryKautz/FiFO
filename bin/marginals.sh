@@ -104,12 +104,15 @@ reach of exact counting.
                       every atom.  Required, since the cost is one MaxSAT solve
                       per atom
   --query-file <f>    (max-term only) a file of atoms, one per line
-  --beta <r>          (max-term only) inverse temperature; default 1/scale
-  --prior <atom=p>    (max-term only) log-odds prior on an atom.  REPLACES that
+  --beta <r>          (max-term, or any solver with --hypotheses) inverse
+                      temperature; default 1/scale
+  --prior <atom=p>    (max-term, or any solver with --hypotheses) prior on an
+                      atom.  Under max-term without --hypotheses it is a log-odds
+                      shift that REPLACES that atom's own weight.  REPLACES that
                       atom's own weight rather than stacking on it, and needs no
                       re-solving, since a unit cost factors out of the
                       minimisation.  Repeatable
-  --priors <file>     (max-term only) a file of 'atom = p' lines
+  --priors <file>     a file of 'atom = p' lines, as for --prior
   --groups auto|none  (max-term only) detect groups of queried atoms that the
                       THEORY makes mutually exclusive -- an at-least-one clause
                       plus the pairwise at-most-one clauses -- and renormalise
@@ -134,7 +137,8 @@ reach of exact counting.
                       --evidence '(implies (holds (on s1) 1) (p a))'
                       With ddnnf, unit-literal evidence reuses the compiled circuit;
                       a non-unit form triggers a recompile.
-  --evidence-file <f> (addmc/ddnnf/d4/mc-sat) a file of ground FiFO formulas to condition on,
+  --evidence-file <f> (addmc/ddnnf/d4/mc-sat/max-term, or any solver with
+                      --hypotheses) a file of ground FiFO formulas to condition on,
                       conjoined with any --evidence forms.  Evidence must be ground
                       (over atoms already in the scnf); quantified evidence needs
                       the .wff (re-instantiate with the assertion added).
@@ -144,12 +148,43 @@ reach of exact counting.
                       it WITHOUT recompiling (give this instead of a .scnf file).
                       Unit-literal --evidence reuses it; non-unit evidence recompiles
                       from the stored clauses.  --scale re-weights it for free.
+  --hypotheses <atom> treat these atoms as COMPETING HYPOTHESES and report a
+                      posterior over them rather than a marginal per atom.
+                      Repeatable.  Works with every --solver, and evidence is
+                      then conjoined into the theory, so --evidence applies to
+                      any of them (maxent included)
+  --hypotheses-file <f>  a file of such atoms, one per line
+  --baseline <b>      (with --hypotheses) which posterior to compute:
+                        best-rival      P(h | theory, evidence) read straight off
+                                        one conditioned model.  The default, and
+                                        what marginals.sh has always reported.
+                                        Its prior is IMPLICIT: P(h | theory), the
+                                        theory's own mass on h, which favours
+                                        whichever hypothesis has the most models
+                        per-hypothesis  the likelihood P(evidence | h), with that
+                                        implicit prior divided out and --prior
+                                        applied instead.  This is the baseline
+                                        Ramirez & Geffner use.  Needs evidence.
+                                        For the exact counters it costs only ONE
+                                        extra back-end run, not one per
+                                        hypothesis; for max-term it is 2n solves
   --options <file>    splice the options listed in <file> in at this point (one
                       logical line, wrappable with a trailing backslash; if the
                       file has more than one line only the first is used)
   -h, --help          show this help
 
-Each line of output is  (MARGINAL <atom> <probability>).
+Each line of output is  (MARGINAL <atom> <probability>), or with --hypotheses
+(HYPOTHESIS <atom> :posterior p :prior pi ...) -- deliberately not MARGINAL,
+since a per-hypothesis posterior is not a marginal of the theory.
+
+Which baseline?  Use per-hypothesis when the theory's mass on a hypothesis is an
+artifact of the encoding rather than a belief -- a goal that is cheap to reach, a
+fault with many consistent explanations, a hypothesis with more groundings.  Use
+best-rival when that mass IS your prior, when the hypotheses are equally
+"large" (the two then agree exactly), or when the atoms are not competing
+hypotheses at all.  --prior/--priors set pi under per-hypothesis; under
+best-rival on an exact counter they are refused, since the theory already
+supplies the prior and multiplying another in would double-count it.
 
 With --solver mc-sat the results are APPROXIMATE, and the run also prints the
 sampler's diagnostics as ';' comment lines -- in particular the effective sample
@@ -183,6 +218,9 @@ WEIGHTED_ONLY=0
 SOLVER="maxent"
 QUERY=()
 QUERY_FILE=""
+HYPOTHESES=()
+HYPOTHESES_FILE=""
+BASELINE="best-rival"
 BETA=""
 PRIORS=()
 PRIORS_FILE=""
@@ -220,6 +258,9 @@ while [[ $# -gt 0 ]]; do
     --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; shift 2 ;;
     --query)          [[ $# -ge 2 ]] || die "--query needs an argument"; QUERY+=("$2"); shift 2 ;;
     --query-file)     [[ $# -ge 2 ]] || die "--query-file needs an argument"; QUERY_FILE="$2"; shift 2 ;;
+    --hypotheses)     [[ $# -ge 2 ]] || die "--hypotheses needs an argument"; HYPOTHESES+=("$2"); shift 2 ;;
+    --hypotheses-file) [[ $# -ge 2 ]] || die "--hypotheses-file needs an argument"; HYPOTHESES_FILE="$2"; shift 2 ;;
+    --baseline)       [[ $# -ge 2 ]] || die "--baseline needs best-rival or per-hypothesis"; BASELINE="$2"; shift 2 ;;
     --beta)           [[ $# -ge 2 ]] || die "--beta needs an argument"; BETA="$2"; shift 2 ;;
     --prior)          [[ $# -ge 2 ]] || die "--prior needs an argument"; PRIORS+=("$2"); shift 2 ;;
     --priors)         [[ $# -ge 2 ]] || die "--priors needs an argument"; PRIORS_FILE="$2"; shift 2 ;;
@@ -251,13 +292,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$SOLVER" == "maxent" || "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" || "$SOLVER" == "max-term" ]] || die "--solver must be maxent, addmc, ddnnf, d4, mc-sat or max-term, got: $SOLVER"
+# --beta and the priors are max-term's alone on the plain marginals path, but on
+# the --hypotheses path they belong to the METHOD, not the back end: the priors
+# are the pi_i of the per-hypothesis posterior and beta scales its sigmoid.
+HYP_PATH=0
+[[ ${#HYPOTHESES[@]} -gt 0 || -n "$HYPOTHESES_FILE" ]] && HYP_PATH=1
 if [[ "$SOLVER" != "max-term" ]]; then
   [[ ${#QUERY[@]} -eq 0 ]] || die "--query applies to the max-term solver only"
   [[ -z "$QUERY_FILE" ]]   || die "--query-file applies to the max-term solver only"
-  [[ -z "$BETA" ]]         || die "--beta applies to the max-term solver only"
-  [[ ${#PRIORS[@]} -eq 0 ]] || die "--prior applies to the max-term solver only"
-  [[ -z "$PRIORS_FILE" ]]  || die "--priors applies to the max-term solver only"
   [[ "$VERIFY_GROUPS" -eq 0 ]] || die "--verify-groups applies to the max-term solver only"
+  if [[ "$HYP_PATH" -eq 0 ]]; then
+    [[ -z "$BETA" ]]         || die "--beta applies to the max-term solver only (or to any solver with --hypotheses)"
+    [[ ${#PRIORS[@]} -eq 0 ]] || die "--prior applies to the max-term solver only (or to any solver with --hypotheses)"
+    [[ -z "$PRIORS_FILE" ]]  || die "--priors applies to the max-term solver only (or to any solver with --hypotheses)"
+  fi
 fi
 if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
   [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--circuit/--save-circuit apply to the ddnnf and d4 solvers only"
@@ -273,8 +321,13 @@ if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
-if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]]; then
-  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, d4, and mc-sat solvers only"
+# On the --hypotheses path evidence is conjoined into a combined scnf rather than
+# passed as a back-end keyword, so it works for EVERY counter, maxent included.
+if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]] \
+   && [[ "$HYP_PATH" -eq 0 ]]; then
+  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" \
+     || "$SOLVER" == "max-term" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, d4, mc-sat and max-term solvers only
+  (or to any counter together with --hypotheses, where evidence is conjoined into the theory)"
 fi
 if [[ "$SOLVER" != "mc-sat" ]]; then
   [[ -z "$SAMPLES"   ]] || die "--samples applies to the mc-sat solver only"
@@ -298,6 +351,83 @@ if [[ -n "$WALK_PROB" && ! "$WALK_PROB" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--w
 if [[ -n "$TEMP"      && ! "$TEMP"      =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--temp must be a positive number, got: $TEMP"; fi
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
+
+# --- hypothesis posteriors ---------------------------------------------------
+# A distinguished set of atoms treated as COMPETING HYPOTHESES, with a choice of
+# baseline.  See lisp/hypotheses.lisp for the identity that makes the
+# per-hypothesis baseline two back-end runs rather than 2n.
+[[ "$BASELINE" == "best-rival" || "$BASELINE" == "per-hypothesis" ]] \
+  || die "--baseline must be best-rival or per-hypothesis, got: $BASELINE"
+
+HYPL=""
+for h in ${HYPOTHESES[@]+"${HYPOTHESES[@]}"}; do HYPL="$HYPL $h"; done
+if [[ -n "$HYPOTHESES_FILE" ]]; then
+  [[ -f "$HYPOTHESES_FILE" ]] || die "hypotheses file not found: $HYPOTHESES_FILE"
+  HYPL="$HYPL $(grep -v '^[[:space:]]*;' "$HYPOTHESES_FILE" | tr '\n' ' ')"
+fi
+
+if [[ -z "${HYPL// /}" ]]; then
+  [[ "$BASELINE" == "best-rival" ]] || die "--baseline per-hypothesis needs --hypotheses <atom>...
+  The baseline compares P(evidence | h) ACROSS hypotheses, so it has to be told
+  which atoms are the competing hypotheses."
+else
+  KW=":hypotheses (quote ($HYPL)) :baseline :$BASELINE :counter \"$SOLVER\""
+  [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ -n "$BETA" ]] && KW="$KW :beta $BETA"
+  [[ -n "$NODE_LIMIT" ]] && KW="$KW :node-limit $NODE_LIMIT"
+  [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
+  [[ -n "$SAMPLES" ]] && KW="$KW :samples $SAMPLES"
+  [[ -n "$BURNIN" ]] && KW="$KW :burnin $BURNIN"
+  [[ -n "$SEED" ]] && KW="$KW :seed $SEED"
+  [[ "$UNITPROP" -eq 1 ]] && KW="$KW :unitprop t"
+  [[ -n "$WALK_PROB" ]] && KW="$KW :walk-prob $WALK_PROB"
+  [[ -n "$TEMP" ]] && KW="$KW :temp $TEMP"
+  [[ -n "$SS_CUTOFF" ]] && KW="$KW :cutoff $SS_CUTOFF"
+  [[ -n "$INIT_CUTOFF" ]] && KW="$KW :init-cutoff $INIT_CUTOFF"
+  [[ -n "$INIT_TRIES" ]] && KW="$KW :init-tries $INIT_TRIES"
+  [[ "$NO_SAT_SEED" -eq 1 ]] && KW="$KW :seed-from-sat nil"
+  # max-term needs a weighted solver that PROVES optimality: the per-hypothesis
+  # score is a difference of two minima, so two upper bounds do not cancel.
+  if [[ "$SOLVER" == "max-term" ]]; then
+    MT_SOLVER="${MAXSAT_SOLVER:-$SELF_DIR/rc2-maxsat.py}"
+    if ! command -v "$MT_SOLVER" >/dev/null 2>&1 && [[ ! -x "$MT_SOLVER" ]]; then
+      die "MaxSAT solver not found: '$MT_SOLVER'
+  The default, bin/rc2-maxsat.py, needs:  pip install python-sat
+  Or pass --maxsat-solver <name> to choose another."
+    fi
+    KW="$KW :maxsat-solver \"$MT_SOLVER\""
+  fi
+  # priors: "atom = p" pairs become an alist ((atom . p) ...)
+  PL=""
+  for pr in ${PRIORS[@]+"${PRIORS[@]}"}; do
+    a="${pr%%=*}"; v="${pr##*=}"
+    [[ "$a" != "$pr" ]] || die "--prior wants <atom>=<probability>, got: $pr"
+    PL="$PL (cons (quote $a) $v)"
+  done
+  if [[ -n "$PRIORS_FILE" ]]; then
+    [[ -f "$PRIORS_FILE" ]] || die "priors file not found: $PRIORS_FILE"
+    while read -r line; do
+      [[ -z "${line// /}" || "$line" =~ ^[[:space:]]*\; ]] && continue
+      a="${line%%=*}"; v="${line##*=}"
+      PL="$PL (cons (quote $a) $v)"
+    done < "$PRIORS_FILE"
+  fi
+  [[ -n "$PL" ]] && KW="$KW :priors (list $PL)"
+  BACKEND_EVAL=()
+  case "$SOLVER" in
+    ddnnf|d4) BACKEND_EVAL=( --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" ) ;;
+    mc-sat)   BACKEND_EVAL=( --eval "(load \"$FIFO_LISP/mcsat.lisp\")" ) ;;
+  esac
+  exec sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    ${BACKEND_EVAL[@]+"${BACKEND_EVAL[@]}"} \
+    --eval "(load \"$FIFO_LISP/hypotheses.lisp\")" \
+    --eval "(handler-case (progn (hypothesis-posterior \"$SCNF\" $KW) (sb-ext:exit :code 0))
+              (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+fi
 
 if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   if [[ "$SOLVER" == "d4" ]]; then

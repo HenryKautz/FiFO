@@ -19,7 +19,7 @@
   - [Weight scale](#weight-scale) — read this first; it applies to every back end
   - Exact: [enumeration](#exact-enumeration-small-instances) · [ADDMC](#weighted-model-counting-via-addmc) · [FiFO's d-DNNF compiler](#d-dnnf-compilation-fifos-own-no-external-binary) · [the d4 compiler](#d-dnnf-via-the-external-d4-compiler)
   - Approximate: [MC-SAT sampling](#approximate-marginals-by-mc-sat-sampling) · [max-term](#max-term-marginals-maxsat-instead-of-counting)
-  - [Conditioning on evidence](#conditioning-on-evidence) · [Plan recognition posteriors](#plan-recognition-posteriors-recognizesh)
+  - [Conditioning on evidence](#conditioning-on-evidence) · [Hypothesis posteriors](#hypothesis-posteriors-which-prior-is-in-play) · [Plan recognition posteriors](#plan-recognition-posteriors-recognizesh)
 - [From inference to learning](#from-inference-to-learning)
 - [Weight learning: probabilities → weights](#weight-learning-probabilities--weights)
   - [Two estimators](#two-estimators) · [Running it](#running-it) · [Input format](#input-format-example) · [Worked examples](#worked-examples-in-this-directory) · [Limitations](#limitations-current)
@@ -673,7 +673,7 @@ and rc2 was 2.7x faster besides.
 
 ### Conditioning on evidence
 
-`wmc`, `marginals-addmc`, the `ddnnf`/`d4` solvers, and `mc-sat` all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver ddnnf`, `--solver d4`, and `--solver mc-sat`; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles. `mc-sat` samples from the conditioned distribution — the evidence clauses are simply part of the hard set every SampleSAT call must satisfy.)
+`wmc`, `marginals-addmc`, the `ddnnf`/`d4` solvers, and `mc-sat` all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver ddnnf`, `--solver d4`, `--solver mc-sat` and `--solver max-term` — and, with `--hypotheses`, to *every* back end including `maxent`, since there the evidence is conjoined into the theory rather than passed as a back-end keyword; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles. `mc-sat` samples from the conditioned distribution — the evidence clauses are simply part of the hard set every SampleSAT call must satisfy.)
 
 - `:evidence` (Lisp) / `--evidence '<form>'` (shell, repeatable) — a **ground** FiFO formula. It is clausified by FiFO's own parser (`(implies (P A) (P B))` → `(OR (NOT (P A)) (P B))`, etc.) and conjoined with the theory. Multiple forms are conjoined.
 - `:evidence-file` / `--evidence-file <f>` — a file of ground FiFO formulas, conjoined with any `--evidence` forms.
@@ -693,6 +693,64 @@ If `E` contradicts the theory, `WMC(theory ∧ E) = 0` (the evidence is impossib
 
 For a SatPlan problem the planner lifts all of this to the PDDL level: `planner.sh … --marginals --counter addmc --pddl-evidence '<modal form>'` conditions on evidence that may be quantified over the time slices, instantiates the problem conjoined with it, and reports `P(atom | evidence)` at the working horizon. A complete end-to-end walkthrough on the Switch domain — plain plan, evidence reshaping the plan, the separate evidence scnf, and conditional marginals — is in [../SatPlan/satplan.md](../SatPlan/satplan.md#worked-example-the-switch-domain-end-to-end).
 
+### Hypothesis posteriors: which prior is in play
+
+When the atoms you care about are *competing hypotheses*, $P(h \mid T, O)$ is
+already a posterior — but its prior is **implicit**, and equal to $P(h \mid T)$:
+the theory's own mass on $h$. Where that mass is an artifact of the encoding
+rather than a belief you hold — a goal that is cheap to reach, a fault with many
+consistent explanations, a hypothesis with more groundings — it tilts the answer
+regardless of what the evidence says.
+
+`marginals.sh --hypotheses <atom>…` names the competing set and reports a
+posterior over it, with `--baseline` choosing which prior applies:
+
+| `--baseline` | Computes | Prior | Cost (exact counters) |
+|---|---|---|---|
+| `best-rival` (default) | $P(h \mid T, O)$ | implicit: $P(h \mid T)$ | 1 run |
+| `per-hypothesis` | likelihood $P(O \mid T, h)$, normalised | explicit `--prior`, uniform by default | 2 runs |
+
+The second is the baseline Ramírez & Geffner use, and what `recognize.sh`
+computes for PDDL plan recognition; `--hypotheses` makes it available for any
+FiFO theory and any back end. It is cheap because
+
+$$P(O \mid T, h) \;=\; \frac{P(h \mid T, O)\, P(O \mid T)}{P(h \mid T)}$$
+
+and $P(O \mid T)$ does not depend on $h$, so it cancels on normalisation:
+
+$$\text{posterior}(h) \;\propto\; \pi_h \cdot \frac{P(h \mid T, O)}{P(h \mid T)}$$
+
+— two back-end runs and a division, *not* one run per hypothesis. Dividing by
+$P(h \mid T)$ is literally dividing out the implicit prior. Two consequences
+follow: the evidence needs neither reification nor negation, so it may be any set
+of ground formulas; and it works on `maxent`, which has no `:evidence` keyword,
+because conditioning is done by conjoining the evidence clauses into a combined
+scnf.
+
+`max-term` cannot use that identity — it drops the degeneracy term differently on
+each side, so it does not satisfy the log-odds algebra — and computes R&G's
+difference directly instead, $2n$ clamped solves of
+$c_{\min}(T \wedge O \wedge h)$ against $c_{\min}(T \wedge \lnot O \wedge h)$.
+
+```sh
+# the evidence supports h1 and h2 equally, but h1 has four times the models
+bin/marginals.sh t.scnf --hypotheses '(H 1)' --hypotheses '(H 2)' --hypotheses '(H 3)' \
+    --evidence '(OBS 1)'                          # best-rival:     0.80  0.20  0.00
+bin/marginals.sh t.scnf --hypotheses '(H 1)' --hypotheses '(H 2)' --hypotheses '(H 3)' \
+    --evidence '(OBS 1)' --baseline per-hypothesis # per-hypothesis: 0.50  0.50  0.00
+```
+
+Choose `best-rival` when the theory's mass *is* your prior, when the hypotheses
+are equally "large" (the two then agree exactly), or when the atoms are not
+competing hypotheses at all. Choose `per-hypothesis` otherwise.
+
+Output is `(HYPOTHESIS <atom> :posterior p :prior π …)`, deliberately not
+`(MARGINAL …)`. The header says whether exclusivity is **entailed** by the theory
+or merely **assumed**, since normalising over the set presumes the hypotheses are
+exclusive and exhaustive — and a hypothesis or evidence atom the theory does not
+contain is refused rather than silently minted as a fresh, unconstrained
+proposition.
+
 ### Plan recognition posteriors (recognize.sh)
 
 The exact conditional above is a weighted model count, and for plan recognition at useful horizons it does not scale — the `--marginals` runs time out (see [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks)). When the goal is a disjunction of hypotheses and you want the posterior *over those hypotheses*, `bin/recognize.sh` computes it with the **maximum-term approximation** ([probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function)): each partition function is replaced by its cheapest-plan term, turning the intractable count into tractable MaxSAT. This is Ramírez & Geffner's recognizer.
@@ -710,7 +768,7 @@ bin/recognize.sh \
     SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt --horizon 6
 ```
 
-It costs `2n` MaxSAT runs (no counting). Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
+It costs `2n` MaxSAT runs (no counting). The same estimator, on an already instantiated `.scnf` rather than a PDDL problem, is `marginals.sh --hypotheses … --baseline per-hypothesis --solver max-term`; see [Hypothesis posteriors](#hypothesis-posteriors-which-prior-is-in-play) for the exact-counting versions of the same two baselines. Omit `--horizon` to have it use the maximum over hypotheses of the smallest feasible horizon (so none is excluded); `--priors FILE` sets non-uniform priors. The theory is in [probability-background.md §3.2](probability-background.md#32-maximum-term-approximation-of-the-partition-function); the benchmark results (and the contrast with the cost-biased MAP plan) are in [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
 
 ------
 

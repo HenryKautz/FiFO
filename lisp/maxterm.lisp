@@ -278,17 +278,21 @@ the minimisation -- so applying a prior needs no re-solving at all.
 Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
 (MARGINAL ...): see the file header for why these are not Gibbs marginals."
   (let ((*maxterm-solver* (or solver *maxterm-solver*)))
-    (multiple-value-bind (clauses probs opts weights) (rw--read-scnf scnf-file)
+    ;; NB: bind the weight forms to a NON-special name -- the obvious WEIGHTS is
+    ;; FiFO's global special, which (parse ...) inside wmc--evidence-clauses
+    ;; resets.  With the obvious name, evidence silently emptied the weights and
+    ;; max-term returned 0.5 for every atom, its documented unweighted answer.
+    (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
       (declare (ignore probs opts))
       (let* ((sc (rw--resolve-scale scnf-file scale verbose))
              (b (or beta (/ 1d0 sc)))
-             (ev (wmc--evidence-clauses evidence evidence-file))
-             (all-clauses (append clauses ev))
              (soft-atoms (mapcar (lambda (w) (nth-value 0 (rw--literal-atom-and-sign (second w))))
-                                 weights)))
+                                 weight-forms))
+             (ev (wmc--evidence-clauses evidence evidence-file))
+             (all-clauses (append clauses ev)))
         (multiple-value-bind (a2i nvars) (mx--index-atoms all-clauses soft-atoms)
           (let* ((int-clauses (mapcar (lambda (c) (mx--clause->ints c a2i)) all-clauses))
-                 (costs (wmc--literal-costs weights a2i))
+                 (costs (wmc--literal-costs weight-forms a2i))
                  (theory-atoms (let (r) (maphash (lambda (k v) (declare (ignore v)) (push k r)) a2i)
                                     (sort r #'string< :key #'princ-to-string)))
                  (qatoms (cond (query (mapcar (lambda (a) (if (stringp a) (read-from-string a) a)) query))
