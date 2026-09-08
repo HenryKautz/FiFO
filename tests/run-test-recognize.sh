@@ -45,7 +45,6 @@ TMP="$(mktemp -d /tmp/fifo-rec-XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 cd "$TMP" || exit 1
 cp "$REC"/{intrusion-detection-costs.pddl,problem.pddl,evidence-3.txt} .
 cp "$SW"/*.pddl .
-printf '1\n' > one-weight.txt
 
 echo "=== recognize.sh: the merged fast path ==="
 
@@ -163,12 +162,20 @@ grep -q "is a plain SAT solver" <<<"$OUT_KS" \
 # silently zero, which is what this pins.
 bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
      --horizon 6 --baseline best-rival --out r-br >/dev/null 2>&1
-BRSUM=$(awk -F'\t' 'NR>1{s+=$7} END{print (s>0.9 && s<1.1) ? "ok" : "bad:"s}' r-br/summary.tsv 2>/dev/null)
-if [[ "$BRSUM" == "ok" ]]; then
-  ok "best-rival reports a real posterior (sums to 1, not all zero)"
-else
-  bad "best-rival reports a real posterior (sums to 1, not all zero)" "posteriors sum to ${BRSUM#bad:}"
-fi
+# Summing to 1 is NOT enough on its own: a flat 0.1 across ten hypotheses sums to
+# 1 too, and that is exactly what a broken run returns -- the prior echoed back as
+# the posterior.  Requiring VARIATION is what makes this case bite.  (It caught
+# forwarding a relative weight of 1 to marginals.sh as if it were a probability:
+# max-term reads a prior as a log-odds shift, so 1 means logit(1) = infinity and
+# every marginal came back pinned at 1.0.)
+BRSUM=$(awk -F'\t' 'NR>1{s+=$7; if($7+0>mx)mx=$7+0; if(mn==""||$7+0<mn)mn=$7+0}
+                    END{print (s>0.9 && s<1.1) ? ((mx-mn>0.01)?"ok":"flat:"mx) : "bad:"s}' \
+         r-br/summary.tsv 2>/dev/null)
+case "$BRSUM" in
+  ok)    ok "best-rival reports a real posterior (sums to 1, and varies)" ;;
+  flat*) bad "best-rival reports a real posterior (sums to 1, and varies)" "uniform ${BRSUM#flat:} -- the prior, not a posterior" ;;
+  *)     bad "best-rival reports a real posterior (sums to 1, and varies)" "posteriors sum to ${BRSUM#bad:}" ;;
+esac
 # The two baselines disagree here, which is the point of having both: best-rival
 # favours hyp3 for being cheap to REACH, per-hypothesis divides that out.
 A_BR=$(awk -F'\t' 'NR>1 && $7+0>m{m=$7+0; b=$1} END{print b}' r-br/summary.tsv 2>/dev/null)
@@ -203,13 +210,10 @@ expect_err "--counter is refused with --method plan-runs" "no meaning with --met
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --counter ddnnf
 expect_err "--baseline is refused with --method plan-runs" "no meaning with --method plan-runs" \
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --baseline best-rival
-expect_err "a --priors count mismatch is refused" "but there are" \
-  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 \
-  --baseline best-rival --priors one-weight.txt
 
 # --priors must REACH marginals.sh on the path that reports its posterior; the
 # awk that would otherwise apply them never runs there.
-printf '9\n1\n1\n1\n1\n1\n1\n1\n1\n1\n' > skew.txt
+printf 'hyp0 = 9\n' > skew.txt
 bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
      --horizon 6 --baseline best-rival --priors skew.txt --out r-pri >/dev/null 2>&1
 P_SKEW=$(awk -F'\t' '$1=="hyp0"{print $6}' r-pri/summary.tsv 2>/dev/null)
@@ -236,6 +240,93 @@ OUT_32="$(/bin/bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.p
 grep -q "unbound variable" <<<"$OUT_32" \
   && bad "runs under /bin/bash 3.2 (empty arrays)" "unbound variable" \
   || ok "runs under /bin/bash 3.2 (empty arrays)"
+
+# --- 5d. hypotheses from the parsed goal, and priors by name ----------------
+# The hypotheses used to come from a grep over the problem TEXT, and priors were
+# matched to that list BY LINE NUMBER -- so a stray (hypN) anywhere shifted every
+# weight onto the wrong hypothesis.
+
+cat > two.pddl <<'PDDL'
+;; a note mentioning (hyp7) in passing -- NOT a hypothesis of this problem
+(define (problem intrusion-two) (:domain intrusion-detection)
+ (:objects perseus cassiopea andromeda sagittarius scorpio virgo aries leo
+  libra taurus - host)
+ (:init (dummy) (= (total-cost) 0))
+ (:goal (or (hyp0) (hyp1))))
+PDDL
+# the grep this replaced would find three
+[[ "$(grep -oE '\(hyp[0-9]+\)' two.pddl | sort -u | wc -l | tr -d ' ')" -eq 3 ]] \
+  || echo "  (fixture no longer exercises the hazard)" >&2
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl two.pddl evidence-3.txt \
+     --horizon 6 --out r-two >/dev/null 2>&1
+NH=$(awk 'NR>1' r-two/summary.tsv 2>/dev/null | wc -l | tr -d ' ')
+[[ "$NH" -eq 2 ]] && ok "a (hypN) in a comment is not a hypothesis" \
+                  || bad "a (hypN) in a comment is not a hypothesis" "got $NH hypotheses, want 2"
+
+# Order independence: the whole point of naming them.
+printf 'hyp0 = 9\nhyp3 = 4\n' > pa.txt
+printf 'hyp3 = 4\nhyp0 = 9\n' > pb.txt
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --priors pa.txt --out r-pa >/dev/null 2>&1
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --priors pb.txt --out r-pb >/dev/null 2>&1
+if [[ -s r-pa/summary.tsv ]] && diff -q r-pa/summary.tsv r-pb/summary.tsv >/dev/null; then
+  ok "priors are order-independent"
+else
+  bad "priors are order-independent" "$(diff r-pa/summary.tsv r-pb/summary.tsv 2>&1 | head -2 | tr '\n' ' ')"
+fi
+
+expect_err "an unknown hypothesis in --prior is refused" "is not a hypothesis of this problem" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 --prior hyp99=2
+printf '9\n1\n' > old-style.txt
+expect_err "the old positional priors file is refused" "given BY NAME" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 --priors old-style.txt
+cat > notrec.pddl <<'PDDL'
+(define (problem p) (:domain intrusion-detection) (:init (dummy))
+ (:goal (or (recon-performed leo) (recon-performed taurus))))
+PDDL
+expect_err "a non-nullary goal disjunct is refused" "not a nullary predicate" \
+  intrusion-detection-costs.pddl notrec.pddl evidence-3.txt --horizon 3
+
+# --- 5e. priors from preferences, opt-in ------------------------------------
+# pi = exp(w): w is a VIOLATION penalty, so escaping it is worth odds exp(w).
+# ln 2 = 0.69314718, so this must equal --prior hyp0=2 exactly.
+cat > pref.pddl <<'PDDL'
+(define (problem intrusion-pref) (:domain intrusion-detection)
+ (:objects perseus cassiopea andromeda sagittarius scorpio virgo aries leo
+  libra taurus - host)
+ (:init (dummy) (= (total-cost) 0))
+ (:goal
+  (and (or (hyp0) (hyp1) (hyp2) (hyp3) (hyp4) (hyp5) (hyp6) (hyp7) (hyp8) (hyp9))
+       (preference h0 (hyp0) 0.69314718))))
+PDDL
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl pref.pddl evidence-3.txt \
+     --horizon 6 --priors-from-preferences --out r-pref >/dev/null 2>&1
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --prior hyp0=2 --out r-p2 >/dev/null 2>&1
+PP=$(awk -F'\t' '$1=="hyp0"{print $7}' r-pref/summary.tsv 2>/dev/null)
+P2=$(awk -F'\t' '$1=="hyp0"{print $7}' r-p2/summary.tsv 2>/dev/null)
+if [[ -n "$PP" && "$PP" == "$P2" ]]; then
+  ok "a preference weight w gives prior exp(w) (posterior $PP)"
+else
+  bad "a preference weight w gives prior exp(w)" "preference gave '$PP', --prior hyp0=2 gave '$P2'"
+fi
+# Stripping: the weight is the prior and must NOT also be charged as a cost, so
+# the costs must match the same problem without the preference.
+CP=$(awk -F'\t' '$1=="hyp1"{print $2"/"$3}' r-pref/summary.tsv 2>/dev/null)
+CN=$(awk -F'\t' '$1=="hyp1"{print $2"/"$3}' r-p2/summary.tsv 2>/dev/null)
+[[ -n "$CP" && "$CP" == "$CN" ]] \
+  && ok "the preference is stripped from the cost model (c=$CP)" \
+  || bad "the preference is stripped from the cost model" "with preference $CP, without $CN"
+
+expect_err "--priors-from-preferences is refused under best-rival" "needs --baseline per-hypothesis" \
+  intrusion-detection-costs.pddl pref.pddl evidence-3.txt --horizon 6 \
+  --priors-from-preferences --baseline best-rival
+expect_err "--priors-from-preferences with --prior is refused" "not both" \
+  intrusion-detection-costs.pddl pref.pddl evidence-3.txt --horizon 6 \
+  --priors-from-preferences --prior hyp0=2
+expect_err "--priors-from-preferences with no preference is refused" "no preference on a hypothesis" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 --priors-from-preferences
 
 # --- 6. slice-pinned FiFO evidence still works through the fast path --------
 printf '(occurs (recon taurus) 1)\n' > fifoev.txt

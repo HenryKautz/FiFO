@@ -28,16 +28,37 @@
 #
 # Usage:
 #   recognize.sh <costs-domain.pddl> <problem.pddl> <evidence-file> \
-#        [--horizon H] [--beta B] [--priors FILE] [--out DIR] [--solver NAME] \
-#        [--counter NAME] [--baseline B] [--maxsat-solver NAME] [--method M]
+#        [--horizon H] [--beta B] [--out DIR] [--solver NAME] [--counter NAME] \
+#        [--baseline B] [--maxsat-solver NAME] [--method M] \
+#        [--prior H=W ...] [--priors FILE] [--priors-from-preferences]
+#
+#   The HYPOTHESES are the disjuncts of the problem's :goal -- read by parsing it,
+#   not by grepping the file -- and a hypothesis is a NULLARY predicate, so an
+#   ordinary disjunctive goal like (or (at p1 bos) (at p1 jfk)) is not mistaken
+#   for a recognition instance.  Goal order is the reported order.
 #
 #   --horizon H   fixed horizon (default: max over hypotheses of the smallest
 #                 feasible horizon, and >= observations+1, so no hypothesis is
 #                 excluded).
 #   --beta B      inverse temperature in the sigmoid (default 1.0); beta = 1/scale
 #                 in the Boltzmann model -- larger beta sharpens the likelihood.
-#   --priors F    file of n prior weights (one per line, hyp0 first); renormalized.
-#                 Default: uniform.
+#   --prior H=W   prior weight W on hypothesis H, BY NAME; repeatable.  Weights are
+#                 relative and renormalized -- 2 and 1 mean 2/3 and 1/3.  A
+#                 hypothesis not named keeps weight 1.  A name that is not one of
+#                 the goal's hypotheses is an error listing the ones that are.
+#   --priors F    the same, one 'H = W' per line; '#' and ';' comment.  (The old
+#                 format -- n bare numbers matched BY LINE NUMBER -- is refused:
+#                 a misordered or short file silently moved every weight onto the
+#                 wrong hypothesis.)  Default: uniform.
+#   --priors-from-preferences
+#                 take the prior from (preference <name> (hypI) w) forms in the
+#                 goal, as  pi_i  proportional to  exp(w_i).  w is a VIOLATION
+#                 penalty, so escaping it is worth odds exp(w), and a hypothesis
+#                 with no preference is w = 0, hence pi proportional to 1.  Those
+#                 preferences are STRIPPED from the cost model under this flag, so
+#                 the weight means exactly one thing -- the prior -- with no
+#                 residual cost.  Needs --baseline per-hypothesis, and cannot be
+#                 combined with --prior/--priors.  Only an INLINE weight is read.
 #   --out DIR     output directory (default: <problem-dir>/runs/recognize).
 #   --solver NAME override the SAT feasibility solver passed to planner.sh.
 #   --evidence-kind pddl|fifo  which evidence language the file is written in.
@@ -79,7 +100,7 @@ PLANNER="$SELF/planner.sh"
 [[ -x "$PLANNER" || -f "$PLANNER" ]] || { echo "planner.sh not found at $PLANNER" >&2; exit 2; }
 command -v sbcl >/dev/null || { echo "sbcl not found on PATH" >&2; exit 2; }
 
-usage() { sed -n '2,71p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$SELF/fifo-options.sh"
@@ -93,6 +114,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
 HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
 COUNTER="max-term"; BASELINE="per-hypothesis"; METHOD="fast"; MAXSAT_SOLVER=""
+PRIORS_KV=(); PRIORS_FROM_PREFS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -105,6 +127,8 @@ while [[ $# -gt 0 ]]; do
     --baseline) BASELINE="$2"; shift 2;;
     --method)  METHOD="$2"; shift 2;;
     --maxsat-solver) MAXSAT_SOLVER="$2"; shift 2;;
+    --prior)   PRIORS_KV+=("$2"); shift 2;;
+    --priors-from-preferences) PRIORS_FROM_PREFS=1; shift;;
     -h|--help) usage 0;;
     *) echo "unexpected argument: $1" >&2; usage;;
   esac
@@ -206,22 +230,192 @@ cost_of() {               # cost_of <logfile>
   else echo NA; fi
 }
 
-# --- enumerate hypotheses hyp0..hyp(n-1) from the problem goal ----------------
+
+# --- reading the problem's goal ----------------------------------------------
+# Shared preamble for the sbcl helpers below: locate the (:goal ...) form,
+# descend an enclosing (and ...) skipping preferences, and return the disjuncts
+# of the top-level (or ...).
+_GOAL_LISP='
+ (defun goal-of (p) (loop for s in p when (and (consp s) (symbolp (first s))
+                          (string-equal (symbol-name (first s)) "GOAL")) return (second s)))
+ (defun headp (x n) (and (consp x) (symbolp (first x)) (string-equal (symbol-name (first x)) n)))
+ (defun prefp (x) (headp x "PREFERENCE"))
+ (defun nullaryp (x) (and (consp x) (= 1 (length x)) (symbolp (first x))))
+ (defun disjuncts (g)
+   (cond ((null g) nil)
+         ((headp g "OR") (rest g))
+         ((headp g "AND") (let ((inner (remove-if (function prefp) (rest g))))
+                            (if (and (= 1 (length inner)) (headp (first inner) "OR"))
+                                (rest (first inner)) inner)))
+         (t (list g))))
+ (defun goal-prefs (g) (if (headp g "AND") (remove-if-not (function prefp) (rest g)) nil))'
+
+# hypotheses_from_goal <problem> -- one name per line, in GOAL ORDER.
+# Reading the sexp rather than grepping the text is the point: a (hypN) in a
+# comment is not a hypothesis, and the criterion is ARITY, not the name, so an
+# ordinary disjunctive planning goal is not mistaken for a recognition instance.
+hypotheses_from_goal() {
+  sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil))$_GOAL_LISP
+     (let* ((p (with-open-file (i \"$1\") (read i)))
+            (d (disjuncts (goal-of p)))
+            (bad (remove-if (function nullaryp) d)))
+       (when (null d)
+         (format *error-output* \"the problem has no goal, so there are no hypotheses~%\")
+         (sb-ext:exit :code 3))
+       (when bad
+         (format *error-output* \"goal disjunct ~(~S~) is not a nullary predicate~%\" (first bad))
+         (sb-ext:exit :code 3))
+       (dolist (x d) (format t \"~(~A~)~%\" (first x)))))" 2>&1
+}
+
+# preference_priors <problem> -- "<hyp> <weight>" for each (preference n (hypI) w)
+# in the goal whose body is one of the hypotheses.  Inline weight only.
+preference_priors() {
+  sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil))$_GOAL_LISP
+     (let* ((p (with-open-file (i \"$1\") (read i)))
+            (g (goal-of p)))
+       (dolist (pr (goal-prefs g))
+         (let ((body (third pr)) (w (fourth pr)))
+           (when (nullaryp body)
+             (unless (realp w)
+               (format *error-output* \"preference ~(~A~) on ~(~S~) has no inline weight;~%  give one, e.g. (preference ~(~A~) ~(~S~) 2) -- the :metric route is not read here~%\"
+                       (second pr) body (second pr) body)
+               (sb-ext:exit :code 3))
+             (format t \"~(~A~) ~A~%\" (first body) w))))))" 2>&1
+}
+
+# strip_hypothesis_preferences <problem> <out.pddl> -- drop the preferences whose
+# body is a nullary predicate.  Under --priors-from-preferences the weight means
+# the PRIOR and nothing else; leaving it in the theory would also charge it as a
+# cost, which cancels between c(G,O) and c(G,~O) only when the hypotheses are
+# mutually exclusive.
+strip_hypothesis_preferences() {
+  sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil))$_GOAL_LISP
+     (let ((p (with-open-file (i \"$1\") (read i))))
+       (with-open-file (o \"$2\" :direction :output :if-exists :supersede :if-does-not-exist :create)
+         (let ((*print-case* :downcase))
+           (print (mapcar (lambda (s)
+                            (if (and (consp s) (symbolp (first s))
+                                     (string-equal (symbol-name (first s)) \"GOAL\")
+                                     (headp (second s) \"AND\"))
+                                (let ((kept (remove-if (lambda (x) (and (prefp x) (nullaryp (third x))))
+                                                       (rest (second s)))))
+                                  (list :goal (if (= 1 (length kept)) (first kept) (cons (quote and) kept))))
+                                s))
+                          p) o)))))" >/dev/null 2>&1
+}
+
+# --- the hypotheses, from the parsed goal ------------------------------------
 # NB: a read loop, not `mapfile` -- mapfile is bash 4.0+ and this script's
-# #!/bin/bash is 3.2 on macOS, where it is simply not a builtin, so HYPS ended up
-# unset and the script died on the next line.
+# #!/bin/bash is 3.2 on macOS, where it is simply not a builtin.
+HYP_RAW="$(hypotheses_from_goal "$PROBLEM")"; HYP_RC=$?
+if [[ "$HYP_RC" -ne 0 ]]; then
+  {
+    echo "recognize.sh: $PROBLEM is not a recognition instance."
+    sed 's/^/  /' <<<"$HYP_RAW"
+    echo "  The goal should be a disjunction of NULLARY derived predicates, e.g."
+    echo "      (:goal (or (hyp0) (hyp1) (hyp2)))"
+    echo "  as make-recognition-instance.lisp produces."
+  } >&2
+  exit 2
+fi
 HYPS=()
 while IFS= read -r h; do
   [[ -n "$h" ]] && HYPS+=("$h")
-done < <(grep -oE '\(hyp[0-9]+\)' "$PROBLEM" | tr -d '()' | sort -u -t p -k2 -n)
+done <<<"$HYP_RAW"
 N=${#HYPS[@]}
 if [[ "$N" -eq 0 ]]; then
-  echo "recognize.sh: $PROBLEM names no hypotheses." >&2
-  echo "  A recognition instance's goal is (or (hyp0) ... (hypN)) over nullary derived" >&2
-  echo "  predicates, as make-recognition-instance.lisp produces." >&2
+  echo "recognize.sh: $PROBLEM names no hypotheses in its goal." >&2
   exit 2
 fi
-[[ $N -ge 1 ]] || { echo "no hypotheses (hypI) found in $PROBLEM goal" >&2; exit 2; }
+
+# --- priors, matched by NAME ---------------------------------------------------
+# The old format was n bare weights matched by LINE NUMBER to a list derived from
+# the problem TEXT, so anything that perturbed that list silently moved every
+# weight onto the wrong hypothesis.
+PRIOR_ARR=()
+i=0; while [[ "$i" -lt "$N" ]]; do PRIOR_ARR[$i]=1; i=$(( i + 1 )); done
+# Whether any prior was actually GIVEN.  It is not enough to compare PRIOR_ARR
+# against all-1s: a uniform prior is not the same as no prior downstream, since
+# max-term applies one as a per-atom log-odds shift rather than a factor that
+# cancels on normalisation.
+PRIORS_GIVEN=0
+
+hyp_index() {   # hyp_index <name> -> its position in HYPS, or failure
+  local n="$1" i=0
+  while [[ "$i" -lt "${#HYPS[@]}" ]]; do
+    [[ "${HYPS[$i]}" == "$n" ]] && { echo "$i"; return 0; }
+    i=$(( i + 1 ))
+  done
+  return 1
+}
+set_prior() {   # set_prior <name> <weight> <source>
+  local n="$1" w="$2" src="$3" idx
+  if ! idx="$(hyp_index "$n")"; then
+    { echo "recognize.sh: $src names '$n', which is not a hypothesis of this problem."
+      echo "  The hypotheses, in goal order, are: ${HYPS[*]}"; } >&2
+    exit 2
+  fi
+  case "$w" in
+    ""|*[!0-9.eE+-]*) echo "recognize.sh: $src gives '$n' a non-numeric weight '$w'" >&2; exit 2;;
+  esac
+  PRIOR_ARR[$idx]="$w"
+  PRIORS_GIVEN=1
+}
+
+if [[ "$PRIORS_FROM_PREFS" -eq 1 ]]; then
+  # The weight is a VIOLATION penalty, so escaping it is worth odds exp(w); a
+  # hypothesis with no preference is w=0, hence pi proportional to 1.  That is
+  # also what will make the planned :odds sugar compose exactly.
+  [[ "$BASELINE" == "per-hypothesis" ]] || {
+    echo "recognize.sh: --priors-from-preferences needs --baseline per-hypothesis." >&2
+    echo "  Under best-rival the preference weight is not cancelled -- it already moves" >&2
+    echo "  the answer through the model -- so reading it back as a prior counts it twice." >&2
+    exit 2; }
+  [[ ${#PRIORS_KV[@]} -eq 0 && -z "$PRIORS" ]] || {
+    echo "recognize.sh: give priors EITHER in the problem's preferences or with --prior/--priors, not both." >&2
+    exit 2; }
+  PREF_RAW="$(preference_priors "$PROBLEM")" || { echo "recognize.sh: $PREF_RAW" >&2; exit 2; }
+  if [[ -z "${PREF_RAW// /}" ]]; then
+    { echo "recognize.sh: --priors-from-preferences, but the goal has no preference on a hypothesis."
+      echo "  Write e.g. (:goal (and (or (hyp0) (hyp1)) (preference h0 (hyp0) 2)))"; } >&2
+    exit 2
+  fi
+  while read -r pn pw; do
+    [[ -n "$pn" ]] || continue
+    set_prior "$pn" "$(awk -v w="$pw" 'BEGIN{printf "%.10g", exp(w)}')" "a preference in the goal"
+    echo "; prior from (preference ... ($pn) $pw): weight $(awk -v w="$pw" 'BEGIN{printf "%.4g", exp(w)}')" >&2
+  done <<<"$PREF_RAW"
+  # It must not ALSO be charged as a cost: left in the theory it cancels between
+  # c(G,O) and c(G,~O) only when the hypotheses are mutually exclusive.
+  STRIPPED="$OUT/rec-problem-nopref.pddl"
+  strip_hypothesis_preferences "$PROBLEM" "$STRIPPED"
+  [[ -s "$STRIPPED" ]] || { echo "recognize.sh: could not rewrite $PROBLEM without its hypothesis preferences" >&2; exit 2; }
+  PROBLEM="$STRIPPED"
+  echo "; hypothesis preferences removed from the cost model (they are the prior now)" >&2
+fi
+
+if [[ -n "$PRIORS" ]]; then
+  while IFS= read -r pline; do
+    pline="${pline%%#*}"; pline="${pline%%;*}"
+    [[ -z "${pline// /}" ]] && continue
+    if [[ "$pline" != *=* ]]; then
+      { echo "recognize.sh: $PRIORS is not in the expected form."
+        echo "  Priors are given BY NAME, one per line:"
+        echo "      hyp0 = 2"
+        echo "      hyp1 = 1"
+        echo "  (a file of bare numbers matched by position is no longer accepted -- a"
+        echo "   reordered line silently moved every weight onto the wrong hypothesis)"; } >&2
+      exit 2
+    fi
+    set_prior "$(tr -d '[:space:]' <<<"${pline%%=*}")" "$(tr -d '[:space:]' <<<"${pline##*=}")" "$PRIORS"
+  done < "$PRIORS"
+fi
+for kv in ${PRIORS_KV[@]+"${PRIORS_KV[@]}"}; do
+  [[ "$kv" == *=* ]] || { echo "recognize.sh: --prior wants <hypothesis>=<weight>, got: $kv" >&2; exit 2; }
+  set_prior "${kv%%=*}" "${kv##*=}" "--prior"
+done
+[[ $N -ge 1 ]] || { echo "recognize.sh: no nullary goal disjuncts (hypotheses) in $PROBLEM" >&2; exit 2; }
 
 # --- build the negated evidence file: (not <the one evidence form>) ----------
 # Wrapping the file's whole contents only negates what it says if the file holds
@@ -340,18 +534,21 @@ if [[ "$METHOD" == "fast" ]]; then
   # max-term, or --baseline best-rival), the priors have to reach IT -- the awk
   # below never runs, so applying them here would drop them silently.  Translate
   # recognize.sh's positional file (n weights, hyp order) into the atom=p form.
+  #
+  # Two conversions matter here.  recognize.sh's priors are RELATIVE WEIGHTS
+  # (2 and 1 mean 2/3 and 1/3); marginals.sh --prior wants a PROBABILITY, and
+  # max-term turns it into a log-odds shift -- so forwarding the raw weight 1
+  # asks for logit(1) = infinity and pins every marginal at 1.0.  Normalise.
+  # And forward NOTHING when the user gave no prior: a uniform shift does not
+  # cancel in log-odds space, so "uniform" and "absent" are different answers.
   PRIOR_MARG=()
-  if [[ -n "$PRIORS" && "$COUNTER$BASELINE" != "max-termper-hypothesis" ]]; then
+  if [[ "$PRIORS_GIVEN" -eq 1 && "$COUNTER$BASELINE" != "max-termper-hypothesis" ]]; then
+    PSUM=$(printf '%s\n' ${PRIOR_ARR[@]+"${PRIOR_ARR[@]}"} | awk '{s+=$1} END{print s}')
     pi=0
-    while read -r w; do
-      [[ -z "${w// /}" || "$w" =~ ^[[:space:]]*# ]] && continue
-      [[ "$pi" -lt "${#HYPS[@]}" ]] || break
-      PRIOR_MARG+=(--prior "(holds (${HYPS[$pi]}) $HORIZON)=$w"); pi=$(( pi + 1 ))
-    done < "$PRIORS"
-    if [[ "$pi" -ne "${#HYPS[@]}" ]]; then
-      echo "recognize.sh: --priors has $pi weight(s) but there are ${#HYPS[@]} hypotheses" >&2
-      exit 2
-    fi
+    while [[ "$pi" -lt "$N" ]]; do
+      PRIOR_MARG+=(--prior "(holds (${HYPS[$pi]}) $HORIZON)=$(awk -v w="${PRIOR_ARR[$pi]}" -v s="$PSUM" 'BEGIN{printf "%.10g", w/s}')")
+      pi=$(( pi + 1 ))
+    done
   fi
   bash "$SELF/marginals.sh" "$SCNF" ${HYP_ARGS[@]+"${HYP_ARGS[@]}"} \
        --baseline "$BASELINE" --solver "$COUNTER" --beta "$BETA" \
@@ -393,12 +590,6 @@ else
 fi
 
 # --- priors ------------------------------------------------------------------
-PRIOR_ARR=()
-if [[ -n "$PRIORS" ]]; then                        # read loop: see the note on HYPS
-  while IFS= read -r pline; do
-    [[ -n "${pline// /}" ]] && PRIOR_ARR+=("$pline")
-  done < "$PRIORS"
-fi
 
 # --- likelihoods, posterior ---------------------------------------------------
 if [[ "${USE_MARGINALS_POSTERIOR:-0}" -eq 1 ]]; then

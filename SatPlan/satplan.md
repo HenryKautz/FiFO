@@ -960,6 +960,12 @@ end to end.
 For an instance whose goal is `(or (hyp0) … (hypN))` over nullary derived
 predicates, with observations as an `(occur-in-order …)` file:
 
+The hypotheses are read by **parsing the `:goal`** and taking its disjuncts; a
+hypothesis is a **nullary** predicate, so an ordinary disjunctive planning goal
+like `(or (at p1 bos) (at p1 jfk))` is not mistaken for a recognition instance.
+Goal order is the reported order. The name `hypI` is a convention, not a
+requirement — the criterion is arity.
+
 ```sh
 bin/recognize.sh costs-domain.pddl problem.pddl evidence-3.txt --horizon 6
 ```
@@ -1000,7 +1006,7 @@ count-neutral, so they are folded into the theory while the one assertion litera
 is what gets conditioned on — or negated, for the does-not-comply case.
 (`planner.sh --split-evidence` does this; it is not usually called directly.)
 
-Options: `--priors FILE` for non-uniform priors, `--beta` for the temperature,
+Options: `--beta` for the temperature,
 `--horizon H` to fix the horizon (otherwise it is searched, per hypothesis, as
 R&G do — that search is the one part that still costs n planner runs).
 `--maxsat-solver <name>` picks the solver that produces the costs; it defaults to
@@ -1017,6 +1023,51 @@ exact counters are available but are small-instance-only, as in recipe 4) and
 Note `--solver` names the SAT solver used by the horizon search, not the counter.
 `--method plan-runs` selects the older 2n-planner-run implementation, kept as the
 reference the fast path is tested against.
+
+**Priors, three ways.** Priors are *relative weights*, renormalized — `2` and `1`
+mean 2/3 and 1/3 — and every hypothesis not mentioned keeps weight 1.
+
+```sh
+bin/recognize.sh domain.pddl problem.pddl ev.txt --horizon 6 --prior hyp0=9
+bin/recognize.sh domain.pddl problem.pddl ev.txt --horizon 6 --priors priors.txt
+```
+
+`--prior` is repeatable and `--priors` reads a file of the same `hyp = w` lines
+(`#` and `;` comment). Both name the hypothesis, which is the point: an unknown
+name is an **error** listing the ones that exist, and reordering the file cannot
+change the answer. (The earlier format was *n* bare numbers matched by **line
+number** to a list grepped out of the problem text — so a `(hypN)` mentioned in a
+comment did not merely add a row, it shifted every weight onto the wrong
+hypothesis, silently. That format is now refused, with the new spelling shown.)
+
+The third way takes the prior from the problem file itself:
+
+```sh
+bin/recognize.sh domain.pddl problem.pddl ev.txt --horizon 6 --priors-from-preferences
+```
+
+with, in the goal,
+
+```lisp
+(:goal (and (or (hyp0) (hyp1) …)
+            (preference h0 (hyp0) 0.69314718)))   ; ln 2
+```
+
+giving **πᵢ ∝ exp(wᵢ)**, so that `0.69314718` is prior weight 2. A PDDL preference
+weight is a *violation penalty*, so escaping it is worth odds `exp(w)`; a
+hypothesis with no preference is `w = 0`, hence `πᵢ ∝ 1`. It is opt-in and it
+**strips**: under the flag those preferences are removed before instantiation, so
+the weight means the prior and nothing else — it is not also charged as a cost.
+Whatever is inferred is echoed as `;` comment lines, so a prior read out of a
+problem file is never silent. It needs `--baseline per-hypothesis` (under
+`best-rival` the weight is not cancelled and already moves the answer through the
+model) and cannot be combined with `--prior`/`--priors`.
+
+Use it when the prior belongs to the *domain* — some goals are intrinsically more
+likely for this agent — and keep it in the theory as an ordinary preference,
+without the flag, when the weight is meant to be a **cost** the planner trades
+against action costs. Those are different claims, and the flag is what
+distinguishes them.
 
 `SatPlan/evgen.sh --recognition 1` writes evidence files for it.
 

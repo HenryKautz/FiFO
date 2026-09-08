@@ -112,7 +112,7 @@ numbers on the clauses, never the shape of the pipeline.
 | [`solve.sh`](#solvesh) | instantiate → propositionalize (**CNF**) → SAT solver → interpret | `.answer`: `SAT` + true atoms, `UNSAT`, or for a `prove` form `PROVEN` + bindings / `NOANSWER` / `COUNTEREXAMPLE`. Printed with `;` commentary; strip those and it is the file verbatim |
 | [`map.sh`](#mapsh) | instantiate → propositionalize (**WCNF**) → *[MaxPre preprocess]* → MaxSAT solver → *[reconstruct]* → interpret | `.answer` with `(*OBJECTIVE* N)` and the minimum-cost model; also prints the **true cost** `N / scale + offset` |
 | [`planner.sh`](#plannersh) | pddl2fifo → *(per horizon)* instantiate → propositionalize → SAT; then re-solve the smallest feasible horizon in WCNF if the domain has costs | the plan and its cost, plus `.wff`, `.scnf`, `.cnf`/`.wcnf`, `.map`, `.satout`, `.answer` beside the problem. With `--marginals`, marginals at the working horizon instead of a plan |
-| [`recognize.sh`](#recognizesh) | drives `planner.sh` `2n` times (comply / not-comply per hypothesis); `--evidence-kind pddl\|fifo` | `summary.tsv` — costs, likelihood, prior, posterior per hypothesis — and the argmax on stdout |
+| [`recognize.sh`](#recognizesh) | one instantiation, `2n` clamped MaxSAT solves (comply / not-comply per hypothesis); hypotheses parsed from the `:goal`; `--evidence-kind pddl\|fifo` | `summary.tsv` — costs, likelihood, prior, posterior per hypothesis — and the argmax on stdout |
 | [`marginals.sh`](#marginalssh) | reads the `.scnf` **directly**; no DIMACS stage except inside `max-term`, which writes its own wcnf | `(MARGINAL <atom> <p>)` lines, or `(MAXTERM-MARGINAL ...)` for `--solver max-term`; `--out` also writes them to a file |
 | [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC | `(WMC <Z>)`, the partition function |
 | [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
@@ -355,9 +355,23 @@ intractable `Z_G`-normalized posterior.
 recognize.sh <costs-domain.pddl> <problem.pddl> <evidence-file> [options]
 ```
 
-For each hypothesis `hypI` (nullary derived predicates `hyp0 … hyp(n-1)`, as
-produced by [`make-recognition-instance.lisp`](#make-recognition-instancelisp)) it
-compares the cheapest plan that **complies** with the observations against the
+The **hypotheses are the disjuncts of the problem's `:goal`**, obtained by
+*parsing* it rather than grepping the file, and a hypothesis is a **nullary**
+predicate — `(hyp0)` qualifies, `(at p1 bos)` does not, so an ordinary disjunctive
+planning goal is not mistaken for a recognition instance. Goal order is the
+reported order, which is also `hyps.dat`'s. The name `hypI` is a convention
+(that is what [`make-recognition-instance.lisp`](#make-recognition-instancelisp)
+emits), not a requirement: the criterion is arity. A goal whose `or` mixes the two
+is an error naming the offending disjunct; `(preference …)` forms in the goal are
+skipped rather than treated as disjuncts.
+
+*Why parsed:* the earlier implementation grepped the raw problem text for
+`(hyp[0-9]+)` and matched `--priors` to the result **by line number**. That is two
+fragilities compounding — a `(hyp7)` in a *comment* was picked up as a hypothesis,
+and because priors were positional it did not merely add a spurious row, it
+shifted every subsequent weight onto the wrong hypothesis, silently.
+
+For each hypothesis it compares the cheapest plan that **complies** with the observations against the
 cheapest that **does not**, and forms
 `P(hypI | O) ∝ πᵢ · σ(β · (c(¬O) − c(O)))`, normalized over the hypotheses.
 
@@ -385,7 +399,9 @@ does-not-comply case, both from one instantiation.
 |---|---|
 | `--horizon <H>` | Fixed horizon. Default: the maximum over hypotheses of their smallest feasible horizon, and at least *observations + 1*, so no hypothesis is excluded. |
 | `--beta <B>` | Inverse temperature in the sigmoid (default 1.0). Larger `β` sharpens the likelihood. |
-| `--priors <file>` | `n` prior weights, one per line, `hyp0` first; renormalized. Default: uniform. |
+| `--prior <hyp>=<w>` | Prior weight on a hypothesis **by name**; repeatable. Weights are *relative* and renormalized — `2` and `1` mean 2/3 and 1/3. A hypothesis not named keeps weight 1. A name that is not one of the goal's hypotheses is an **error** listing the ones that are — the check the positional format could not make. |
+| `--priors <file>` | The same, one `<hyp> = <w>` per line; `#` and `;` comment. The old format (n bare numbers, matched by line number) is **refused** with the new spelling shown, rather than read as something it is not. Default: uniform. |
+| `--priors-from-preferences` | Take the prior from `(preference <name> (hypI) w)` forms in the goal, as **πᵢ ∝ exp(wᵢ)**. A PDDL preference weight is a *violation* penalty, so escaping it is worth odds `exp(w)`, and a hypothesis with no preference is `w = 0`, hence `πᵢ ∝ 1`. **Opt-in, and it strips**: under the flag those preferences are removed from the problem before instantiation, so the weight means exactly one thing — the prior — with no residual cost. Whatever is inferred is echoed as `;` lines, so a prior read out of the problem file is never silent. Only an **inline** weight is read; one relying on a `:metric` coefficient is an error asking for it inline. |
 | `--out <dir>` | Output directory. Default `<problem-dir>/runs/recognize`. |
 | `--counter <name>` | The back end, from [`lisp/solvers.dat`](#lispsolversdat). Default `max-term` — R&G's estimator. The exact counters work but are small-instance-only. |
 | `--baseline <b>` | `per-hypothesis` (default, = R&G) or `best-rival`. See [Hypothesis posteriors](Probability/probability.md#hypothesis-posteriors-which-prior-is-in-play). |
@@ -395,6 +411,25 @@ does-not-comply case, both from one instantiation.
 | `--evidence-kind pddl\|fifo` | Which evidence language the file is written in. `pddl` (default) is the modal language — `(occur-in-order …)` and friends, horizon-**independent**, which is what R&G assumes. `fifo` is slice-pinned FiFO forms as `SatPlan/evgen.sh --recognition 1` writes them. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
+
+Stripping is what makes `--priors-from-preferences` exact. A preference weight
+left in the theory cancels between `c(Gᵢ, O)` and `c(Gᵢ, ¬O)` only when the
+hypotheses are mutually exclusive, so that clamping one determines the rest;
+IntrusionDetection's are not (the domain is delete-free), so the optimizer can
+satisfy a different set of *other* hypotheses on the two sides and leave a
+second-order residual. The flag is refused in two combinations: with
+`--baseline best-rival`, where the weight is not cancelled at all and already
+moves the answer through the model, and with `--prior`/`--priors`, since two
+sources of the same quantity is not a conflict the script should resolve by
+itself.
+
+Note that `recognize.sh`'s priors are *relative weights* while
+[`marginals.sh --prior`](#marginalssh) takes a *probability*, so they are
+normalized before being forwarded — and nothing is forwarded when the user gave
+none. `max-term` turns a prior into a per-atom **log-odds shift**, so a relative
+weight of `1` passed through as if it were a probability asks for `logit(1) = ∞`
+and pins every marginal at 1.0; and a *uniform* shift does not cancel in log-odds
+space, which is why "uniform" and "absent" are not the same request there.
 
 **The evidence file must hold exactly one form**, in either language, because the
 does-not-comply case is built by wrapping its contents in `(not …)` and
@@ -809,7 +844,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-hypotheses.sh` | `--hypotheses` and the two baselines, against a fixture counted by hand: h1 has four times the models of h2 but the evidence supports them equally, so best-rival gives 4/5 vs 1/5 while per-hypothesis gives 1/2 vs 1/2. Carries the identity's anchor (P(O\|h) recomputed a different way, by conditioning on h and reading the evidence atom's marginal), a positive control on a symmetric fixture where the two baselines must agree exactly, cross-back-end agreement, the max-term delta, and the error paths. The maxent/ddnnf cases need no binary; addmc/d4/max-term skip cleanly. |
 | `tests/run-test-solvers.sh` | The shared `lisp/solvers.dat` table and the validation every CLI does against it. The load-bearing case proves the *mechanism*: a solver and a counter appended to a copy of the table are picked up by **both** the shell and the Lisp with no code change. Also every entry point refusing an unknown name, the wrong kind and a missing binary; `planner.sh` failing before writing a `.wff`; `recognize.sh` failing up front rather than in 3n runs; the `no-planner` asymmetry; counter abbreviations; paths exempt from the name check; the bundled `rc2` resolving to `bin/`; a missing table naming the file from both sides; and bash 3.2. Needs no solver installed. |
-| `tests/run-test-recognize.sh` | `recognize.sh`'s merged fast path. The load-bearing case checks `--method fast` against `--method plan-runs` — an *independent oracle*, not numbers recorded in the test — so it tests the `T∨ ∧ hypI ≡ Tᵢ` identity rather than the arithmetic. Also count-neutrality of the monitor axioms directly (everything else rests on it), that the assertion literal is resolved rather than carrying `NUMSLICES`, that the negated form flips only the assertion, that `c(O)`/`c(¬O)` survive into `summary.tsv`, the flags, and slice-pinned FiFO evidence through the same path. Skips cleanly without a MaxSAT solver. |
+| `tests/run-test-recognize.sh` | `recognize.sh`'s merged fast path. The load-bearing case checks `--method fast` against `--method plan-runs` — an *independent oracle*, not numbers recorded in the test — so it tests the `T∨ ∧ hypI ≡ Tᵢ` identity rather than the arithmetic. Also count-neutrality of the monitor axioms directly (everything else rests on it), that the assertion literal is resolved rather than carrying `NUMSLICES`, that the negated form flips only the assertion, that `c(O)`/`c(¬O)` survive into `summary.tsv`, the flags, and slice-pinned FiFO evidence through the same path. For hypothesis discovery and priors: a `(hypN)` in a *comment* is not a hypothesis (the case the old grep failed), the same weights in a different order give an identical summary (the point of naming them), a non-nullary disjunct and an unknown prior name are refused, and the old positional file is refused with the new spelling. `--priors-from-preferences` is pinned *exactly*: `(preference h0 (hyp0) ln 2)` must give the same posteriors as `--prior hyp0=2` with no preference, which fixes π ∝ exp(w) rather than any nearby formula, and the costs must match the preference-free problem, proving the strip. The best-rival case requires the posterior to **vary**, not merely sum to 1 — a flat 0.1 across ten hypotheses sums to 1 too, and is what a broken run returns. Skips cleanly without a MaxSAT solver. |
 | `tests/run-test-evgen.sh` | `SatPlan/evgen.sh`, the evidence generator: behavioral, against a ppgen fixture solved by `planner.sh`. Emitted positives are exactly the solution's true literals at the requested slices; `--observe` restricts (including a mixed fluent+action list); positives and negatives partition the restricted universe; the settings header replays byte for byte; fifteen error paths fire. The two load-bearing cases: the true observations reproduce the plan's cost while a shifted observation costs more (so the evidence really binds), and the last slice carries no actions under `--negative-evidence` — checked there because the positives-only form of that assertion passes vacuously. Skips cleanly without a MaxSAT solver. Also the `--recognition` mode and the recognize.sh guards: one `(and ...)` form carrying the same literals as the default mode, `--negative-evidence` refused with it, a multi-form file rejected by recognize.sh with the fix named, and the horizon raised to the largest slice observed. `--export-dataset` gets a full round trip against a real benchmark: export from IntrusionDetectionCosts, diff `hyps.dat` against the published source dataset, re-import through make-recognition-instance.lisp, and solve the result under its own `obs.dat`. `--export-constraints` is verified by SOLVING the export: the constraints must be exactly the solution's literals at the requested slices, the exported problem must hit the source plan's cost, and moving one constraint to another slice must break it; plus the occur-sometime caveat comment appearing iff an action is observed. `--export-ordering-constraints` adds the same-slice refusal, the single spanning constraint, and a solve-and-perturb check, and `--nonstrict-ordering 1` exporting a tie that strict refuses, whose strict form is unsatisfiable at the same horizon |
 | `tests/run-test-cleanup.sh` | `bin/cleanupfifo.sh`'s guards, plus the scratch-file root. Every destructive case runs against a throwaway git repository in a temp directory, never the real checkout: byproducts swept, git-tracked fixtures kept, `tests/` untouched tracked or not, an explicit `tests/` target refused, `--dry-run`, a plain directory outside any repository, `-r`, an installed copy with and without `FIFO_LISP`, and a run under bash 3.2. One case starts four concurrent SBCLs and asserts four distinct scratch roots — before the pid was added they collapsed to one. Needs no solver and no sbcl (the last case skips without it). |
 | `tests/run-test-maxsat.sh` | The MaxSAT side of `solve`: the solver keywords, `*solver-timeout*` (including that 0/-1/nil mean no limit), and MaxPre preprocessing. The key case asserts that preprocessing reproduces the un-preprocessed answer exactly, and a companion case checks MaxPre really did renumber (1-variable model expanded back to 3) so the first case is actually testing reconstruction. Skips cleanly when no MaxSAT solver is installed. |
