@@ -11,8 +11,7 @@
 #     c(G_i, O)   -- cheapest plan achieving G_i that COMPLIES with O
 #     c(G_i, ~O)  -- cheapest plan achieving G_i that does NOT comply with O
 #
-# by calling planner.sh twice (positive vs. negated occur-in-order evidence) at
-# a fixed horizon H, and forms the R&G likelihood and posterior:
+# at a fixed horizon H, and forms the R&G likelihood and posterior:
 #
 #     d_i     = c(G_i,~O) - c(G_i,O)
 #     P(O|G_i) ~ sigmoid(beta * d_i)        (c(G_i,O)=inf -> 0 ; c(G_i,~O)=inf -> 1)
@@ -21,9 +20,16 @@
 # This is the tractable (optimization) approximation to the Z_G-normalized
 # posterior: each partition function is replaced by its cheapest-plan term.
 #
+# The problem is instantiated ONCE at H and the 2n costs come from clamping hypI
+# on that single scnf (via marginals.sh --hypotheses).  Clamping hypI in the
+# disjunctive theory selects the same models as rewriting the goal to G_i, since
+# hypI implies the disjunction -- the same computation the older implementation
+# did with 2n planner.sh runs, which --method plan-runs still offers.
+#
 # Usage:
 #   recognize.sh <costs-domain.pddl> <problem.pddl> <evidence-file> \
-#        [--horizon H] [--beta B] [--priors FILE] [--out DIR] [--solver NAME]
+#        [--horizon H] [--beta B] [--priors FILE] [--out DIR] [--solver NAME] \
+#        [--counter NAME] [--baseline B] [--maxsat-solver NAME] [--method M]
 #
 #   --horizon H   fixed horizon (default: max over hypotheses of the smallest
 #                 feasible horizon, and >= observations+1, so no hypothesis is
@@ -44,6 +50,22 @@
 #                 forced to at least the largest slice observed, and a fluent
 #                 observed at the final slice means "at the end" only at the
 #                 horizon it came from -- prefer --observe over action names.
+#   --counter NAME  the inference back end (default max-term, R&G's estimator).
+#                 The exact counters (maxent, ddnnf, d4, addmc) are available but
+#                 are small-instance-only: counting does not reach the horizons
+#                 planning does.  NOT the same thing as --solver.
+#   --baseline B  per-hypothesis (default, = R&G) or best-rival.  per-hypothesis
+#                 divides out the theory's own mass on each hypothesis and applies
+#                 --priors; best-rival leaves that implicit prior in place, so a
+#                 hypothesis that is merely CHEAP TO REACH scores well.
+#   --maxsat-solver NAME  the solver that produces the COSTS, on both methods.
+#                 Default bin/rc2-maxsat.py, which is EXACT.  Deliberately not an
+#                 anytime solver: the score is a DIFFERENCE of two minima, and two
+#                 upper bounds do not cancel.
+#   --method M    fast (default) or plan-runs.  plan-runs is the older
+#                 implementation -- 2n full planner.sh runs -- kept as the
+#                 reference the fast path is tested against.  It always computes
+#                 R&G's difference, so --counter and --baseline are refused with it.
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -57,7 +79,7 @@ PLANNER="$SELF/planner.sh"
 [[ -x "$PLANNER" || -f "$PLANNER" ]] || { echo "planner.sh not found at $PLANNER" >&2; exit 2; }
 command -v sbcl >/dev/null || { echo "sbcl not found on PATH" >&2; exit 2; }
 
-usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,71p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$SELF/fifo-options.sh"
@@ -96,6 +118,13 @@ case "$METHOD" in
   fast|plan-runs) ;;
   *) echo "--method must be 'fast' or 'plan-runs', got: $METHOD" >&2; exit 2;;
 esac
+# plan-runs is the fixed R&G computation -- it has no counter and no choice of
+# baseline.  Accepting those flags and then ignoring them would report numbers
+# that are not what was asked for, with nothing to say so.
+if [[ "$METHOD" == "plan-runs" ]]; then
+  [[ "$COUNTER" == "max-term" ]] || { echo "--counter has no meaning with --method plan-runs (it always computes R&G's cheapest-plan difference); drop one of them" >&2; exit 2; }
+  [[ "$BASELINE" == "per-hypothesis" ]] || { echo "--baseline has no meaning with --method plan-runs (it is always per-hypothesis); drop one of them" >&2; exit 2; }
+fi
 case "$BASELINE" in
   per-hypothesis|best-rival) ;;
   *) echo "--baseline must be 'per-hypothesis' or 'best-rival', got: $BASELINE" >&2; exit 2;;
@@ -128,29 +157,45 @@ COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh)" || exit 2
 # cost twice.
 MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
 MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh)" || exit 2
+# A path is only checked for executability, and bin/rc2-maxsat.py always is --
+# so without python-sat every solve fails, every cost comes back NA, and the run
+# would report a confident table of zeros.  Check it can actually run.
+case "$MAXSAT_SOLVER" in
+  *rc2-maxsat.py)
+    python3 -c "import pysat" >/dev/null 2>&1 || {
+      echo "recognize.sh: $MAXSAT_SOLVER needs python-sat, which is not installed." >&2
+      echo "  It is the default because R&G's score is a DIFFERENCE of two minima: an" >&2
+      echo "  anytime solver returns upper bounds, and two of those do not cancel." >&2
+      echo "  Install it:            bin/install-solvers.sh --only rc2" >&2
+      echo "  or name another EXACT solver:  --maxsat-solver wmaxcdcl" >&2
+      exit 2; } ;;
+esac
 
 # --- run a planner.sh invocation in its own process group with a timeout ------
 TIMEOUT=900
 run_planner() {           # run_planner <logfile> <extra planner args...>
   local log="$1"; shift
-  local pid wd
+  local pid rc elapsed=0
   set -m
   bash "$PLANNER" "$@" >"$log" 2>&1 &
   pid=$!
-  # The watchdog's fds are closed and its whole process GROUP is killed, not just
-  # the subshell: otherwise the `sleep` outlives it, and an orphaned sleep holding
-  # this script's stdout blocks any caller that captures us with $( ) until the
-  # timeout expires.  (It also leaked one sleep per planner call.)
-  { sleep "$TIMEOUT"; kill -9 -"$pid" 2>/dev/null; } >/dev/null 2>&1 </dev/null & wd=$!
-  wait "$pid" 2>/dev/null
-  # Kill the watchdog and its sleep CHILD by pid.  Not `kill -- -$wd`: a negative
-  # pid is a process-GROUP signal, and if that job has already been reaped the
-  # group is gone and the signal can land somewhere unintended.
-  pkill -P "$wd" 2>/dev/null
-  kill "$wd" 2>/dev/null
-  wait "$wd" 2>/dev/null
+  # A POLLING watchdog, not a background `sleep N; kill` subshell.  That pattern
+  # leaks its sleep, and killing the sleep merely lets the subshell fall through
+  # to the kill -- firing SIGKILL at a process group whose leader was just
+  # reaped, on every call.  Polling means the kill can only happen while the
+  # planner is known to be alive, and there is nothing left running afterwards.
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1; elapsed=$(( elapsed + 1 ))
+    if [ "$elapsed" -ge "$TIMEOUT" ]; then
+      echo "recognize.sh: planner exceeded ${TIMEOUT}s -- killing it" >&2
+      kill -9 -"$pid" 2>/dev/null
+      break
+    fi
+  done
+  wait "$pid" 2>/dev/null; rc=$?
   set +m
   pkill -9 -f kissat 2>/dev/null; pkill -9 -f open-wbo 2>/dev/null
+  return "$rc"
 }
 # optimal cost printed by planner.sh ("... time slices: cost C"), else "inf"
 cost_of() {               # cost_of <logfile>
@@ -162,8 +207,20 @@ cost_of() {               # cost_of <logfile>
 }
 
 # --- enumerate hypotheses hyp0..hyp(n-1) from the problem goal ----------------
-mapfile -t HYPS < <(grep -oE '\(hyp[0-9]+\)' "$PROBLEM" | tr -d '()' | sort -u -t p -k2 -n)
+# NB: a read loop, not `mapfile` -- mapfile is bash 4.0+ and this script's
+# #!/bin/bash is 3.2 on macOS, where it is simply not a builtin, so HYPS ended up
+# unset and the script died on the next line.
+HYPS=()
+while IFS= read -r h; do
+  [[ -n "$h" ]] && HYPS+=("$h")
+done < <(grep -oE '\(hyp[0-9]+\)' "$PROBLEM" | tr -d '()' | sort -u -t p -k2 -n)
 N=${#HYPS[@]}
+if [[ "$N" -eq 0 ]]; then
+  echo "recognize.sh: $PROBLEM names no hypotheses." >&2
+  echo "  A recognition instance's goal is (or (hyp0) ... (hypN)) over nullary derived" >&2
+  echo "  predicates, as make-recognition-instance.lisp produces." >&2
+  exit 2
+fi
 [[ $N -ge 1 ]] || { echo "no hypotheses (hypI) found in $PROBLEM goal" >&2; exit 2; }
 
 # --- build the negated evidence file: (not <the one evidence form>) ----------
@@ -214,7 +271,7 @@ if [[ -z "$HORIZON" ]]; then
   H=$(( NOBS + 1 ))
   for hyp in "${HYPS[@]}"; do
     p="$OUT/sg-$hyp.pddl"; single_goal_problem "$hyp" "$p"
-    run_planner "$OUT/horizon-$hyp.log" "$p" --domain "$DOMAIN" --minslices 2 --maxslices 30 "${SOLVER_ARG[@]}"
+    run_planner "$OUT/horizon-$hyp.log" "$p" --domain "$DOMAIN" --minslices 2 --maxslices 30 ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"}
     n=$(sed -n 's/.*Found a plan with \([0-9][0-9]*\) time slices.*/\1/p; s/.*SOLVED with \([0-9][0-9]*\) time slices.*/\1/p' "$OUT/horizon-$hyp.log" | head -1)
     [[ -n "$n" && "$n" -gt "$H" ]] && H="$n"
     echo "  $hyp -> ${n:-unreachable}" >&2
@@ -242,6 +299,11 @@ if [[ "$METHOD" == "fast" ]]; then
   # this computes exactly what the plan-runs method does, from 2n clamped solves
   # on one scnf instead of 2n translate-instantiate-solve cycles.
   echo "Instantiating once at $HORIZON slices..." >&2
+  # Clear last run's artifacts first.  $OUT defaults to a PERSISTENT directory,
+  # and the guard below is "does the scnf exist" -- so a stale scnf from an
+  # earlier, different run would satisfy it and this run would silently report
+  # the previous run's numbers.
+  rm -f "$OUT"/rec-problem.* 2>/dev/null
   P1="$OUT/rec-problem.pddl"; cp "$PROBLEM" "$P1"
   SPLIT_ARG=()
   if [[ "$EVKIND" == "pddl" ]]; then
@@ -253,10 +315,14 @@ if [[ "$METHOD" == "fast" ]]; then
   fi
   run_planner "$OUT/instantiate.log" "$P1" --domain "$DOMAIN" \
       --numslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" --stop-after scnf \
-      "${SPLIT_ARG[@]}" "${SOLVER_ARG[@]}"
+      ${SPLIT_ARG[@]+"${SPLIT_ARG[@]}"} ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"}
+  INST_RC=$?
   SCNF="$OUT/rec-problem.scnf"
-  [[ -f "$SCNF" ]] || { echo "recognize.sh: instantiation produced no scnf" >&2
-                        sed -n '$p' "$OUT/instantiate.log" >&2; exit 2; }
+  if [[ "$INST_RC" -ne 0 || ! -f "$SCNF" ]]; then
+    echo "recognize.sh: instantiation failed (planner.sh exit $INST_RC)" >&2
+    tail -3 "$OUT/instantiate.log" >&2
+    exit 2
+  fi
   if [[ "$EVKIND" == "pddl" ]]; then
     ASSERT_FILE="$OUT/rec-problem-assertion.txt"
     [[ -f "$ASSERT_FILE" ]] || { echo "recognize.sh: no assertion literal was written --" >&2
@@ -270,9 +336,27 @@ if [[ "$METHOD" == "fast" ]]; then
   HYP_ARGS=()
   for hyp in "${HYPS[@]}"; do HYP_ARGS+=(--hypotheses "(holds ($hyp) $HORIZON)"); done
   MT_ARG=(); [[ "$COUNTER" == "max-term" ]] && MT_ARG=(--maxsat-solver "$MAXSAT_SOLVER")
-  bash "$SELF/marginals.sh" "$SCNF" "${HYP_ARGS[@]}" \
-       --baseline "$BASELINE" --solver "$COUNTER" --beta "$BETA" "${MT_ARG[@]}" \
-       "${EV_MARG[@]}" > "$OUT/hypotheses.txt" 2>"$OUT/hypotheses.err" || {
+  # When marginals.sh's own posterior is what gets reported (any counter but
+  # max-term, or --baseline best-rival), the priors have to reach IT -- the awk
+  # below never runs, so applying them here would drop them silently.  Translate
+  # recognize.sh's positional file (n weights, hyp order) into the atom=p form.
+  PRIOR_MARG=()
+  if [[ -n "$PRIORS" && "$COUNTER$BASELINE" != "max-termper-hypothesis" ]]; then
+    pi=0
+    while read -r w; do
+      [[ -z "${w// /}" || "$w" =~ ^[[:space:]]*# ]] && continue
+      [[ "$pi" -lt "${#HYPS[@]}" ]] || break
+      PRIOR_MARG+=(--prior "(holds (${HYPS[$pi]}) $HORIZON)=$w"); pi=$(( pi + 1 ))
+    done < "$PRIORS"
+    if [[ "$pi" -ne "${#HYPS[@]}" ]]; then
+      echo "recognize.sh: --priors has $pi weight(s) but there are ${#HYPS[@]} hypotheses" >&2
+      exit 2
+    fi
+  fi
+  bash "$SELF/marginals.sh" "$SCNF" ${HYP_ARGS[@]+"${HYP_ARGS[@]}"} \
+       --baseline "$BASELINE" --solver "$COUNTER" --beta "$BETA" \
+       ${MT_ARG[@]+"${MT_ARG[@]}"} ${PRIOR_MARG[@]+"${PRIOR_MARG[@]}"} \
+       ${EV_MARG[@]+"${EV_MARG[@]}"} > "$OUT/hypotheses.txt" 2>"$OUT/hypotheses.err" || {
     echo "recognize.sh: the hypothesis posterior failed:" >&2; cat "$OUT/hypotheses.err" >&2; exit 2; }
   grep '^;' "$OUT/hypotheses.txt" >&2 || true
 
@@ -282,6 +366,7 @@ if [[ "$METHOD" == "fast" ]]; then
   for i in "${!HYPS[@]}"; do
     # -i: the goal is written hyp0 but FiFO prints atoms upper-cased, (HYP0).
     row=$(grep -Fi "(HYPOTHESIS (HOLDS (${HYPS[$i]}) $HORIZON) " "$OUT/hypotheses.txt")
+    [[ -n "$row" ]] || { echo "recognize.sh: no posterior reported for ${HYPS[$i]} -- see $OUT/hypotheses.txt" >&2; exit 2; }
     CO[$i]=$(sed -n 's/.*:c-o \([^ )]*\).*/\1/p' <<<"$row"); CO[$i]="${CO[$i]:-NA}"
     CN[$i]=$(sed -n 's/.*:c-not-o \([^ )]*\).*/\1/p' <<<"$row"); CN[$i]="${CN[$i]:-NA}"
     [[ "${CO[$i]}" == "inf" || "${CO[$i]}" == "NA" ]] || CO[$i]=$(printf '%g' "${CO[$i]}")
@@ -296,8 +381,8 @@ if [[ "$METHOD" == "fast" ]]; then
 else
   for i in "${!HYPS[@]}"; do
     hyp="${HYPS[$i]}"; p="$OUT/sg-$hyp.pddl"; single_goal_problem "$hyp" "$p"
-    run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" "${SOLVER_ARG[@]}" --weighted-solver "$MAXSAT_SOLVER"
-    run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$NEG_EV"   "${SOLVER_ARG[@]}" --weighted-solver "$MAXSAT_SOLVER"
+    run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"} --weighted-solver "$MAXSAT_SOLVER"
+    run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$NEG_EV"   ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"} --weighted-solver "$MAXSAT_SOLVER"
     CO[$i]=$(cost_of "$OUT/$hyp-comply.log")
     CN[$i]=$(cost_of "$OUT/$hyp-notcomply.log")
     # drop this hypothesis's heavy intermediates once its costs are read
@@ -309,7 +394,11 @@ fi
 
 # --- priors ------------------------------------------------------------------
 PRIOR_ARR=()
-if [[ -n "$PRIORS" ]]; then mapfile -t PRIOR_ARR < <(grep -vE '^[[:space:]]*$' "$PRIORS"); fi
+if [[ -n "$PRIORS" ]]; then                        # read loop: see the note on HYPS
+  while IFS= read -r pline; do
+    [[ -n "${pline// /}" ]] && PRIOR_ARR+=("$pline")
+  done < "$PRIORS"
+fi
 
 # --- likelihoods, posterior ---------------------------------------------------
 if [[ "${USE_MARGINALS_POSTERIOR:-0}" -eq 1 ]]; then
@@ -342,6 +431,20 @@ else
       printf "%s\t%s\t%s\t%s\t%.4f\t%.4f\t%.4f\n", hyp[i],co[i],cn[i],dd,lik[i],pr[i],post
     }
   }' >> "$SUM"
+fi
+
+# Every posterior zero is not an answer.  It means no hypothesis had a finite
+# complying cost -- a horizon too short for the observations, or a solver that
+# produced no costs at all -- and printing an argmax of 0.0000 would present that
+# as a result.
+if ! awk -F'\t' 'NR>1 && $7+0>0 {f=1} END{exit !f}' "$SUM"; then
+  {
+    echo "recognize.sh: every posterior is zero, so there is no recognition result."
+    echo "  No hypothesis has a finite complying cost.  Usually the horizon is too"
+    echo "  short for the observations (try a larger --horizon), or the MaxSAT solver"
+    echo "  returned no cost -- see the logs in $OUT."
+  } >&2
+  exit 2
 fi
 
 # --- clean remaining intermediates; keep summary.tsv (+ the negated evidence) --

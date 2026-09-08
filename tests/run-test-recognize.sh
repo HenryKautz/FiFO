@@ -45,6 +45,7 @@ TMP="$(mktemp -d /tmp/fifo-rec-XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 cd "$TMP" || exit 1
 cp "$REC"/{intrusion-detection-costs.pddl,problem.pddl,evidence-3.txt} .
 cp "$SW"/*.pddl .
+printf '1\n' > one-weight.txt
 
 echo "=== recognize.sh: the merged fast path ==="
 
@@ -143,7 +144,6 @@ grep -q "unknown counter" \
 # warns about, and which the plan-runs path silently had, since planner.sh's
 # default weighted solver is anytime.  It made repeated runs disagree with each
 # other, so the equivalence above was only true by luck.
-grep -q "rc2-maxsat.py" <<<"$(bash "$BIN/recognize.sh" --help 2>&1 || true)" || true
 OUT_MS="$(errs intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
               --maxsat-solver nuwls --horizon 3)"
 if grep -q "unknown solver\|is a plain SAT" <<<"$OUT_MS"; then
@@ -178,6 +178,64 @@ if [[ -n "$A_BR" && -n "$A_PH" && "$A_BR" != "$A_PH" ]]; then
 else
   bad "the two baselines pick different hypotheses" "per-hyp=$A_PH best-rival=$A_BR"
 fi
+
+# --- 5c. the code-review findings, one case each -----------------------------
+# Every one of these is a SILENT wrong answer if unguarded, which is why they are
+# errors rather than warnings.
+
+# The four new flags must be reachable from --help.  The earlier version of this
+# check ended in `|| true`, so it asserted nothing and missed that they were
+# never added to the header block usage() prints.
+HELP="$(bash "$BIN/recognize.sh" --help 2>&1)"
+MISSING=""
+for f in --counter --baseline --maxsat-solver --method; do
+  grep -q -- "$f" <<<"$HELP" || MISSING="$MISSING $f"
+done
+[[ -z "$MISSING" ]] && ok "--help documents the new flags" \
+                    || bad "--help documents the new flags" "missing:$MISSING"
+
+# plan-runs is the fixed R&G computation; accepting a counter/baseline and then
+# ignoring it would report numbers that are not the ones asked for.
+expect_err() { local label="$1" pat="$2"; shift 2
+  local out; out="$(bash "$BIN/recognize.sh" "$@" 2>&1)"
+  grep -q -- "$pat" <<<"$out" && ok "$label" || bad "$label" "got: $(head -1 <<<"$out")"; }
+expect_err "--counter is refused with --method plan-runs" "no meaning with --method plan-runs" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --counter ddnnf
+expect_err "--baseline is refused with --method plan-runs" "no meaning with --method plan-runs" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --baseline best-rival
+expect_err "a --priors count mismatch is refused" "but there are" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 \
+  --baseline best-rival --priors one-weight.txt
+
+# --priors must REACH marginals.sh on the path that reports its posterior; the
+# awk that would otherwise apply them never runs there.
+printf '9\n1\n1\n1\n1\n1\n1\n1\n1\n1\n' > skew.txt
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --baseline best-rival --priors skew.txt --out r-pri >/dev/null 2>&1
+P_SKEW=$(awk -F'\t' '$1=="hyp0"{print $6}' r-pri/summary.tsv 2>/dev/null)
+if [[ -n "$P_SKEW" ]] && awk -v p="$P_SKEW" 'BEGIN{exit !(p>0.4)}'; then
+  ok "--priors reach the marginals-posterior path (hyp0 prior $P_SKEW)"
+else
+  bad "--priors reach the marginals-posterior path" "hyp0 prior came out '$P_SKEW', expected ~0.5"
+fi
+
+# A stale scnf in a persistent --out must not be mistaken for this run's output.
+mkdir -p r-stale && cp r-fast/summary.tsv r-stale/ 2>/dev/null
+printf 'nonsense\n' > r-stale/rec-problem.scnf
+OUT_STALE="$(bash "$BIN/recognize.sh" intrusion-detection-costs.pddl nosuch.pddl \
+             evidence-3.txt --horizon 6 --out r-stale 2>&1)"
+grep -q "no such file\|instantiation failed" <<<"$OUT_STALE" \
+  && ok "a stale scnf does not pass for a fresh run" \
+  || bad "a stale scnf does not pass for a fresh run" "got: $(head -1 <<<"$OUT_STALE")"
+
+# bash 3.2 is what the #!/bin/bash shebang actually gets on macOS, and "${a[@]}"
+# on an empty array is fatal there under set -u.  Both new arrays are empty in
+# ordinary configurations.
+OUT_32="$(/bin/bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl \
+          evidence-3.txt --evidence-kind fifo --horizon 6 --out r-32 2>&1)"
+grep -q "unbound variable" <<<"$OUT_32" \
+  && bad "runs under /bin/bash 3.2 (empty arrays)" "unbound variable" \
+  || ok "runs under /bin/bash 3.2 (empty arrays)"
 
 # --- 6. slice-pinned FiFO evidence still works through the fast path --------
 printf '(occurs (recon taurus) 1)\n' > fifoev.txt
