@@ -45,8 +45,9 @@ about marginal probabilities.
 
 **Section 3** turns to *inference* on the resulting distribution: MC-SAT sampling
 (3.1), implemented as `--solver mc-sat`; the maximum-term approximation (3.2),
-which the plan-recognition pipeline `recognize.sh` uses; and MAP (3.3), the query
-every MaxSAT call in the stack is actually making.
+implemented as `--solver max-term` and specialized by the plan-recognition
+pipeline `recognize.sh`; and MAP (3.3), the query every MaxSAT call in the stack
+is actually making.
 
 **Section 4** places all of it in the literature and summarizes. The implemented
 back ends are documented in [probability.md](probability.md).
@@ -513,7 +514,37 @@ degeneracy log-ratio. So a conditional is well approximated by two MaxSAT costs
 cancel — only the *asymmetry* in near-optimal multiplicity between the two sides
 is lost.
 
-**Plan recognition is the application FiFO implements.** For a hypothesis $G$
+**FiFO implements this as a general marginal back end.** Take $A$ to be a single
+atom $a$ and $B$ the whole feasible set: the display above becomes
+
+$$
+\operatorname{logit} P(a) \enspace\approx\enspace \beta\big(c_{\min}(\lnot a) - c_{\min}(a)\big),
+$$
+
+which is `marginals.sh --solver max-term` ([`lisp/maxterm.lisp`](../lisp/maxterm.lisp)).
+It costs $1+n$ MaxSAT solves for $n$ atoms rather than $2n$, because the
+unconstrained optimum already supplies whichever polarity it satisfies. Two
+consequences are worth stating plainly, since they are what the dropped
+$\Omega$ costs in practice:
+
+- It approximates what the **weights** contribute and discards what the
+  **counting** contributes. On an unweighted theory the two $c_{\min}$ coincide
+  for every atom, so it returns $0.5$ throughout — correct as a statement about costs, useless as a
+  marginal. That is not a defect to be fixed but the exact content of dropping
+  $\Omega$; a theory whose probabilities live entirely in model multiplicity has
+  no max-term approximation worth the name.
+- It is **exact on backbone atoms** (those fixed in every feasible model), where
+  one side is infeasible and the degeneracy ratio is not merely small but absent.
+  FiFO flags these `[proved]`.
+
+Because it answers a different question from the counting back ends, its output
+is labeled `(MAXTERM-MARGINAL ...)` rather than `(MARGINAL ...)` — so a `grep`
+for one cannot silently pick up the other. And it needs an **exact** MaxSAT
+solver: the estimator is a *difference of two minima*, so an anytime solver
+supplies two upper bounds, whose errors do not cancel.
+
+**Plan recognition is the case that motivated it**, and the one where the
+cancellation argument above is strongest. For a hypothesis $G$
 and observations $O$, the likelihood is
 $P(O\mid G) = Z_{G,O}/Z_G = Z_{G,O}/(Z_{G,O}+Z_{G,\lnot O})$; the max-term
 approximation gives Ramírez & Geffner's recognizer,
@@ -523,7 +554,9 @@ comply with the observations. This is exactly the `Z_G`-normalized recognition
 posterior (§ [Case 4](#27-case-4--beliefs-about-marginals-little-or-no-data)-style
 normalization applied to goals) with **counting replaced by optimization** — the
 tractable stand-in for the exact weighted model count, which is intractable at
-useful planning horizons. It is realized by `bin/recognize.sh`
+useful planning horizons. It is realized by `bin/recognize.sh`, and by
+`marginals.sh --hypotheses`, which applies the same estimator to a declared set
+of competing hypothesis atoms
 ([probability.md](probability.md#plan-recognition-posteriors-recognizesh)); the
 worked results are in
 [benchmarks.md](../benchmarks.md#ramírez-and-geffner-recognition-on-the-plan-recognition-benchmarks).
