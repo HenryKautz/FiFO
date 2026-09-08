@@ -975,6 +975,30 @@ count-neutral."
                 `(not (ObsDone ,chain ,k numslices))
                 `(ObsDone ,chain ,k numslices)))))))
 
+(defun occur-in-order-assertion-p (form)
+  "True for the single literal translate-occur-in-order ends its (and ...) with:
+(ObsDone c k numslices), or that negated under :negate."
+  (let ((lit (if (and (consp form) (sym-name= (first form) "NOT")) (second form) form)))
+    (and (consp lit) (sym-name= (first lit) "OBSDONE"))))
+
+(defun occur-in-order-split (form)
+  "Split what translate-occur-in-order returns -- (and <monitor axioms> <assertion>)
+-- into (values axioms-form assertion).  Returns (values NIL NIL) for anything
+else, so a caller can fall back to treating the evidence as one opaque formula.
+
+The two halves belong in different places.  The axioms are BICONDITIONAL
+progression rules, so every monitor atom is fully determined by the action trace:
+adding them to the theory is count-neutral (it multiplies the weighted model count
+by exactly 1), and they carry no claim about what was observed.  The assertion is
+the single literal that does make that claim.  Separating them lets a caller build
+ONE instantiated theory and then condition on the assertion, or on its negation
+for the does-not-comply case, instead of re-instantiating for each polarity --
+which is what turns 2n planner runs into 2n clamped solves on one scnf."
+  (if (and (consp form) (sym-name= (first form) "AND") (rest form)
+           (occur-in-order-assertion-p (car (last form))))
+      (values (cons 'and (butlast (rest form))) (car (last form)))
+      (values nil nil)))
+
 (defun translate-evidence-form (c bindings forbidden effect-preds env)
   "Translate one PDDL-style evidence form C into a horizon-independent FiFO
 formula over the slice timeline.  Supports the trajectory operators always,

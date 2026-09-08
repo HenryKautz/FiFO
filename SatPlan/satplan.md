@@ -826,8 +826,8 @@ one thing that most often goes wrong.
 | a plan that respects what you know | `planner.sh --pddl-evidence …` | same, conditioned |
 | the single most likely explanation | `planner.sh --pddl-evidence …` | **MAP** — argmax P(trajectory \| evidence) |
 | how likely each fact is | `planner.sh --marginals` | marginal P(atom \| evidence), every atom at every slice — **very small problems only** |
-| a posterior over goal hypotheses, from PDDL | `recognize.sh` | R&G's cheapest-plan approximation |
-| the same, choosing the method and the prior | `planner.sh --stop-after scnf` + `marginals.sh --hypotheses` | any of six back ends, exact or approximate; either baseline |
+| a posterior over goal hypotheses | `recognize.sh` | R&G's cheapest-plan approximation, or any of six back ends under either baseline |
+| the same, starting from a bare `.scnf` | `marginals.sh --hypotheses` | what recognize.sh now does internally |
 
 Everything below assumes a costed domain: costs are what make one plan more
 probable than another, since `P(x) ∝ exp(−cost(x))`. On an uncosted domain every
@@ -955,7 +955,7 @@ sampling, for horizons past exact counting). The
 [Switch worked example](#worked-example-the-switch-domain-end-to-end) runs this
 end to end.
 
-#### 5. Plan recognition at scale: a posterior over hypotheses
+#### 5. Plan recognition: a posterior over hypotheses
 
 For an instance whose goal is `(or (hyp0) … (hypN))` over nullary derived
 predicates, with observations as an `(occur-in-order …)` file:
@@ -986,71 +986,64 @@ hypothesis wins for making the observations purposeful rather than for being
 cheap. So this ranks *hypotheses*, where recipe 3 returns the single best
 *trajectory* — and, as here, the two can disagree.
 
-It replaces each partition function with its cheapest-plan term, so it costs `2n`
-MaxSAT runs and **no counting** — which is why it works at horizons where exact
-counting does not. `--priors FILE` for non-uniform priors, `--beta` for the
-temperature. `SatPlan/evgen.sh --recognition 1` writes evidence files for it.
+**How it works, and why it is fast.** It instantiates the problem **once** at the
+horizon and then clamps `2n` solves on that single scnf. Clamping `hypI` in the
+disjunctive theory selects the same models as rewriting the goal to `Gᵢ`, since
+`hypI` implies the disjunction — so this is the same computation the older
+implementation did with `2n` full translate-instantiate-solve cycles, at a
+fraction of the cost. Measured on the instance above with the *same* exact MaxSAT
+solver on both sides: **4.1 s against 28.6 s**, `summary.tsv` byte-identical.
 
-Recipe 6 offers the same estimator on an scnf, and faster; what you get here in
-exchange is the PDDL front door — horizon selection, and observations given as
-`(occur-in-order …)` with the times unknown.
+`(occur-in-order …)` reaches the single scnf through a split: its translation is
+`(and <monitor axioms> <assertion>)`, the axioms are biconditional and therefore
+count-neutral, so they are folded into the theory while the one assertion literal
+is what gets conditioned on — or negated, for the does-not-comply case.
+(`planner.sh --split-evidence` does this; it is not usually called directly.)
 
-#### 6. Plan recognition on an scnf: choosing the method and the prior
+Options: `--priors FILE` for non-uniform priors, `--beta` for the temperature,
+`--horizon H` to fix the horizon (otherwise it is searched, per hypothesis, as
+R&G do — that search is the one part that still costs n planner runs).
+`--maxsat-solver <name>` picks the solver that produces the costs; it defaults to
+the **exact** `bin/rc2-maxsat.py` and is deliberately not an anytime solver.
+R&G's score is `c(¬O) − c(O)`, a *difference of two minima*: with an anytime
+solver those are two upper bounds, which do not cancel — the same hazard
+`max-term` warns about. (Before this default, the costs came from `planner.sh`'s
+anytime solver, which made repeated runs disagree with each other, and was also
+slower here: 120 s against 28.6 s for the identical work.)
+`--counter <name>` picks the back end (default `max-term`, R&G's estimator; the
+exact counters are available but are small-instance-only, as in recipe 4) and
+`--baseline best-rival|per-hypothesis` picks the prior — see
+[Hypothesis posteriors](../Probability/probability.md#hypothesis-posteriors-which-prior-is-in-play).
+Note `--solver` names the SAT solver used by the horizon search, not the counter.
+`--method plan-runs` selects the older 2n-planner-run implementation, kept as the
+reference the fast path is tested against.
 
-Recipe 5 fixes one method. On an already instantiated `.scnf` you get the whole
-matrix instead: any of the six back ends, exact or approximate, under either
-baseline. Instantiate **without** the evidence, then hand the evidence to
-`marginals.sh`:
+`SatPlan/evgen.sh --recognition 1` writes evidence files for it.
+
+#### 6. The same, starting from a bare `.scnf`
+
+`recognize.sh` is the PDDL front door; `marginals.sh --hypotheses` is the engine
+underneath it, and can be used directly on an already instantiated theory:
 
 ```sh
-# instantiate once at a fixed horizon -- no --pddl-evidence here
-bin/planner.sh problem.pddl --domain costs-domain.pddl --numslices 6 --stop-after scnf
-
-# the posterior over the hypothesis atoms, conditioned on the observations
-bin/marginals.sh problem.scnf --solver d4 --baseline per-hypothesis \
+bin/marginals.sh problem.scnf --solver max-term --baseline per-hypothesis \
     --evidence '(occurs (recon taurus) 1)' \
-    --hypotheses '(holds (hyp0) 6)' --hypotheses '(holds (hyp1) 6)'    # … one per hypothesis
+    --hypotheses '(holds (hyp0) 6)' --hypotheses '(holds (hyp1) 6)'    # … etc
 ```
 
-The hypothesis atoms are `(HOLDS (hypI) H)` at the horizon you pinned.
-`--baseline per-hypothesis` divides out the theory's implicit prior — the mass it
-puts on a hypothesis merely for being *easy to reach* — which is the baseline
-`recognize.sh` approximates; `--baseline best-rival` (the default) leaves that
-implicit prior in place. See
-[Hypothesis posteriors](../Probability/probability.md#hypothesis-posteriors-which-prior-is-in-play).
+Use it when you have no PDDL, when the hypotheses are not goal predicates, or to
+choose a back end and baseline without the recognition wrapper. Two constraints:
 
-Two constraints, both easy to trip over:
+- **Do not bake the evidence into the scnf.** The per-hypothesis baseline needs a
+  conditioned *and* an unconditioned run, so `marginals.sh` has to hold the
+  evidence. (`--baseline best-rival` needs only the conditioned run, so there a
+  pre-conditioned scnf is fine.)
+- **The evidence must be ground FiFO forms over atoms the scnf already names.**
+  `(occur-in-order …)` needs the split above, which is `recognize.sh`'s job.
 
-- **Do not bake the evidence into the scnf.** The per-hypothesis baseline needs
-  a conditioned *and* an unconditioned count, so `marginals.sh` has to be the one
-  holding the evidence. (`--baseline best-rival` needs only the conditioned run,
-  so there a pre-conditioned scnf is fine.)
-- **The evidence must be ground FiFO forms over atoms the scnf already names** —
-  slice-pinned observations, which is exactly what `SatPlan/evgen.sh` writes.
-  The horizon-independent `(occur-in-order …)` cannot be passed this way: it
-  compiles to monitor atoms that exist only in the evidence scnf, and an atom the
-  theory does not contain is refused rather than silently ignored. Ordered
-  observations of unknown time are recipe 5's business.
-
-**Which back end scales is the whole question here.** The *exact* counters
-(`maxent`, `ddnnf`, `d4`, `addmc`) are for small domains and short horizons —
-counting is the expensive direction, as in recipe 4. `--solver max-term` is not:
-it is R&G's estimator, `1+n` or `2n` MaxSAT solves rather than a count, and it
-runs at benchmark scale. On the 3984-clause IntrusionDetection encoding at
-horizon 6, `--solver max-term --baseline per-hypothesis` over ten hypotheses
-takes about **3 seconds**, while a `d4` compile of the same file does not finish
-in minutes.
-
-That also makes it *faster than recipe 5* for the same estimator: `recognize.sh`
-spends `2n` full translate-instantiate-solve cycles through `planner.sh`, while
-this clamps `2n` solves on one already-built scnf. What recipe 5 gives you in
-exchange is the PDDL front door — horizon selection, and `(occur-in-order …)`
-observations, which cannot be passed here (see the second constraint above).
-
-Among the exact counters, prefer `--solver d4` or `--solver addmc` on anything
-SatPlan-sized: the pure-Lisp `ddnnf` compiler is for small instances, and on a
-few-thousand-clause encoding it exhausts the control stack rather than stopping
-at `*ddnnf-node-limit*`.
+Among the exact counters prefer `--solver d4` or `--solver addmc`: the pure-Lisp
+`ddnnf` compiler is for small instances, and on a few-thousand-clause encoding it
+exhausts the control stack rather than stopping at `*ddnnf-node-limit*`.
 
 #### Making problems and observations to test with
 

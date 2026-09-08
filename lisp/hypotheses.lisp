@@ -279,9 +279,14 @@ Returns (values deltas n-unproved beta)."
                   (when (member st-n '(:unproved :best)) (incf unproved))
                   ;; c(O) unreachable  -> the evidence refutes this hypothesis.
                   ;; c(~O) unreachable -> nothing BUT compliance is possible.
-                  (push (cond ((null c-o) :refuted)
-                              ((null c-n) :certain)
-                              (t (- c-n c-o)))
+                  ;; The two costs are reported alongside the difference: they are
+                  ;; the diagnostic that says WHY a hypothesis scored as it did --
+                  ;; a cheap-to-reach goal whose non-complying plan is cheaper
+                  ;; still looks quite different from one the evidence rules out.
+                  (push (list (cond ((null c-o) :refuted)
+                                    ((null c-n) :certain)
+                                    (t (- c-n c-o)))
+                              c-o c-n)
                         deltas)))))
           (values (nreverse deltas) unproved b))))))
 
@@ -369,13 +374,16 @@ cell); :per-hypothesis is R&G's difference, 2n clamped solves."
                     ; bounds do NOT cancel and these numbers are not trustworthy.  Use an~%~
                     ; exact solver:  --maxsat-solver rc2-maxsat.py~%; ~%"
                  unproved (* 2 (length hyps))))
-       (let* ((liks (mapcar (lambda (d) (case d
+       (let* ((liks (mapcar (lambda (d) (case (first d)
                                           (:refuted 0d0)   ; no complying plan exists
                                           (:certain 1d0)   ; no NON-complying plan exists
-                                          (t (mt--sigmoid (* b d)))))
+                                          (t (mt--sigmoid (* b (first d))))))
                             deltas))
               (post (hp--normalise (mapcar #'* prior-v liks))))
-         (mapcar (lambda (h p pr l d) (list h p pr (list :likelihood l :delta d)))
+         (mapcar (lambda (h p pr l d)
+                   (list h p pr (list :likelihood l :delta (first d)
+                                      :c-o (or (second d) :inf)
+                                      :c-not-o (or (third d) :inf))))
                  hyps post prior-v liks deltas))))))
 
 ;;; ---------------------------------------------------------------------------

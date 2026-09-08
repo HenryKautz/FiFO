@@ -51,6 +51,12 @@ usage() {
   echo "               PDDL only.  (occur-in-order <action>+) asserts the ground actions" >&2
   echo "               occur in that order at strictly increasing, unspecified slices." >&2
   echo "  --pddl-evidence-file <f>  a file of such PDDL modal forms." >&2
+  echo "  --split-evidence  (with --stop-after scnf, and a single (occur-in-order ...))" >&2
+  echo "               fold the observation monitor's AXIOMS into the problem scnf and write" >&2
+  echo "               its one assertion literal to <root>-assertion.txt instead of a separate" >&2
+  echo "               evidence scnf.  The axioms are determined and count-neutral, so one" >&2
+  echo "               instantiated theory then serves both polarities -- condition on the" >&2
+  echo "               assertion for comply, its negation for does-not-comply." >&2
   echo "  --marginals  run weighted model counting instead of planning: print P(atom|evidence)" >&2
   echo "               at the working horizon (no plan search)." >&2
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
@@ -76,6 +82,7 @@ EVFILE=""      # --evidence-file
 EVIDENCE_FORMS=()  # --evidence (repeatable)
 PDDL_EVFILE=""        # --pddl-evidence-file
 PDDL_EVIDENCE_FORMS=()  # --pddl-evidence (repeatable)
+SPLIT_EVIDENCE=0  # --split-evidence: monitor axioms into the theory, assertion apart
 MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary)
 
@@ -100,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --evidence-file)  [[ $# -ge 2 ]] || usage; EVFILE="$2"; shift 2 ;;
     --pddl-evidence)      [[ $# -ge 2 ]] || usage; PDDL_EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --pddl-evidence-file) [[ $# -ge 2 ]] || usage; PDDL_EVFILE="$2"; shift 2 ;;
+    --split-evidence) SPLIT_EVIDENCE=1; shift ;;
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     -h|--help)   usage ;;
@@ -210,6 +218,8 @@ MARGINALS_KW=""
 [[ "$MARGINALS" -eq 1 ]] && MARGINALS_KW=":marginals t"
 COUNTER_KW=""
 [[ -n "$COUNTER" ]] && COUNTER_KW=":counter \"$COUNTER\""
+SPLIT_KW=""
+[[ "$SPLIT_EVIDENCE" -eq 1 ]] && SPLIT_KW=":split-evidence t"
 
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
@@ -220,7 +230,7 @@ EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
               $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
               $EVIDENCE_KW $EVFILE_KW $PDDL_EVIDENCE_KW $PDDL_EVFILE_KW
-              $MARGINALS_KW $COUNTER_KW
+              $MARGINALS_KW $COUNTER_KW $SPLIT_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))" )
 

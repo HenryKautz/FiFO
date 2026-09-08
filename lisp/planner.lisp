@@ -132,7 +132,19 @@ that empties it, which is exactly the UNSAT this horizon deserves."
               (push (cons 'or (nreverse kept)) out))))))
     ))
 
-(defun plan--instantiate (wff n problem-scnf evidence-forms evidence-scnf)
+(defun plan--split-evidence (evidence-forms)
+  "When EVIDENCE-FORMS is exactly one occur-in-order translation, return
+(values axioms assertion); otherwise (values NIL NIL).
+
+Only the single-form case is handled, which is all the recognizer needs -- it
+already refuses an evidence file with more than one form -- and it keeps the
+fallback obvious: anything else stays one opaque formula, as before."
+  (if (and evidence-forms (null (rest evidence-forms)))
+      (occur-in-order-split (first evidence-forms))
+      (values nil nil)))
+
+(defun plan--instantiate (wff n problem-scnf evidence-forms evidence-scnf
+                          &key split-evidence assertion-file)
   "Instantiate the problem WFF at N slices into PROBLEM-SCNF (assumes
 *satplan-numslices* / *cnf-format* are already set).  When EVIDENCE-FORMS is
 non-NIL, parse them IN THE SAME ENVIRONMENT -- so quantifiers ground over the
@@ -146,11 +158,40 @@ wrong answer without it."
   (unless (instantiate wff :scnfile problem-scnf)
     (error "instantiation failed at ~A slices" n))
   (when evidence-forms
-    (let ((clauses (plan--resolve-evidence (parse-same-env evidence-forms)
-                                           problem-scnf n)))
-      (with-open-file (out evidence-scnf :direction :output
-                                         :if-exists :supersede :if-does-not-exist :create)
-        (dolist (c clauses) (format out "~S~%" c))))))
+    (multiple-value-bind (axioms assertion)
+        (if split-evidence (plan--split-evidence evidence-forms) (values nil nil))
+      (cond
+        ;; SPLIT: the observation monitor's axioms are count-neutral and say
+        ;; nothing about what was observed, so they belong in the THEORY; the
+        ;; assertion is the one literal that does, and is left for the caller to
+        ;; condition on (or negate).  One instantiated theory then serves both
+        ;; polarities and every hypothesis.
+        (assertion
+         (let ((clauses (parse-same-env (list axioms))))
+           (with-open-file (out problem-scnf :direction :output :if-exists :append)
+             (format out "; observation-monitor axioms (determined, count-neutral)~%")
+             (dolist (c clauses) (format out "~S~%" c))))
+         ;; Checked AFTER the axioms are in the theory, so the ObsDone atom the
+         ;; assertion names is one the theory now has.  Write the RESOLVED literal
+         ;; that comes back, not the source form: the form says NUMSLICES, which
+         ;; is bound in the instantiation environment and would otherwise reach
+         ;; the caller unresolved -- and an atom the theory does not contain
+         ;; constrains nothing.
+         (let* ((clauses (plan--resolve-evidence (parse-same-env (list assertion))
+                                                 problem-scnf n))
+                (literal (second (first clauses))))
+           (unless (and (= 1 (length clauses)) (= 2 (length (first clauses))))
+             (error "the occur-in-order assertion did not clausify to one literal: ~S" clauses))
+           (when assertion-file
+             (with-open-file (out assertion-file :direction :output
+                                                 :if-exists :supersede :if-does-not-exist :create)
+               (format out "~S~%" literal)))))
+        (t
+         (let ((clauses (plan--resolve-evidence (parse-same-env evidence-forms)
+                                                problem-scnf n)))
+           (with-open-file (out evidence-scnf :direction :output
+                                              :if-exists :supersede :if-does-not-exist :create)
+             (dolist (c clauses) (format out "~S~%" c)))))))))
 
 (defun plan--scnf-to-solve (problem-scnf evidence-forms evidence-scnf combined-scnf)
   "The scnf to hand downstream (propositionalize / marginals): when there is
@@ -190,7 +231,7 @@ objective."
                   domain-file (satplan-path "satplan.wff")
                   stop-after (longer 0)
                   evidence evidence-file pddl-evidence pddl-evidence-file
-                  marginals (counter "maxent")
+                  marginals (counter "maxent") split-evidence
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -260,6 +301,7 @@ wff/scnf.  Progress is printed to STREAM."
          (evidence-forms (plan--evidence-forms evidence evidence-file))
          (pddl-evidence-forms (plan--evidence-forms pddl-evidence pddl-evidence-file))
          (evidence-scnf  (planner-sibling problem-path "-evidence" "scnf"))
+         (assertion-scnf (planner-sibling problem-path "-assertion" "txt"))
          (combined-scnf  (planner-sibling problem-path "-combined" "scnf")))
     (handler-case
         (let ((reach-min nil))
@@ -295,11 +337,19 @@ wff/scnf.  Progress is printed to STREAM."
                  (found nil) (has-costs nil))
             (when (eq stop-after :scnf)
               (setq *satplan-numslices* lo *cnf-format* 'cnf)
-              (plan--instantiate wff lo scnf evidence-forms evidence-scnf)
-              (if evidence-forms
-                  (format stream "Stopped after generating the scnf files at ~A time slices:~%  problem:  ~A~%  evidence: ~A~%"
-                          lo scnf evidence-scnf)
-                  (format stream "Stopped after generating the scnf at ~A time slices: ~A~%" lo scnf))
+              (plan--instantiate wff lo scnf evidence-forms evidence-scnf
+                                 :split-evidence split-evidence
+                                 :assertion-file assertion-scnf)
+              (let ((split (and split-evidence
+                                (nth-value 1 (plan--split-evidence evidence-forms)))))
+                (cond
+                  (split
+                   (format stream "Stopped after generating the scnf at ~A time slices:~%  problem:   ~A~%  (observation-monitor axioms folded into it)~%  assertion: ~A~%"
+                           lo scnf assertion-scnf))
+                  (evidence-forms
+                   (format stream "Stopped after generating the scnf files at ~A time slices:~%  problem:  ~A~%  evidence: ~A~%"
+                           lo scnf evidence-scnf))
+                  (t (format stream "Stopped after generating the scnf at ~A time slices: ~A~%" lo scnf))))
               (return-from plan (values :stopped-scnf lo scnf)))
             ;; --marginals: inference, not planning.  Instantiate once at the
             ;; working horizon (conjoined with any evidence) and run weighted

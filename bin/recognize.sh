@@ -70,6 +70,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
 HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
+COUNTER="max-term"; BASELINE="per-hypothesis"; METHOD="fast"; MAXSAT_SOLVER=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -78,6 +79,10 @@ while [[ $# -gt 0 ]]; do
     --out)     OUT="$2"; shift 2;;
     --solver)  SOLVER="$2"; shift 2;;
     --evidence-kind) EVKIND="$2"; shift 2;;
+    --counter) COUNTER="$2"; shift 2;;
+    --baseline) BASELINE="$2"; shift 2;;
+    --method)  METHOD="$2"; shift 2;;
+    --maxsat-solver) MAXSAT_SOLVER="$2"; shift 2;;
     -h|--help) usage 0;;
     *) echo "unexpected argument: $1" >&2; usage;;
   esac
@@ -86,6 +91,14 @@ case "$EVKIND" in
   pddl) EV_FLAG="--pddl-evidence-file" ;;
   fifo) EV_FLAG="--evidence-file" ;;
   *) echo "--evidence-kind must be 'pddl' or 'fifo', got: $EVKIND" >&2; exit 2;;
+esac
+case "$METHOD" in
+  fast|plan-runs) ;;
+  *) echo "--method must be 'fast' or 'plan-runs', got: $METHOD" >&2; exit 2;;
+esac
+case "$BASELINE" in
+  per-hypothesis|best-rival) ;;
+  *) echo "--baseline must be 'per-hypothesis' or 'best-rival', got: $BASELINE" >&2; exit 2;;
 esac
 for f in "$DOMAIN" "$PROBLEM" "$EVIDENCE"; do
   [[ -f "$f" ]] || { echo "no such file: $f" >&2; exit 2; }
@@ -103,6 +116,18 @@ if [[ -n "$SOLVER" ]]; then
   SOLVER="$(_fifo_require_solver "$SOLVER" sat recognize.sh)" || exit 2
   SOLVER_ARG=(--solver "$SOLVER")
 fi
+# The counter too, before anything is translated or instantiated.
+COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh)" || exit 2
+
+# The MaxSAT solver that produces the COSTS.  It must be EXACT by default, and
+# the same one on both paths.  R&G's score is c(~O) - c(O), a DIFFERENCE of two
+# minima: with an anytime solver those are two upper bounds, which do not cancel
+# -- the hazard maxterm.lisp documents, and which the plan-runs path silently had
+# because planner.sh's default weighted solver is anytime.  It also made the two
+# paths disagree run to run, since an anytime solver need not return the same
+# cost twice.
+MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
+MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh)" || exit 2
 
 # --- run a planner.sh invocation in its own process group with a timeout ------
 TIMEOUT=900
@@ -112,9 +137,18 @@ run_planner() {           # run_planner <logfile> <extra planner args...>
   set -m
   bash "$PLANNER" "$@" >"$log" 2>&1 &
   pid=$!
-  ( sleep "$TIMEOUT"; kill -9 -"$pid" 2>/dev/null ) & wd=$!
+  # The watchdog's fds are closed and its whole process GROUP is killed, not just
+  # the subshell: otherwise the `sleep` outlives it, and an orphaned sleep holding
+  # this script's stdout blocks any caller that captures us with $( ) until the
+  # timeout expires.  (It also leaked one sleep per planner call.)
+  { sleep "$TIMEOUT"; kill -9 -"$pid" 2>/dev/null; } >/dev/null 2>&1 </dev/null & wd=$!
   wait "$pid" 2>/dev/null
-  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  # Kill the watchdog and its sleep CHILD by pid.  Not `kill -- -$wd`: a negative
+  # pid is a process-GROUP signal, and if that job has already been reaped the
+  # group is gone and the signal can land somewhere unintended.
+  pkill -P "$wd" 2>/dev/null
+  kill "$wd" 2>/dev/null
+  wait "$wd" 2>/dev/null
   set +m
   pkill -9 -f kissat 2>/dev/null; pkill -9 -f open-wbo 2>/dev/null
 }
@@ -195,27 +229,99 @@ if [[ -n "$MAXSLICE" && "$HORIZON" -lt "$MAXSLICE" ]]; then
 fi
 echo "Horizon H = $HORIZON (observations = $NOBS)" >&2
 
-# --- the two MaxSAT runs per hypothesis --------------------------------------
+# --- the 2n costs ------------------------------------------------------------
 SUM="$OUT/summary.tsv"
 printf 'hyp\tc_O\tc_notO\tdelta\tlikelihood\tprior\tposterior\n' > "$SUM"
 CO=(); CN=()
-for i in "${!HYPS[@]}"; do
-  hyp="${HYPS[$i]}"; p="$OUT/sg-$hyp.pddl"; single_goal_problem "$hyp" "$p"
-  run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" "${SOLVER_ARG[@]}"
-  run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$NEG_EV"   "${SOLVER_ARG[@]}"
-  CO[$i]=$(cost_of "$OUT/$hyp-comply.log")
-  CN[$i]=$(cost_of "$OUT/$hyp-notcomply.log")
-  # drop this hypothesis's heavy intermediates once its costs are read
-  rm -f "$OUT/sg-$hyp".{pddl,wff,scnf,cnf,wcnf,map,satout,soln,answer} \
-        "$OUT/sg-$hyp"-*.scnf "$OUT/$hyp-comply.log" "$OUT/$hyp-notcomply.log" 2>/dev/null
-  echo "  $hyp: c(O)=${CO[$i]}  c(~O)=${CN[$i]}" >&2
-done
+
+if [[ "$METHOD" == "fast" ]]; then
+  # ONE instantiated theory serves every hypothesis and both polarities.
+  #
+  # Clamping hypI in the disjunctive theory selects the same models as rewriting
+  # the goal to G_i -- hypI implies the disjunction, so T_or ^ hypI == T_i -- so
+  # this computes exactly what the plan-runs method does, from 2n clamped solves
+  # on one scnf instead of 2n translate-instantiate-solve cycles.
+  echo "Instantiating once at $HORIZON slices..." >&2
+  P1="$OUT/rec-problem.pddl"; cp "$PROBLEM" "$P1"
+  SPLIT_ARG=()
+  if [[ "$EVKIND" == "pddl" ]]; then
+    # (occur-in-order ...) compiles to monitor atoms that live only in the
+    # evidence scnf, so they cannot be conditioned on.  --split-evidence folds
+    # the (determined, count-neutral) axioms into the theory and leaves the one
+    # assertion literal apart, which IS an atom of the theory and so can be.
+    SPLIT_ARG=(--split-evidence)
+  fi
+  run_planner "$OUT/instantiate.log" "$P1" --domain "$DOMAIN" \
+      --numslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" --stop-after scnf \
+      "${SPLIT_ARG[@]}" "${SOLVER_ARG[@]}"
+  SCNF="$OUT/rec-problem.scnf"
+  [[ -f "$SCNF" ]] || { echo "recognize.sh: instantiation produced no scnf" >&2
+                        sed -n '$p' "$OUT/instantiate.log" >&2; exit 2; }
+  if [[ "$EVKIND" == "pddl" ]]; then
+    ASSERT_FILE="$OUT/rec-problem-assertion.txt"
+    [[ -f "$ASSERT_FILE" ]] || { echo "recognize.sh: no assertion literal was written --" >&2
+        echo "  --split-evidence handles a SINGLE (occur-in-order ...) form; this evidence is not one." >&2
+        exit 2; }
+    EV_MARG=(--evidence "$(cat "$ASSERT_FILE")")
+  else
+    EV_MARG=(--evidence-file "$EVIDENCE")
+  fi
+
+  HYP_ARGS=()
+  for hyp in "${HYPS[@]}"; do HYP_ARGS+=(--hypotheses "(holds ($hyp) $HORIZON)"); done
+  MT_ARG=(); [[ "$COUNTER" == "max-term" ]] && MT_ARG=(--maxsat-solver "$MAXSAT_SOLVER")
+  bash "$SELF/marginals.sh" "$SCNF" "${HYP_ARGS[@]}" \
+       --baseline "$BASELINE" --solver "$COUNTER" --beta "$BETA" "${MT_ARG[@]}" \
+       "${EV_MARG[@]}" > "$OUT/hypotheses.txt" 2>"$OUT/hypotheses.err" || {
+    echo "recognize.sh: the hypothesis posterior failed:" >&2; cat "$OUT/hypotheses.err" >&2; exit 2; }
+  grep '^;' "$OUT/hypotheses.txt" >&2 || true
+
+  # max-term + per-hypothesis reports the two costs, so the SAME awk below
+  # produces the summary and the output is directly comparable with plan-runs.
+  # Other combinations do not have c(O)/c(~O) to report.
+  for i in "${!HYPS[@]}"; do
+    # -i: the goal is written hyp0 but FiFO prints atoms upper-cased, (HYP0).
+    row=$(grep -Fi "(HYPOTHESIS (HOLDS (${HYPS[$i]}) $HORIZON) " "$OUT/hypotheses.txt")
+    CO[$i]=$(sed -n 's/.*:c-o \([^ )]*\).*/\1/p' <<<"$row"); CO[$i]="${CO[$i]:-NA}"
+    CN[$i]=$(sed -n 's/.*:c-not-o \([^ )]*\).*/\1/p' <<<"$row"); CN[$i]="${CN[$i]:-NA}"
+    [[ "${CO[$i]}" == "inf" || "${CO[$i]}" == "NA" ]] || CO[$i]=$(printf '%g' "${CO[$i]}")
+    [[ "${CN[$i]}" == "inf" || "${CN[$i]}" == "NA" ]] || CN[$i]=$(printf '%g' "${CN[$i]}")
+    echo "  ${HYPS[$i]}: c(O)=${CO[$i]}  c(~O)=${CN[$i]}" >&2
+  done
+  # Only max-term under the per-hypothesis baseline yields c(O)/c(~O).  For any
+  # other combination marginals.sh has already computed the posterior, and its
+  # numbers must be reported directly: feeding the missing costs into the sigmoid
+  # below would silently make every likelihood -- and so every posterior -- zero.
+  [[ "$COUNTER" == "max-term" && "$BASELINE" == "per-hypothesis" ]] || USE_MARGINALS_POSTERIOR=1
+else
+  for i in "${!HYPS[@]}"; do
+    hyp="${HYPS[$i]}"; p="$OUT/sg-$hyp.pddl"; single_goal_problem "$hyp" "$p"
+    run_planner "$OUT/$hyp-comply.log"    "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" "${SOLVER_ARG[@]}" --weighted-solver "$MAXSAT_SOLVER"
+    run_planner "$OUT/$hyp-notcomply.log" "$p" --domain "$DOMAIN" --minslices "$HORIZON" --maxslices "$HORIZON" "$EV_FLAG" "$NEG_EV"   "${SOLVER_ARG[@]}" --weighted-solver "$MAXSAT_SOLVER"
+    CO[$i]=$(cost_of "$OUT/$hyp-comply.log")
+    CN[$i]=$(cost_of "$OUT/$hyp-notcomply.log")
+    # drop this hypothesis's heavy intermediates once its costs are read
+    rm -f "$OUT/sg-$hyp".{pddl,wff,scnf,cnf,wcnf,map,satout,soln,answer} \
+          "$OUT/sg-$hyp"-*.scnf "$OUT/$hyp-comply.log" "$OUT/$hyp-notcomply.log" 2>/dev/null
+    echo "  $hyp: c(O)=${CO[$i]}  c(~O)=${CN[$i]}" >&2
+  done
+fi
 
 # --- priors ------------------------------------------------------------------
 PRIOR_ARR=()
 if [[ -n "$PRIORS" ]]; then mapfile -t PRIOR_ARR < <(grep -vE '^[[:space:]]*$' "$PRIORS"); fi
 
-# --- likelihoods, posterior (awk) --------------------------------------------
+# --- likelihoods, posterior ---------------------------------------------------
+if [[ "${USE_MARGINALS_POSTERIOR:-0}" -eq 1 ]]; then
+  for i in "${!HYPS[@]}"; do
+    row=$(grep -Fi "(HYPOTHESIS (HOLDS (${HYPS[$i]}) $HORIZON) " "$OUT/hypotheses.txt")
+    po=$(sed -n 's/.*:posterior \([^ )]*\).*/\1/p' <<<"$row")
+    pr=$(sed -n 's/.*:prior \([^ )]*\).*/\1/p' <<<"$row")
+    lk=$(sed -n 's/.*:likelihood \([^ )]*\).*/\1/p' <<<"$row")
+    awk -v h="${HYPS[$i]}" -v l="${lk:--}" -v p="${pr:-1}" -v q="${po:-0}" -v OFS='\t' \
+        'BEGIN{ printf "%s\t-\t-\t-\t%s\t%.4f\t%.4f\n", h, (l=="-"?"-":sprintf("%.4f",l)), p, q }' >> "$SUM"
+  done
+else
 { for i in "${!HYPS[@]}"; do
     printf '%s\t%s\t%s\t%s\n' "${HYPS[$i]}" "${CO[$i]}" "${CN[$i]}" "${PRIOR_ARR[$i]:-}"
   done
@@ -236,6 +342,7 @@ if [[ -n "$PRIORS" ]]; then mapfile -t PRIOR_ARR < <(grep -vE '^[[:space:]]*$' "
       printf "%s\t%s\t%s\t%s\t%.4f\t%.4f\t%.4f\n", hyp[i],co[i],cn[i],dd,lik[i],pr[i],post
     }
   }' >> "$SUM"
+fi
 
 # --- clean remaining intermediates; keep summary.tsv (+ the negated evidence) --
 rm -f "$OUT"/sg-*.* "$OUT"/horizon-*.log 2>/dev/null
