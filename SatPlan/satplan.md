@@ -678,6 +678,28 @@ Anywhere a cost or weight is specified, you can instead give a **`:probability <
 
 A cost/weight and a probability are alternatives for the same spec (not both at once); existing fixed costs/weights are left untouched. Learned weights may be **negative** (a signed cost — when the target probability favors the penalized state), which the forms now accept.
 
+#### Stating a cost as odds
+
+`:probability` is a *learning target* — the pipeline has to solve for the weight. When you already know how much more likely something should be, **`:odds <r>`** says so directly and is resolved at translation time, with no learning pass. It is accepted at the same three places:
+
+| Spec (in PDDL)                | The number FiFO stores        | `:odds r` becomes |
+| ----------------------------- | ----------------------------- | ----------------- |
+| action `:odds r`              | a cost on the action's `Occurs` | `−ln r`         |
+| `(:fluent-cost lit :odds r)`  | a cost on the fluent, per slice | `−ln r`         |
+| `(preference n body :odds r)` | a **violation penalty**         | **`+ln r`**     |
+
+In every case `:odds r` means the same thing — *r times as likely, all else equal* — and FiFO supplies the sign. The preference row runs the other way because its weight is charged for **violating** the preference, so escaping a penalty `w` is worth odds `exp(w)`; that inversion is precisely what the spelling exists to hide. `r` must be positive; `:odds 1` is even money (weight 0), and `:odds` and a cost/`:probability` on the same spec are alternatives, not both.
+
+```lisp
+(:action fly :parameters (?p ?a ?b) ... :odds 2)          ;; twice as likely -> :cost -0.693…
+(:fluent-cost (raining) :odds 0.25)                       ;; a quarter as likely -> cost +1.386…
+(preference h0 (hyp0) :odds 2)                            ;; twice as likely -> weight +0.693…
+```
+
+Two consequences worth knowing. First, `:odds r` is a **factor on the theory's own baseline odds**, not an absolute `r : 1` — a weight is a local term and cannot know the rest of the theory (see [the README](../README.md#saying-it-in-odds-instead) for a worked case where a conjunction's baseline of 1:3 makes `:odds 0.5` land at 1:6). Second, on an **action**, `r > 1` produces a *negative* cost, so the optimizer is rewarded for including the action. That is the correct probabilistic reading — more likely means cheaper — but it is not the reading you want if the number is meant to be a resource cost like fuel or time. Use `:cost` for those.
+
+It composes exactly with `recognize.sh --priors-from-preferences`, whose prior is `πᵢ ∝ exp(wᵢ)`: a preference of `:odds r` is prior weight `r` on the nose. So `(preference h0 (hyp0) :odds 2)` says "hyp0 is twice as likely a priori" and gives exactly that.
+
 `bin/learn-pddl.sh` runs the whole pipeline: translate → instantiate (at a small `--numslices` horizon) → learn (`--method log-odds` (default) or `--maxent`) → write `<domain>_learned.pddl` and/or `<problem>_learned.pddl` (whichever carried probabilities) with each `:probability` replaced by the learned value. For example:
 
 ```lisp

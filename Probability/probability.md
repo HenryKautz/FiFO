@@ -87,6 +87,26 @@ In FiFO syntax, a `(WEIGHT L w)` line is the cost paid when literal `L` is true
 literal corresponds to the cost-when-true `θ = log((1-p)/p)`, whose sign decides
 which polarity carries the (positive) weight.
 
+**Saying a cost in odds.** Because $W(L\text{ true}) = e^{-\theta}$ and
+$W(L\text{ false}) = 1$, a cost $\theta$ multiplies the odds in the literal's
+favour by $e^{-\theta}$. `(weight L :odds r)` asks for that factor and FiFO
+computes $\theta = -\ln r$ — so `:odds 2` is `θ = −0.693…`, `:odds 1` is `θ = 0`,
+and `:odds 0.5` is `θ = +0.693…`. Note `r` is **odds, not a probability**: for an
+otherwise free literal $P = r/(1+r)$, so `:odds 2` gives $P = 2/3$.
+
+Two cautions, both of which follow from a weight being a *local* term. It is a
+**factor on whatever odds the theory already gives the formula**, not an absolute
+$r : 1$ — only a free literal has baseline odds $1:1$. And on the PDDL side the
+**sign depends on the site**: `(preference n body :odds r)` compiles to $+\ln r$,
+because a preference weight is a penalty for *violating* it, whereas an action's
+`:odds` and a `:fluent-cost`'s compile to $-\ln r$ like the form here. Writing
+`:odds 2` anywhere means the same thing — twice as likely — which is the whole
+reason for the spelling; see
+[SatPlan/satplan.md](../SatPlan/satplan.md#stating-a-cost-as-odds).
+
+Unlike `:probability`, `:odds` is **not** a learning target: it is a fixed number
+resolved at parse time, the value a modeller could have written out by hand.
+
 **Formula features.** `weight`/`probability` may take a whole formula, not just a
 literal (a Markov-logic *feature*). FiFO reifies the formula φ into a fresh atom
 `(WEIGHTED-FORMULA n)` with the hard biconditional `(WEIGHTED-FORMULA n) ⇔ φ`, and
@@ -97,7 +117,10 @@ with `L` = the reified atom: maxent fits its weight so that `P(φ) = p`, while t
 independent log-odds estimator gives the usual per-feature approximation (exact
 only when φ is uncorrelated with the rest of the theory). These internal atoms are
 suppressed from the default `marginals.sh` listing and shown under
-`--weighted-only`, where their marginal is `P(φ)`.
+`--weighted-only`, where their marginal is `P(φ)`. This is also where the "factor, not
+absolute" caution above bites hardest: `(weight (and c d) :odds 0.5)` over free
+`c, d` starts from a baseline of $1:3$ — one of four models satisfies the
+conjunction — so it lands at $1:6$, i.e. $P(φ) = 1/7$, not $1/3$.
 
 ------
 

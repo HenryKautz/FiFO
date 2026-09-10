@@ -452,9 +452,27 @@ FiFO supports weighted optimization problems via the **weight** form:
 
 ```
 (weight <formula> <number>)
+(weight <formula> :odds <r>)
 ```
 
 This asserts that if `<formula>` is true in a satisfying assignment, it contributes `<number>` to the objective. A MaxSAT or pseudo-Boolean optimizer can then minimize the total weight of true formulas subject to satisfying all clauses. The argument is most often a literal, but may be any formula (see **Formula-valued weights** below).
+
+### Saying it in odds instead
+
+Under the probability model a cost θ is read as a likelihood: `P(x) ∝ exp(−cost(x))`, so a cost θ multiplies the odds in the formula's favour by `exp(−θ)`. `:odds r` asks for that factor directly and FiFO computes the cost, `−ln r`:
+
+```
+(weight rain :odds 2)      ;; twice as likely as not  -> cost -0.693…
+(weight rain :odds 1)      ;; even money              -> cost 0
+(weight rain :odds 0.5)    ;; half as likely          -> cost +0.693…
+```
+
+`r` is **odds, not a probability** — for an otherwise free atom, `P = r/(1+r)`, so `:odds 2` means P = 2/3 and `:odds 0.5` means P = 1/3. `r` must be positive.
+
+Two things to keep straight:
+
+- **It is a factor, not an absolute.** A weight is a local term and cannot know the rest of the theory, so `:odds r` multiplies whatever odds the formula already has. Only when the formula is otherwise free is that baseline 1:1. `(weight (and c d) :odds 0.5)` over free `c, d` starts at 1:3 — one of four models satisfies the conjunction — and lands at 1:6, i.e. P = 1/7, not 1/3.
+- **The sign is site-dependent, and that is the point.** A PDDL `(preference … :odds r)` weight is a penalty for *violating* the preference, so it compiles to `+ln r` where this form compiles to `−ln r`. Writing `:odds 2` at either site means the same thing — twice as likely — which is exactly the inversion the spelling exists to hide. See [SatPlan/satplan.md](SatPlan/satplan.md).
 
 Unlike clauses, weight assertions are not wrapped in `OR` in the `.scnf` file — they appear as bare `(WEIGHT literal number)` lines after all clause lines.
 
@@ -860,6 +878,7 @@ Schema BNF
     <operator> = + | - | \* | div | rem | mod | < | <= | > | >= | = | eq | neq | \*\* | bit
     
     <weight> = (weight <formula> <numeric expression>)
+             | (weight <formula> :odds <positive numeric expression>)
     
     <probability> = (probability <formula> <numeric expression> [<tie-label>])
     

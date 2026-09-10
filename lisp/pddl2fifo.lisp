@@ -1063,24 +1063,54 @@ actions."
 ;;; then minimizes total weight, so (pref-violated <name>) is true in the answer
 ;;; exactly for the violated preferences.
 
+(defun pddl-odds-value (r context)
+  "Validate the R of an :odds R slot and return it as a double float."
+  (unless (and (realp r) (> r 0))
+    (error ":odds must be a positive real (odds of R : 1 in favour), got ~s in ~s"
+           r context))
+  (float r 1d0))
+
+(defun pddl-odds-to-cost (r context)
+  "The COST that multiplies the weighted thing's odds by R: -ln R.  Used where the
+number FiFO stores is a cost on the thing itself -- an action's :cost (which
+becomes (Weight (Occurs a s) c)) and a :fluent-cost (which becomes a (weight ...)
+outright).  See ODDS-TO-COST in FiFO.lisp for the full statement, including that
+R is a FACTOR on the theory's own baseline odds, not an absolute R : 1."
+  (- (log (pddl-odds-value r context))))
+
+(defun odds-to-penalty (r context)
+  "The PREFERENCE WEIGHT that multiplies the preference's odds of being satisfied
+by R: +ln R.  The sign is opposite to PDDL-ODDS-TO-COST because a PDDL preference
+weight is a penalty for VIOLATING the preference, not a cost on satisfying it --
+so escaping a penalty w is worth odds exp(w), and asking for a factor of R means
+w = ln R.  Hiding that inversion is the whole point of the :odds spelling: the
+modeller writes the same :odds R at either site and means the same thing."
+  (log (pddl-odds-value r context)))
+
 (defun parse-preference (f)
-  "Parse (preference <name> <body> [<weight> | :probability <p>]) into the list
-(name body weight prob): WEIGHT is the inline numeric weight (signed -- a learned
-weight may be negative) or nil; PROB is the target probability that the preference
-is SATISFIED (0<p<1) or nil.  At most one is given; with neither, the weight comes
-from the :metric."
+  "Parse (preference <name> <body> [<weight> | :probability <p> | :odds <r>]) into
+the list (name body weight prob): WEIGHT is the inline numeric weight (signed -- a
+learned weight may be negative) or nil; PROB is the target probability that the
+preference is SATISFIED (0<p<1) or nil.  At most one is given; with neither, the
+weight comes from the :metric.
+
+:odds R is sugar resolving to the WEIGHT +ln R (see ODDS-TO-PENALTY), not to a
+target: it is a fixed number the modeller could have written out, where
+:probability is a learning target the pipeline fills in."
   (let ((name (second f)) (body (third f)) (extra (cdddr f)))
     (unless (and name body)
-      (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>]))" f))
+      (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>|:odds <r>]))" f))
     (cond ((null extra) (list name body nil nil))
           ((and (null (cdr extra)) (numberp (car extra)))
            (list name body (car extra) nil))
+          ((and (eq (car extra) :odds) (cdr extra) (null (cddr extra)))
+           (list name body (odds-to-penalty (cadr extra) f) nil))
           ((and (eq (car extra) :probability) (cdr extra) (null (cddr extra)))
            (let ((p (cadr extra)))
              (unless (and (realp p) (< 0 p 1))
                (error "Preference ~a :probability must be strictly between 0 and 1, got ~s" name p))
              (list name body nil p)))
-          (t (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>]))" f)))))
+          (t (error "Malformed preference ~s (expected (preference <name> <body> [<weight>|:probability <p>|:odds <r>]))" f)))))
 
 (defun split-preferences (forms)
   "Partition a list of top-level conjuncts into (values hard preferences), where
@@ -1169,20 +1199,23 @@ if absent), and weight-alist maps each preference name to its summed coefficient
 ;;; uses for action costs: (all s slices true (weight (holds <literal> s) <cost>)).
 
 (defun parse-fluent-cost (s)
-  "Parse (:fluent-cost <literal> <cost>) or (:fluent-cost <literal> :probability <p>)
-into (literal cost prob): COST a signed number or nil; PROB the target marginal
-P(literal holds), 0<p<1, or nil.  Exactly one of cost/prob is given."
+  "Parse (:fluent-cost <literal> <cost>), (:fluent-cost <literal> :probability <p>)
+or (:fluent-cost <literal> :odds <r>) into (literal cost prob): COST a signed
+number or nil; PROB the target marginal P(literal holds), 0<p<1, or nil.  Exactly
+one of cost/prob is given; :odds R is sugar for the cost -ln R."
   (let ((lit (second s)) (rest (cddr s)))
     (unless (and (consp lit) rest)
-      (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>))" s))
+      (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>|:odds <r>))" s))
     (cond ((and (null (cdr rest)) (numberp (car rest)))
            (list lit (car rest) nil))
+          ((and (eq (car rest) :odds) (cdr rest) (null (cddr rest)))
+           (list lit (pddl-odds-to-cost (cadr rest) s) nil))
           ((and (eq (car rest) :probability) (cdr rest) (null (cddr rest)))
            (let ((p (cadr rest)))
              (unless (and (realp p) (< 0 p 1))
                (error ":fluent-cost ~s :probability must be strictly between 0 and 1, got ~s" s p))
              (list lit nil p)))
-          (t (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>))" s)))))
+          (t (error "Malformed :fluent-cost ~s (expected (:fluent-cost <literal> <cost>|:probability <p>|:odds <r>))" s)))))
 
 (defun fluent-costs (problem-def)
   "All (:fluent-cost ...) forms in PROBLEM-DEF, as a list of (literal cost prob)."
@@ -1457,6 +1490,7 @@ ground-cost-forms)."
            (precondition (getf body :precondition))
            (effect (getf body :effect))
            (cost-slot (getf body :cost))
+           (odds-slot (getf body :odds))
            (prob-slot (getf body :probability))
            (bindings
              (mapcar (lambda (p)
@@ -1541,13 +1575,22 @@ ground-cost-forms)."
         (if (numberp cost-slot)
             (setq cost cost-slot)
             (setq cost-term cost-slot)))
+      ;; An :odds slot is the same number said the other way round: :odds R
+      ;; multiplies the odds of the action occurring by R, i.e. :cost (-ln R).
+      ;; Unlike :probability it is resolved here and needs no learning pass.
+      (when odds-slot
+        (when (or cost cost-term)
+          (error "Action ~a has both :odds and a cost; give it one or the other" name))
+        (setq cost (pddl-odds-to-cost odds-slot (list :action name :odds odds-slot))))
       ;; A :probability slot is the learnable alternative to a cost: the action's
       ;; occurrence gets a target marginal that the learning pipeline turns into a
       ;; weight.  Mutually exclusive with a cost on the same action.
       (when prob-slot
+        ;; :odds has already been folded into COST above, so name the slot the
+        ;; user actually wrote rather than the one it resolved to.
         (when (or cost cost-term)
-          (error "Action ~a has both a cost and a :probability; give it one or the other"
-                 name))
+          (error "Action ~a has both ~a and a :probability; give it one or the other"
+                 name (if odds-slot ":odds" "a cost")))
         (unless (and (realp prob-slot) (< 0 prob-slot 1))
           (error "The :probability of action ~a must be a number strictly between 0 and 1, got ~s"
                  name prob-slot))

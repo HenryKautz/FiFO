@@ -54,7 +54,9 @@
 #                 take the prior from (preference <name> (hypI) w) forms in the
 #                 goal, as  pi_i  proportional to  exp(w_i).  w is a VIOLATION
 #                 penalty, so escaping it is worth odds exp(w), and a hypothesis
-#                 with no preference is w = 0, hence pi proportional to 1.  Those
+#                 with no preference is w = 0, hence pi proportional to 1.  The
+#                 :odds spelling composes exactly here -- (preference h0 (hyp0)
+#                 :odds 2) is w = ln 2, so it IS prior weight 2.  Those
 #                 preferences are STRIPPED from the cost model under this flag, so
 #                 the weight means exactly one thing -- the prior -- with no
 #                 residual cost.  Needs --baseline per-hypothesis, and cannot be
@@ -100,7 +102,7 @@ PLANNER="$SELF/planner.sh"
 [[ -x "$PLANNER" || -f "$PLANNER" ]] || { echo "planner.sh not found at $PLANNER" >&2; exit 2; }
 command -v sbcl >/dev/null || { echo "sbcl not found on PATH" >&2; exit 2; }
 
-usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,94p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$SELF/fifo-options.sh"
@@ -275,11 +277,22 @@ preference_priors() {
      (let* ((p (with-open-file (i \"$1\") (read i)))
             (g (goal-of p)))
        (dolist (pr (goal-prefs g))
-         (let ((body (third pr)) (w (fourth pr)))
+         (let* ((body (third pr)) (w (fourth pr))
+                ;; :odds R is sugar for the weight +ln R (pddl2fifo's
+                ;; ODDS-TO-PENALTY).  Resolving it here keeps the prior read out
+                ;; of the problem identical to the one the translator charges.
+                (w (if (eq w :odds)
+                       (let ((r (fifth pr)))
+                         (unless (and (realp r) (> r 0))
+                           (format *error-output* \":odds of preference ~(~A~) must be a positive real, got ~(~S~)~%\"
+                                   (second pr) r)
+                           (sb-ext:exit :code 3))
+                         (log (float r 1d0)))
+                       w)))
            (when (nullaryp body)
              (unless (realp w)
-               (format *error-output* \"preference ~(~A~) on ~(~S~) has no inline weight;~%  give one, e.g. (preference ~(~A~) ~(~S~) 2) -- the :metric route is not read here~%\"
-                       (second pr) body (second pr) body)
+               (format *error-output* \"preference ~(~A~) on ~(~S~) has no inline weight;~%  give one, e.g. (preference ~(~A~) ~(~S~) 2) or (preference ~(~A~) ~(~S~) :odds 2) -- the :metric route is not read here~%\"
+                       (second pr) body (second pr) body (second pr) body)
                (sb-ext:exit :code 3))
              (format t \"~(~A~) ~A~%\" (first body) w))))))" 2>&1
 }

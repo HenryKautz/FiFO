@@ -1121,9 +1121,44 @@ Returns (values A clauses)."
          (*compact-encoding* nil))
     (values atom (parse-equiv (list atom phi)))))
 
+(defun odds-to-cost (r context)
+  "The FiFO cost that multiplies the weighted formula's odds by R.
+FiFO scores a model by P(x) proportional to exp(-cost(x)), so a cost THETA
+multiplies the odds in the formula's favour by exp(-THETA); asking for a factor
+of R means exp(-THETA) = R, i.e. THETA = -ln R.
+
+R is ODDS, not a probability: R = 1 is even money (cost 0), R = 2 doubles the
+odds, R = 0.5 halves them.  It is a FACTOR on whatever odds the rest of the
+theory already gives the formula -- a weight is a local term and cannot know the
+rest.  Only when the formula is otherwise FREE is its baseline 1:1, and only then
+does R : 1 hold outright, giving P = R/(1+R) -- 2/3 for R = 2.  Reified compounds
+are the usual place this bites: (weight (and c d) :odds 0.5) over free c, d
+starts from a baseline of 1:3 (one of four models satisfies the conjunction) and
+lands at 1:6, i.e. P = 1/7, not 1/3.  Same caveat as any other weight.
+
+The point of the sugar is that the CALLER never has to know the sign.  A PDDL
+preference weight runs the other way -- it is a penalty for VIOLATING the
+preference, so there the same request is +ln R (see ODDS-TO-PENALTY in
+pddl2fifo.lisp).  Both spellings of :odds R mean the one thing a modeller
+actually has in mind: this is R times as likely as not, all else equal."
+  (unless (and (realp r) (> r 0))
+    (error ":odds must be a positive real (odds of R : 1 in favour), got ~S in ~S"
+           r context))
+  (normalize-numeric (- (log (float r 1d0)))))
+
+(defun parse-cost-or-odds (args context)
+  "The numeric cost named by the tail of a (WEIGHT <formula> ...) form: either a
+numeric expression, or the sugar :odds R."
+  (if (and (consp args) (eq (car args) :odds))
+      (progn
+        (unless (and (cdr args) (null (cddr args)))
+          (error ":odds takes exactly one value in ~S" context))
+        (odds-to-cost (parse-numeric-expression (cadr args)) context))
+      (normalize-numeric (parse-numeric-expression (car args)))))
+
 (defun parse-weight (ARGS)
   (let ((arg (car ARGS))
-        (num (normalize-numeric (parse-numeric-expression (cadr ARGS)))))
+        (num (parse-cost-or-odds (cdr ARGS) (cons 'weight ARGS))))
     (cond ((is-literal arg)
            ;; literal argument: attach the weight directly (unchanged behavior)
            (setq Weights (append Weights (list (list 'WEIGHT (parse-literal arg) num))))
@@ -1169,7 +1204,19 @@ labeled forms get their label.  Same traversal the write-back uses, so ids match
 the tie-group id assigned to this source form by assign-probability-gids."
   (let* ((args (cdr SCHEMA))
          (arg (car args))
-         (p (normalize-numeric (parse-numeric-expression (cadr args))))
+         (p (progn
+              ;; :odds is deliberately NOT accepted here.  It is sugar on a
+              ;; WEIGHT, where it multiplies the odds the rest of the theory
+              ;; already gives the formula; a PROBABILITY is a target marginal,
+              ;; which holds outright.  Same spelling, different guarantee -- so
+              ;; refuse it and name the two forms rather than quietly picking one.
+              (when (eq (cadr args) :odds)
+                (error "~S: :odds is sugar on (weight ...), not (probability ...).~%~
+                        (weight ~S :odds r) multiplies the odds by r -- a factor on~%~
+                        whatever the theory already gives it.  (probability ~S p) sets~%~
+                        the marginal to p outright; for odds r that is p = r/(1+r)."
+                       SCHEMA arg arg))
+              (normalize-numeric (parse-numeric-expression (cadr args)))))
          (gid (gethash SCHEMA *probability-gids*)))
     (unless (and (realp p) (<= 0 p) (<= p 1))
       (error "PROBABILITY target must be a probability in [0,1]: ~S" SCHEMA))
