@@ -25,9 +25,15 @@
 ;;; This matches FiFO's encoding W(L true) = exp(-theta), W(L false) = 1 directly,
 ;;; and -- unlike the Cachet format -- lets the two literal weights be independent.
 ;;;
+;;; WMC--WRITE-MCC also emits the LATER competition dialect (:dialect :mcc-2024),
+;;; which SharpSAT-TD and other post-2020 counters read.  The two are NOT textually
+;;; interconvertible -- they disagree on what an unstated literal polarity means --
+;;; so see that function's docstring before adding a back end that consumes one.
+;;;
 ;;; Entry points:
 ;;;   (wmc "file.scnf" &key ...)             -- partition function Z
 ;;;   (marginals-addmc "file.scnf" &key ...) -- per-atom marginals via clamping
+;;;   (wmc-write-wcnf "file.scnf" out &key dialect ...) -- the weighted CNF alone
 
 (load (merge-pathnames "maxent.lisp" (or *load-pathname* *default-pathname-defaults*)))
 
@@ -62,26 +68,74 @@ exp(- total cost)."
             (incf (gethash lit cost 0.0d0) (float w 1.0d0))))))
     cost))
 
-(defun wmc--write-mcc (clauses weights a2i nvars out-stream &key extra-units (scale 1.0d0))
-  "Write the MCC-2020 weighted CNF for CLAUSES + WEIGHTS to OUT-STREAM.
+(defun wmc--write-mcc (clauses weights a2i nvars out-stream
+                       &key extra-units (scale 1.0d0) (dialect :mcc-2020))
+  "Write the weighted CNF for CLAUSES + WEIGHTS to OUT-STREAM in DIALECT.
 EXTRA-UNITS is a list of signed DIMACS literals emitted as extra unit clauses
 (used to clamp atoms when computing marginals).  Each literal's total cost is
 divided by SCALE before exponentiating, recovering the real cost from the
-pipeline's integer (cost * scale) weights."
+pipeline's integer (cost * scale) weights.
+
+DIALECT is :MCC-2020 (ADDMC's --wf 4) or :MCC-2024 (the Model Counting
+Competition format from 2021 on, which SharpSAT-TD reads).  They differ in three
+ways, and the third is a trap:
+
+  problem line   'p wcnf V C'             vs  'p cnf V C'
+  weight line    'w <lit> <w>', trailing  vs  'c p weight <lit> <w> 0' -- the
+                 0 optional                   trailing 0 is REQUIRED, the parser
+                                              matching on exactly 6 tokens
+  missing side   defaults to 1.0          vs  INFERRED, differently (below)
+
+The 2024 weight lines are comments so the file is also a legal plain DIMACS CNF.
+That is what makes a purely textual translation between the dialects unsafe: a
+reader that skips comments counts the formula UNWEIGHTED and says nothing.
+
+The trap is the default.  FiFO's model is W(L true) = exp(-theta),
+W(L false) = 1, and under :MCC-2020 we emit only the charged literal and let
+ADDMC default its opposite to 1.0.  SharpSAT-TD instead INFERS a missing polarity
+from the one given: if neither is given both are 1, but if one is given and lies
+in [0,1] it assumes the other is 1 - w -- a PROBABILITY reading, not FiFO's --
+and if one is given outside [0,1] (which a negative FiFO cost produces, say a
+learned weight or (weight ... :odds r) with r > 1) it is a hard error.  So
+reusing the 2020 weight lines would silently rescale the distribution in the
+common case and crash in the other.
+
+We therefore emit BOTH polarities of EVERY variable under :MCC-2024, each as
+exp(-cost/scale) with an absent cost taken as 0 (hence weight 1).  That is 2V
+weight lines rather than one per charged literal, but then no inference rule of
+any reader can fire: the file states FiFO's distribution outright rather than
+leaning on a convention the two counters do not share."
   (let* ((cost (wmc--literal-costs weights a2i))
-         (nclauses (+ (length clauses) (length extra-units))))
-    (format out-stream "p wcnf ~D ~D~%" nvars nclauses)
+         (nclauses (+ (length clauses) (length extra-units)))
+         (lit-weight (lambda (lit)
+                       (exp (- (/ (gethash lit cost 0.0d0) scale))))))
+    (ecase dialect
+      (:mcc-2020 (format out-stream "p wcnf ~D ~D~%" nvars nclauses))
+      ;; 'c t wmc' declares the track.  SharpSAT-TD asserts if this disagrees with
+      ;; its -WE/-WD mode, so it must say wmc and not mc.
+      (:mcc-2024 (format out-stream "c t wmc~%p cnf ~D ~D~%" nvars nclauses)))
     (dolist (cl clauses)
       (loop for i across (mx--clause->ints cl a2i)
             do (format out-stream "~D " i))
       (format out-stream "0~%"))
     (dolist (u extra-units)
       (format out-stream "~D 0~%" u))
-    ;; Weight lines: exp(-cost/scale) for each charged literal; ADDMC defaults the
-    ;; rest to 1.0.  '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').
-    (maphash (lambda (lit c)
-               (format out-stream "w ~D ~,16,,,,,'eE~%" lit (exp (- (/ c scale)))))
-             cost)))
+    ;; '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').  Both
+    ;; readers accept it: ADDMC uses std::stod, and SharpSAT-TD's ParseWeight is
+    ;; stod plus an 'a/b' fraction form.
+    (ecase dialect
+      (:mcc-2020
+       ;; Only the charged literals; each opposite side defaults to 1.0.
+       (maphash (lambda (lit c)
+                  (declare (ignore c))
+                  (format out-stream "w ~D ~,16,,,,,'eE~%" lit (funcall lit-weight lit)))
+                cost))
+      (:mcc-2024
+       ;; Both polarities of every variable, so nothing is left to infer.
+       (loop for v from 1 to nvars
+             do (dolist (lit (list v (- v)))
+                  (format out-stream "c p weight ~D ~,16,,,,,'eE 0~%"
+                          lit (funcall lit-weight lit))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Running ADDMC and parsing its count
@@ -206,6 +260,35 @@ WCNF-FILE was given explicitly."
                 (ignore-errors (delete-file wcnf)))
             (when verbose (format t "(WMC ~,16,,,,,'eE)~%" z))
             z))))))
+
+(defun wmc-write-wcnf (scnf-file out-file &key (dialect :mcc-2020) scale
+                                                 evidence evidence-file (verbose t))
+  "Write SCNF-FILE's weighted CNF to OUT-FILE in DIALECT and return OUT-FILE.
+The counting back ends generate this file internally and delete it; this is the
+same writer exposed on its own, for handing a FiFO theory to an external counter
+(SharpSAT-TD takes :dialect :mcc-2024) or for inspecting what a counter is
+actually being asked.  SCALE, EVIDENCE and EVIDENCE-FILE behave as in WMC.
+Returns (values out-file nvars nclauses)."
+  ;; Same preamble as WMC, and the same warning applies: bind the weight forms to
+  ;; a NON-special name, since WEIGHTS is FiFO's global special and (parse ...)
+  ;; inside wmc--evidence-clauses resets it.
+  (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
+    (declare (ignore probs opts))
+    (let* ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
+                                 weight-forms))
+           (scale (rw--resolve-scale scnf-file scale verbose))
+           (evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+           (clauses (append clauses evidence-clauses)))
+      (when (and verbose evidence-clauses)
+        (format t "; conditioning on ~D evidence clause~:P~%" (length evidence-clauses)))
+      (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
+        (with-open-file (s out-file :direction :output
+                                    :if-exists :supersede :if-does-not-exist :create)
+          (wmc--write-mcc clauses weight-forms a2i nvars s :scale scale :dialect dialect))
+        (when verbose
+          (format t "; wrote ~A (~(~A~), ~D var~:P, ~D clause~:P)~%"
+                  out-file dialect nvars (length clauses)))
+        (values out-file nvars (length clauses))))))
 
 (defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale epsilon
                                        evidence evidence-file (addmc *addmc*) (verbose t))

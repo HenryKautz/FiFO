@@ -392,6 +392,25 @@ Where the enumeration above is exact but exponential, **ADDMC** (the algebraic-d
 
 **The encoding.** The bridge emits the **MCC-2020 weighted CNF** format (ADDMC's `--wf 4`). FiFO's model — `W(L true) = exp(-θ)`, `W(L false) = 1` for a literal `L` with cost-when-true `θ` — maps directly: each charged literal becomes a weight line `w <lit> exp(-θ)`, and the opposite literal keeps ADDMC's default weight `1.0`. (Tied/duplicate `(WEIGHT ...)` forms on the same literal sum their costs first.) MCC's independent per-literal weights are what make this work — the Cachet format, which forces `W(¬v) = 1 − W(v)`, cannot represent FiFO's `W(v=0) = 1`.
 
+**The later competition dialect.** `wmc-write-wcnf` writes that same theory to a file on its own, in either dialect, for handing to an external counter:
+
+```lisp
+(wmc-write-wcnf "file.scnf" "out.cnf" &key dialect scale evidence evidence-file verbose)
+```
+
+`:dialect :mcc-2024` is the format the competition has used since 2021, which **SharpSAT-TD** reads. It is `p cnf` rather than `p wcnf`, and its weight lines are *comments* — `c p weight <lit> <w> 0`, with the trailing `0` mandatory — so the file doubles as a plain DIMACS CNF.
+
+That last property is why the two dialects **cannot be translated line by line**, and the failure is silent in both directions:
+
+| | unstated polarity becomes |
+|---|---|
+| ADDMC (`--wf 4`) | `1.0` |
+| SharpSAT-TD | `1 − w` if the stated side is in [0,1]; a **hard error** otherwise |
+
+FiFO relies on the first rule, so reusing the 2020 weight lines under the 2024 syntax would quietly substitute a *probability* reading of every charged literal — and would abort outright on a negative cost, which a learned weight or `(weight … :odds r)` with `r > 1` produces. Take `(OR A B)` with `(WEIGHT A 1.0)`: three models, `W(A) = e⁻¹`, everything else 1, so `Z = 2e⁻¹ + 1 = 1.735759`. Translate the one weight line and leave `¬A` implicit, and SharpSAT-TD infers `W(¬A) = 1 − e⁻¹ = 0.632121`, giving **`Z = 1.367879`** with no complaint. A reader that skips comments altogether is worse still: it counts the formula **unweighted** and reports the result as a weighted count.
+
+So the 2024 emitter states **both polarities of every variable** explicitly, each as `exp(-θ)` with an absent cost taken as 0. The file then denotes FiFO's distribution outright, with no inference rule of any reader left to fire. `tests/run-test-mcc-dialect.sh` pins this by counting both emitted files with an independent brute-force reader that implements each parser's own default rule.
+
 This was cross-checked against the enumeration back end: on the test instances the two agree to the last double-precision bit (max `|P_enum − P_addmc| = 0`).
 
 **The ADDMC build.** ADDMC is a separate executable — a macOS fork at [github.com/HenryKautz/ADDMC](https://github.com/HenryKautz/ADDMC) (of [vardigroup/ADDMC](https://github.com/vardigroup/ADDMC)). Build it and put `addmc` on `PATH` (`bin/install-solvers.sh --only addmc` does both). The fork also defaults CUDD's terminal-merging epsilon to `0` — exposed as ADDMC's `--ep` option, surfaced here as `--epsilon` / `:epsilon` — instead of CUDD's flooring default of `1e-12`. CUDD merges ADD terminal values within epsilon of each other, including merging tiny values into the `0` terminal. FiFO scales costs by an integer factor (100 by default) for MaxSAT, so a legitimate weighted count can be as small as `exp(-69) ≈ 1e-30`, which the `1e-12` default would round down to `0`. With epsilon `0` the count is exact down to ordinary double-precision underflow — the same limit the Lisp enumeration hits — and a user who wants to trade exactness for speed/memory can set a positive `--epsilon`.
