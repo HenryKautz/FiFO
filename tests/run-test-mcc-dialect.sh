@@ -211,7 +211,7 @@ fi
 SHARP="$(command -v sharpSAT || true)"
 if [[ -n "$SHARP" ]]; then
   RS=$("$SHARP" -WE -decot 1 -decow 100 -tmpdir . -cs 500 -prec 15 t2024.cnf 2>/dev/null \
-       | awk '/^s wmc/{print $3}')
+       | awk '/^c s exact arb float /{print $NF}')
   if [[ -n "$RS" ]] && near_printed "$RS" "$HAND"; then
     ok "real SharpSAT-TD agrees with the 2024 file ($RS)"
   else
