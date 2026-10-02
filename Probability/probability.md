@@ -442,6 +442,8 @@ bin/marginals.sh problem.scnf --solver sharpsat-td --decot 0.2      # small theo
 bin/wmc.sh       problem.scnf --counter sharpsat-td
 ```
 
+One limit holds for both counters: each individual weight is written as a double, so a single literal's cost must be within about ±708 (after `--scale`). FiFO folds every literal that unit propagation *forces* out of the file into a constant factor — so a forced literal may cost anything — but a *free* atom with such a cost is an error naming it; a cost that large is effectively hard and should be asserted as a hard clause.
+
 `bin/install-solvers.sh --only sharpsat-td` builds it and installs `sharpSAT` and `flow_cutter_pace17` side by side, which they must be. Cross-checked against maxent enumeration, the ddnnf compiler and d4 by `tests/run-test-sharpsat.sh`.
 
 ------

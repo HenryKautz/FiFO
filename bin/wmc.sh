@@ -31,17 +31,17 @@ set of exp(-(sum of the weights of the true literals)).
   --counter <name> addmc (default) or sharpsat-td.  Both are exact; SharpSAT-TD
                    is guided by a tree decomposition and carries an unbounded
                    exponent, though Z is still printed as a double, so a Z
-                   outside about 1e-308..1e308 is an error rather than a 0
-  --decot <s>      (sharpsat-td only) seconds of tree-decomposition search
-                   (default 1)
+                   outside about 2.2e-308..1.8e308 is an error rather than a 0
+  --decot <s>      (sharpsat-td only) seconds of tree-decomposition search, in
+                   (0.0001, 10000) (default 1)
   --cache-mb <n>   (sharpsat-td only) component-cache limit in MB (default 4000)
-  --scale <n>     divide integer weights by n (real cost = weight / n) before
+  --scale <n>      divide integer weights by n (real cost = weight / n) before
                    exponentiating; default reads the 'scale: N' the weight-learning
                    pipeline records in the .scnf header (1 if absent).  Use
                    --scale 1 to count with the raw integer weights.
-  --epsilon <e>    (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep); default 0 =
-                   exact (full double precision).  A positive value trades
-                   exactness for speed/memory.
+  --epsilon <e>    (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
+                   default 0 = exact (full double precision).  A positive value
+                   trades exactness for speed/memory.
   --evidence <form>   condition on a GROUND FiFO formula (clausified and conjoined
                       with the theory as a hard constraint), so Z becomes the count
                       conditioned on it.  Repeatable; conjoined.
@@ -111,13 +111,23 @@ if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]];
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
-# Resolve abbreviations and check the binary up front (from lisp/solvers.dat), so
-# a missing one is a clear error rather than a lisp-level failure part way
-# through.  Only the two counters that compute a Z on their own belong here.
+# Only the two counters that compute a Z on their own belong here.  Check that
+# against the CANONICAL name (abbreviations resolved through lisp/solvers.dat)
+# BEFORE checking the binary, so a counter this script refuses anyway is not
+# first answered with an install instruction.  An unknown name falls through to
+# _fifo_require_counter's own message.
+CLINE="$(_fifo_lookup counter "$COUNTER")"
+if [[ -n "$CLINE" ]]; then
+  CANON="$(_fifo_field "$CLINE" 2)"
+  [[ "$CANON" == "addmc" || "$CANON" == "sharpsat-td" ]] \
+    || die "--counter must be addmc or sharpsat-td for a partition function, got: $COUNTER"
+fi
 COUNTER="$(_fifo_require_counter "$COUNTER" marginals wmc.sh)" || exit 2
-[[ "$COUNTER" == "addmc" || "$COUNTER" == "sharpsat-td" ]] \
-  || die "--counter must be addmc or sharpsat-td for a partition function, got: $COUNTER"
-if [[ -n "$DECOT" && ! "$DECOT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--decot must be a positive number of seconds, got: $DECOT"; fi
+# Same open interval wmc--run-sharpsat enforces, so the error comes before SBCL
+# loads rather than after.
+if [[ -n "$DECOT" ]] && ! awk -v d="$DECOT" 'BEGIN { exit !(d ~ /^([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?$/ && d+0 > 0.0001 && d+0 < 10000) }'; then
+  die "--decot must be a number of seconds in (0.0001, 10000), got: $DECOT"
+fi
 if [[ -n "$CACHE_MB" && ! "$CACHE_MB" =~ ^[1-9][0-9]*$ ]]; then die "--cache-mb must be a positive integer, got: $CACHE_MB"; fi
 [[ -z "$EPSILON" || "$COUNTER" == "addmc" ]] || die "--epsilon applies to the addmc counter only"
 [[ -z "$DECOT" || "$COUNTER" == "sharpsat-td" ]] || die "--decot applies to the sharpsat-td counter only"

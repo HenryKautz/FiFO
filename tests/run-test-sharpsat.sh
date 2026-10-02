@@ -115,19 +115,25 @@ if grep -q '^p cnf ' kept.cnf && grep -q '^c t wmc' kept.cnf && ! grep -q '^w ' 
   ok "sharpsat-td is fed the MCC-2024 dialect"
 else bad "sharpsat-td is fed the MCC-2024 dialect" "$(head -3 kept.cnf 2>/dev/null | tr '\n' '|')"; fi
 
-# --- 6. UNDERFLOW: Z ~ 1e-348, below double range ----------------------------
-# 40 atoms forced true at cost 20 each, and a free atom B at cost 1:
-#   Z = e^-800 * (1 + e^-1)  ~ 1e-348,  P(B) = e^-1/(1+e^-1) = sigmoid(-1).
-{ for i in $(seq 1 40); do echo "(OR (U $i))"; echo "(WEIGHT (U $i) 20.0)"; done
+# --- 6. UNDERFLOW: Z ~ 1e-336, below double range, with NOTHING forced -------
+# 40 pairs (OR (U i) (V i)), cost 20 on every U and V, plus a free B at cost 1.
+# Unit propagation forces nothing, so folding cannot help: Z is a genuine product
+#   Z = (2e^-20 + e^-40)^40 * (1 + e^-1)  ~  1e-336,
+# and only an unbounded exponent can carry it.  Closed forms:
+#   P(B) = sigmoid(-1),   P(U i) = (1 + e^-20) / (2 + e^-20).
+{ for i in $(seq 1 40); do
+    echo "(OR (U $i) (V $i))"; echo "(WEIGHT (U $i) 20.0)"; echo "(WEIGHT (V $i) 20.0)"
+  done
   echo "(OR B (NOT B))"; echo "(WEIGHT B 1.0)"; } > tiny.scnf
 SIG="$(awk 'BEGIN{ printf "%.15g", exp(-1)/(1+exp(-1)) }')"
+PUW="$(awk 'BEGIN{ printf "%.15g", (1+exp(-20))/(2+exp(-20)) }')"
 bash "$M" tiny.scnf --solver sharpsat-td --scale 1 2>/dev/null | split > st.m
 PB="$(marg st.m B)"; PU="$(marg st.m '(U 7)')"
-if close "$PB" "$SIG" 1e-12 && close "$PU" 1 1e-12; then
-  ok "Z~1e-348: P(B) = sigmoid(-1) exactly, P(U 7) = 1"
-else bad "Z~1e-348: P(B) = sigmoid(-1) exactly, P(U 7) = 1" "P(B)='$PB' P(U 7)='$PU', want $SIG and 1"; fi
+if close "$PB" "$SIG" 1e-12 && close "$PU" "$PUW" 1e-12; then
+  ok "Z~1e-336 unforced: P(B) = sigmoid(-1), P(U 7) exact"
+else bad "Z~1e-336 unforced: P(B) = sigmoid(-1), P(U 7) exact" "P(B)='$PB' P(U 7)='$PU', want $SIG and $PUW"; fi
 OUT="$(bash "$W" tiny.scnf --counter sharpsat-td --scale 1 2>&1)"
-if grep -q 'outside double-float range' <<<"$OUT" && ! grep -q '^(WMC' <<<"$OUT"; then
+if grep -q 'outside the normal double-float range' <<<"$OUT" && ! grep -q '^(WMC' <<<"$OUT"; then
   ok "wmc.sh refuses an out-of-range Z rather than printing 0"
 else bad "wmc.sh refuses an out-of-range Z rather than printing 0" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-120)"; fi
 if command -v addmc >/dev/null 2>&1; then
@@ -137,6 +143,61 @@ if command -v addmc >/dev/null 2>&1; then
 else
   echo "  (no addmc -- skipping the ADDMC control)"
 fi
+
+# --- 6b. a single huge cost on a FORCED literal is folded out, not zeroed -----
+# U forced true at cost 800, V forced false, B free at cost 1.  exp(-800) is 0 as
+# a double, which the writer used to emit -- making a soft cost hard and Z = 0
+# ("unsatisfiable").  Folded out, it is a constant factor, so the marginals are
+# exact for BOTH counters, and a clamp of the forced-false V is refuted by unit
+# propagation (P = 0) without running anything.
+printf '(OR U)\n(WEIGHT U 800.0)\n(OR (NOT V))\n(WEIGHT V 3.0)\n(OR B (NOT B))\n(WEIGHT B 1.0)\n' > forced.scnf
+# ADDMC prints ~6-7 significant digits (as in run-test-mcc-dialect.sh), so it is
+# held to 1e-6 here where SharpSAT-TD is held to 1e-12.
+tol() { [[ "$1" == addmc ]] && echo 1e-6 || echo 1e-12; }
+for s in sharpsat-td addmc; do
+  command -v "$( [[ $s == addmc ]] && echo addmc || echo sharpSAT )" >/dev/null 2>&1 || continue
+  bash "$M" forced.scnf --solver "$s" --scale 1 2>/dev/null | split > f.m
+  if close "$(marg f.m B)" "$SIG" "$(tol $s)" && close "$(marg f.m U)" 1 1e-12 && close "$(marg f.m V)" 0 1e-12; then
+    ok "$s: forced cost 800 folded -- P(B)=sigmoid(-1), U=1, V=0"
+  else bad "$s: forced cost 800 folded -- P(B)=sigmoid(-1), U=1, V=0" "B='$(marg f.m B)' U='$(marg f.m U)' V='$(marg f.m V)'"; fi
+done
+# Z through the folding: forced costs 700 and -650 give Z = e^-50 (1 + e^-1),
+# well inside double range although neither factor's exp alone is safe to write.
+printf '(OR U)\n(WEIGHT U 700.0)\n(OR W)\n(WEIGHT W -650.0)\n(OR B (NOT B))\n(WEIGHT B 1.0)\n' > fz.scnf
+ZW="$(awk 'BEGIN{ printf "%.15g", exp(-50)*(1+exp(-1)) }')"
+for c in sharpsat-td addmc; do
+  command -v "$( [[ $c == addmc ]] && echo addmc || echo sharpSAT )" >/dev/null 2>&1 || continue
+  Z="$(bash "$W" fz.scnf --counter "$c" --scale 1 2>/dev/null | sed -n 's/^(WMC \(.*\))$/\1/p')"
+  if awk -v a="$Z" -v b="$ZW" -v t="$(tol $c)" 'BEGIN{ exit !(a != "" && (a-b)/b < t && (b-a)/b < t) }'; then
+    ok "$c: Z = e^-50 (1+e^-1) through forced costs 700, -650"
+  else bad "$c: Z = e^-50 (1+e^-1) through forced costs 700, -650" "got '$Z', want $ZW"; fi
+done
+# A SUBNORMAL Z is refused like an underflowed one: forced cost 725 -> Z = e^-725.
+printf '(OR U)\n(WEIGHT U 725.0)\n' > sub.scnf
+OUT="$(bash "$W" sub.scnf --counter sharpsat-td --scale 1 2>&1)"
+if grep -q 'outside the normal double-float range' <<<"$OUT"; then
+  ok "a subnormal Z (e^-725) is refused, not printed"
+else bad "a subnormal Z (e^-725) is refused, not printed" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-120)"; fi
+
+# --- 6c. a weight that cannot be written is an error NAMING the literal --------
+# A FREE atom at cost 720 (relative weight e^-720, subnormal) or -750 (e^750,
+# overflow): neither folds, and writing it used to give 0, a sharpSAT abort, or
+# a Lisp overflow.  Now it names the atom.
+printf '(OR (BIG 1) (NOT (BIG 1)))\n(WEIGHT (BIG 1) 720.0)\n' > big.scnf
+printf '(OR (NEG 1) (NOT (NEG 1)))\n(WEIGHT (NEG 1) -750.0)\n' > neg.scnf
+for pair in "big.scnf:(BIG 1)" "neg.scnf:(NEG 1)"; do
+  f="${pair%%:*}"; a="${pair#*:}"
+  OUT="$(bash "$M" "$f" --solver sharpsat-td --scale 1 2>&1)"
+  if grep -q 'outside double range' <<<"$OUT" && grep -qF "$a" <<<"$OUT"; then
+    ok "an unwritable weight on a free atom names it: $a"
+  else bad "an unwritable weight on a free atom names it: $a" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-140)"; fi
+done
+# The EXPORTED file is never folded (it must denote the theory's own Z), so the
+# forced cost 800 that counting folds away is refused there rather than written as 0.
+OUT="$(bash "$W" forced.scnf --counter sharpsat-td --scale 1 --wcnf exported.cnf 2>&1)"
+if grep -q 'outside double range' <<<"$OUT" && ! grep -q 'weight 1 0.0e+0' exported.cnf 2>/dev/null; then
+  ok "--wcnf export refuses rather than writing weight 0"
+else bad "--wcnf export refuses rather than writing weight 0" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-140)"; fi
 
 # --- 7. hypotheses: the hand-counted fixture of run-test-hypotheses.sh --------
 # per-hypothesis given OBS: P(O|h1) = P(O|h2) = 1/2, P(O|h3) = 0  ->  1/2, 1/2, 0
@@ -172,6 +233,52 @@ if grep -q 'could not run /nonexistent/flow_cutter_pace17' <<<"$OUT"; then
   ok "a missing flow_cutter_pace17 is reported by name"
 else bad "a missing flow_cutter_pace17 is reported by name" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-160)"; fi
 
+# --- 9b. --hypotheses counts only the hypotheses -----------------------------
+# A sharpSAT wrapper earlier on PATH logs each invocation.  The fixture has 6
+# atoms and 3 hypotheses; per-hypothesis needs a conditioned and an unconditioned
+# run, so clamping only the hypotheses is at most 2 x (1 + 3) = 8 calls, where
+# clamping every atom was 2 x (1 + 6) = 14.  It is in fact 7: under the evidence,
+# clamping (H 3) is refuted by unit propagation alone, so that count is 0
+# without a run.  (The wrapper execs the real binary by its absolute path, so
+# flowcutter is still found beside it.)
+REAL="$(command -v sharpSAT)"
+mkdir -p wrap
+printf '#!/bin/sh\necho call >> %s/calls.log\nexec "%s" "$@"\n' "$TMP" "$REAL" > wrap/sharpSAT
+chmod +x wrap/sharpSAT
+: > calls.log
+PATH="$TMP/wrap:$PATH" bash "$M" h.scnf --solver sharpsat-td --hypotheses '(H 1)' --hypotheses '(H 2)' \
+     --hypotheses '(H 3)' --evidence '(OBS 1)' --baseline per-hypothesis > h2.out 2>&1
+N="$(wc -l < calls.log | tr -d ' ')"
+if [[ "$N" == 7 ]] && cmp -s <(grep '^(HYPOTHESIS' h.out) <(grep '^(HYPOTHESIS' h2.out); then
+  ok "--hypotheses clamps only the hypotheses (7 sharpSAT calls, not 14)"
+else bad "--hypotheses clamps only the hypotheses (7 sharpSAT calls, not 14)" "$N calls"; fi
+
+# --- 9c. ADDMC is bounded by *solver-timeout* too ------------------------------
+# A stand-in 'addmc' that never finishes: before, wmc--run-addmc had no timeout
+# and this hung forever.
+mkdir -p slow
+printf '#!/bin/sh\nexec sleep 60\n' > slow/addmc
+chmod +x slow/addmc
+OUT="$(PATH="$TMP/slow:$PATH" sbcl --noinform --non-interactive \
+  --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+  --eval "(handler-case (let ((*solver-timeout* 2) (*solver-kill-grace* 1)) (wmc \"hand.scnf\" :scale 1))
+            (error (e) (format t \"ERROR: ~A~%\" e)))" 2>&1)"
+if grep -q 'ADDMC timed out after 2 s' <<<"$OUT"; then ok "ADDMC is bounded by *solver-timeout*"
+else bad "ADDMC is bounded by *solver-timeout*" "$(tr '\n' ' ' <<<"$OUT" | tail -c 140)"; fi
+
+# --- 9d. the installer's usability check agrees with sharpSAT's own lookup ------
+# sharpSAT uses $SHARPSAT_FLOWCUTTER whenever it is set, without checking it, so
+# a stale value must make the installer call it NOT usable.
+LIST="$(SHARPSAT_FLOWCUTTER=/nonexistent/flow_cutter_pace17 bash "$REPO/bin/install-solvers.sh" --list 2>&1)"
+if grep -Eq '^sharpsat-td +missing' <<<"$LIST"; then ok "a stale SHARPSAT_FLOWCUTTER makes sharpsat-td 'missing'"
+else bad "a stale SHARPSAT_FLOWCUTTER makes sharpsat-td 'missing'" "$(grep sharpsat-td <<<"$LIST" | head -1)"; fi
+
+# --- 9e. wmc.sh refuses a no-Z counter BEFORE asking for it to be installed -----
+OUT="$(PATH=/usr/bin:/bin bash "$W" "$REPO/Probability/test_marginals.scnf" --counter d4 2>&1)"
+if grep -q 'must be addmc or sharpsat-td' <<<"$OUT" && ! grep -q 'Install it with' <<<"$OUT"; then
+  ok "wmc.sh --counter d4 is refused, not sent to install d4"
+else bad "wmc.sh --counter d4 is refused, not sent to install d4" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-120)"; fi
+
 # --- 10. option guards ---------------------------------------------------------
 F="$REPO/Probability/test_marginals.scnf"
 refused() {  # refused <name> <expected-message-fragment> <command...>
@@ -183,7 +290,9 @@ refused() {  # refused <name> <expected-message-fragment> <command...>
 refused "--decot refused for another solver" "--decot applies to the sharpsat-td" bash "$M" "$F" --solver maxent --decot 2
 refused "--cache-mb refused for another solver" "--cache-mb applies to the sharpsat-td" bash "$M" "$F" --solver addmc --cache-mb 100
 refused "--epsilon refused for sharpsat-td" "--epsilon applies to the addmc" bash "$M" "$F" --solver sharpsat-td --epsilon 0.1
-refused "--decot must be a number" "--decot must be a positive number" bash "$M" "$F" --solver sharpsat-td --decot fast
+refused "--decot must be a number" "--decot must be a number of seconds" bash "$M" "$F" --solver sharpsat-td --decot fast
+refused "--decot 0 refused before Lisp loads" "in (0.0001, 10000)" bash "$M" "$F" --solver sharpsat-td --decot 0
+refused "--decot 10000 refused before Lisp loads" "in (0.0001, 10000)" bash "$W" "$F" --counter sharpsat-td --decot 10000
 refused "wmc.sh refuses a counter with no Z" "must be addmc or sharpsat-td" bash "$W" "$F" --counter maxent
 refused "wmc.sh --decot needs sharpsat-td" "--decot applies to the sharpsat-td" bash "$W" "$F" --decot 2
 

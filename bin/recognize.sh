@@ -74,7 +74,7 @@
 #                 observed at the final slice means "at the end" only at the
 #                 horizon it came from -- prefer --observe over action names.
 #   --counter NAME  the inference back end (default max-term, R&G's estimator).
-#                 The exact counters (maxent, ddnnf, d4, addmc) are available but
+#                 The exact counters (maxent, ddnnf, d4, addmc, sharpsat-td) are available but
 #                 are small-instance-only: counting does not reach the horizons
 #                 planning does.  NOT the same thing as --solver.
 #   --baseline B  per-hypothesis (default, = R&G) or best-rival.  per-hypothesis

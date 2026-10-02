@@ -98,8 +98,65 @@ exp(- total cost)."
             (incf (gethash lit cost 0.0d0) (float w 1.0d0))))))
     cost))
 
+(defun wmc--unit-propagate (int-clauses nvars)
+  "Unit propagation over INT-CLAUSES (simple-vectors of signed variable indices).
+Returns a vector indexed 1..NVARS of +1 / -1 / 0 (forced true / forced false /
+free), or :CONFLICT if propagation derives the empty clause.  Queue-based with
+occurrence lists, so linear in the total clause size: marginals call it once per
+clamped count."
+  (let* ((nc (length int-clauses))
+         (assign (make-array (1+ nvars) :initial-element 0))
+         (occ (make-array (1+ (* 2 nvars)) :initial-element nil)) ; lit -> clauses
+         (nfalse (make-array nc :initial-element 0))
+         (sat (make-array nc :initial-element nil))
+         (queue '()))
+    (flet ((idx (lit) (+ lit nvars))
+           (value (lit) (let ((a (aref assign (abs lit)))) (if (minusp lit) (- a) a))))
+      (loop for c across int-clauses for i from 0
+            do (loop for lit across c do (push i (aref occ (idx lit)))))
+      (labels ((set-true (lit)   ; returns NIL on conflict
+                 (case (value lit)
+                   (1 t)
+                   (-1 nil)
+                   (t (setf (aref assign (abs lit)) (if (minusp lit) -1 1))
+                      (dolist (i (aref occ (idx lit))) (setf (aref sat i) t))
+                      (push lit queue)
+                      t))))
+        (loop for c across int-clauses
+              do (case (length c)
+                   (0 (return-from wmc--unit-propagate :conflict))
+                   (1 (unless (set-true (aref c 0))
+                        (return-from wmc--unit-propagate :conflict)))))
+        (loop while queue
+              do (let ((lit (pop queue)))
+                   (dolist (i (aref occ (idx (- lit))))
+                     (unless (aref sat i)
+                       (let* ((c (aref int-clauses i))
+                              (nf (incf (aref nfalse i))))
+                         (cond ((>= nf (length c))
+                                (return-from wmc--unit-propagate :conflict))
+                               ((= nf (1- (length c)))
+                                (let ((u (find-if (lambda (l) (zerop (value l))) c)))
+                                  ;; NIL: the remaining literal repeats a false one
+                                  ;; (a clause listing a literal twice)
+                                  (unless (and u (set-true u))
+                                    (return-from wmc--unit-propagate :conflict)))))))))))
+      assign)))
+
+(defun wmc--checked-weight (lit cost atom-of)
+  "exp(-COST) as a NORMAL double, or an error naming the literal.  A weight below
+the normal range would be written as 0 -- turning a soft cost into a hard
+prohibition, silently -- or as a subnormal that std::stod (both counters' weight
+parser) rejects; one above it cannot be written at all."
+  (let ((w (ignore-errors (exp (- cost)))))
+    (unless (and w (not (sb-ext:float-infinity-p w))
+                 (>= w least-positive-normalized-double-float))
+      (error "the weight exp(-~,4F) of literal ~:[(NOT ~S)~;~S~] is outside double range (cost must be within about +-708 after --scale).~%A cost that large is effectively hard: assert the literal as a hard clause instead, or give a larger --scale."
+             cost (plusp lit) (funcall atom-of (abs lit))))
+    w))
+
 (defun wmc--write-mcc (clauses weights a2i nvars out-stream
-                       &key extra-units (scale 1.0d0) (dialect :mcc-2020))
+                       &key extra-units (scale 1.0d0) (dialect :mcc-2020) fold)
   "Write the weighted CNF for CLAUSES + WEIGHTS to OUT-STREAM in DIALECT.
 EXTRA-UNITS is a list of signed DIMACS literals emitted as extra unit clauses
 (used to clamp atoms when computing marginals).  Each literal's total cost is
@@ -134,38 +191,87 @@ We therefore emit BOTH polarities of EVERY variable under :MCC-2024, each as
 exp(-cost/scale) with an absent cost taken as 0 (hence weight 1).  That is 2V
 weight lines rather than one per charged literal, but then no inference rule of
 any reader can fire: the file states FiFO's distribution outright rather than
-leaning on a convention the two counters do not share."
+leaning on a convention the two counters do not share.
+
+Every weight written must be a NORMAL double (WMC--CHECKED-WEIGHT): a cost above
+about 708 would otherwise be written as 0 or a subnormal -- a soft cost silently
+turned hard, or a weight std::stod refuses.  FOLD (for FiFO's own counting runs,
+never for a file handed to someone else) moves as much as it can out of the file
+and into a returned LOG FACTOR, so the true count is (file's count) * exp(factor):
+
+  - a literal FORCED by unit propagation (over the clauses plus EXTRA-UNITS)
+    contributes the constant factor exp(-cost) to every model, so its cost goes
+    to the factor and its variable is written with weight 1 both ways;
+  - under :MCC-2024, each free variable's two weights are rescaled so the larger
+    is 1, the shift again going to the factor -- which handles a large NEGATIVE
+    cost too.
+
+What still does not fit is a weight genuinely too small RELATIVE to its own
+variable's other polarity, and that is an error naming the literal.  Returns
+(values LOG-FACTOR) -- 0 without FOLD -- or :UNSAT when propagation finds a
+conflict, in which case the count is 0 and the file is not worth running."
   (let* ((cost (wmc--literal-costs weights a2i))
          (nclauses (+ (length clauses) (length extra-units)))
-         (lit-weight (lambda (lit)
-                       (exp (- (/ (gethash lit cost 0.0d0) scale))))))
-    (ecase dialect
-      (:mcc-2020 (format out-stream "p wcnf ~D ~D~%" nvars nclauses))
-      ;; 'c t wmc' declares the track.  SharpSAT-TD asserts if this disagrees with
-      ;; its -WE/-WD mode, so it must say wmc and not mc.
-      (:mcc-2024 (format out-stream "c t wmc~%p cnf ~D ~D~%" nvars nclauses)))
-    (dolist (cl clauses)
-      (loop for i across (mx--clause->ints cl a2i)
-            do (format out-stream "~D " i))
-      (format out-stream "0~%"))
-    (dolist (u extra-units)
-      (format out-stream "~D 0~%" u))
-    ;; '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').  Both
-    ;; readers accept it: ADDMC uses std::stod, and SharpSAT-TD's ParseWeight is
-    ;; stod plus an 'a/b' fraction form.
-    (ecase dialect
-      (:mcc-2020
-       ;; Only the charged literals; each opposite side defaults to 1.0.
-       (maphash (lambda (lit c)
-                  (declare (ignore c))
-                  (format out-stream "w ~D ~,16,,,,,'eE~%" lit (funcall lit-weight lit)))
-                cost))
-      (:mcc-2024
-       ;; Both polarities of every variable, so nothing is left to infer.
-       (loop for v from 1 to nvars
-             do (dolist (lit (list v (- v)))
-                  (format out-stream "c p weight ~D ~,16,,,,,'eE 0~%"
-                          lit (funcall lit-weight lit))))))))
+         (int-clauses (mapcar (lambda (cl) (mx--clause->ints cl a2i)) clauses))
+         (forced (when fold
+                   (wmc--unit-propagate
+                    (coerce (append int-clauses
+                                    (mapcar (lambda (u) (vector u)) extra-units))
+                            'simple-vector)
+                    nvars)))
+         (i2a (let ((v (make-array (1+ nvars) :initial-element nil)))
+                (maphash (lambda (atom i) (setf (aref v i) atom)) a2i)
+                v))
+         (atom-of (lambda (i) (aref i2a i)))
+         (factor 0.0d0))
+    (when (eq forced :conflict)
+      (return-from wmc--write-mcc :unsat))
+    (flet ((c (lit) (/ (gethash lit cost 0.0d0) scale))
+           (forced-sign (v) (if forced (aref forced v) 0)))
+      (ecase dialect
+        (:mcc-2020 (format out-stream "p wcnf ~D ~D~%" nvars nclauses))
+        ;; 'c t wmc' declares the track.  SharpSAT-TD asserts if this disagrees with
+        ;; its -WE/-WD mode, so it must say wmc and not mc.
+        (:mcc-2024 (format out-stream "c t wmc~%p cnf ~D ~D~%" nvars nclauses)))
+      (dolist (ints int-clauses)
+        (loop for i across ints do (format out-stream "~D " i))
+        (format out-stream "0~%"))
+      (dolist (u extra-units)
+        (format out-stream "~D 0~%" u))
+      ;; '~,16,,,,,'eE forces a C-parseable 'e' exponent (not Lisp's 'd').  Both
+      ;; readers accept it: ADDMC uses std::stod, and SharpSAT-TD's ParseWeight is
+      ;; stod plus an 'a/b' fraction form.
+      (ecase dialect
+        (:mcc-2020
+         ;; Only the charged literals; each opposite side defaults to 1.0.  A
+         ;; forced literal is folded out (its opposite never occurs in a model, so
+         ;; omitting both lines is exact once the factor is applied).
+         (maphash (lambda (lit cst)
+                    (declare (ignore cst))
+                    (let ((s (forced-sign (abs lit))))
+                      (if (/= s 0)
+                          (when (= s (signum lit)) (decf factor (c lit)))
+                          (format out-stream "w ~D ~,16,,,,,'eE~%"
+                                  lit (wmc--checked-weight lit (c lit) atom-of)))))
+                  cost))
+        (:mcc-2024
+         ;; Both polarities of every variable, so nothing is left to infer.
+         (loop for v from 1 to nvars
+               do (let* ((s (forced-sign v))
+                         (cp (c v)) (cn (c (- v)))
+                         ;; the shift moved into the factor: the forced side's
+                         ;; whole cost, or (FOLD only) the cheaper side's
+                         (shift (cond ((= s 1) cp)
+                                      ((= s -1) cn)
+                                      (fold (min cp cn))
+                                      (t 0.0d0))))
+                    (decf factor shift)
+                    (dolist (lit (list v (- v)))
+                      (format out-stream "c p weight ~D ~,16,,,,,'eE 0~%" lit
+                              (if (/= s 0)
+                                  1.0d0
+                                  (wmc--checked-weight lit (- (c lit) shift) atom-of)))))))))
+    factor))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Running ADDMC and parsing its count
@@ -192,25 +298,50 @@ error messages.  ADDMC prints one solution line 's wmc <value>' (or 's mc
           (error "ADDMC result is not a number: ~S" line))
         (float val 1.0d0)))))
 
+(defun wmc--read-file-string (path)
+  "The contents of PATH as a string, or \"\" if it does not exist."
+  (or (ignore-errors (uiop:read-file-string path)) ""))
+
+(defun wmc--run-counter (name program args install)
+  "Run a counter PROGRAM with ARGS through RUN-PROGRAM-TO-FILE, so it is bounded by
+*SOLVER-TIMEOUT* like every other solver run, and return (values stdout stderr).
+NAME is for messages and INSTALL the install-solvers.sh name.  An exact counter
+has no partial answer, so a timeout or a non-zero exit is an error."
+  (let* ((root (make-scratch-file-root))
+         (out-file (format nil "~A.counter-out" root))
+         (err-file (format nil "~A.counter-err" root)))
+    (unwind-protect
+         (multiple-value-bind (code timed-out)
+             (handler-case
+                 (run-program-to-file program args out-file
+                                      :timeout *solver-timeout* :error-file err-file)
+               (error (c)
+                 (error "could not run ~A (~A): ~A~%Put it on PATH (bin/install-solvers.sh --only ~A)."
+                        name program c install)))
+           (let ((out (wmc--read-file-string out-file))
+                 (err (wmc--read-file-string err-file)))
+             (when timed-out
+               (error "~A timed out after ~A s (*solver-timeout*); an exact count has no partial answer"
+                      name *solver-timeout*))
+             (when (and code (not (zerop code)))
+               (error "~A (~A) exited with code ~A.~%--- stdout ---~%~A~%--- stderr ---~%~A"
+                      name program code out err))
+             (values out err)))
+      (ignore-errors (delete-file out-file))
+      (ignore-errors (delete-file err-file)))))
+
 (defun wmc--run-addmc (wcnf-file &key (addmc *addmc*) epsilon)
   "Run ADDMC on WCNF-FILE (MCC weight format, --wf 4) and return the weighted
 model count as a double-float.  EPSILON, when non-NIL, is passed as ADDMC's --ep
 (CUDD terminal-merging tolerance); NIL uses ADDMC's default of 0 (exact, full
-double precision)."
-  (multiple-value-bind (out err code)
-      (handler-case
-          (uiop:run-program (append (list addmc "--cf" wcnf-file "--wf" "4")
-                                    (when epsilon
-                                      (list "--ep" (format nil "~,16,,,,,'eE"
-                                                           (float epsilon 1.0d0)))))
-                            :output :string :error-output :string
-                            :ignore-error-status t)
-        (error (c)
-          (error "could not run ADDMC (~A): ~A~%Put an 'addmc' on PATH (bin/install-solvers.sh --only addmc)."
-                 addmc c)))
-    (when (and code (not (zerop code)))
-      (error "ADDMC (~A) exited with code ~A.~%--- stdout ---~%~A~%--- stderr ---~%~A"
-             addmc code out err))
+double precision).  Bounded by *SOLVER-TIMEOUT*."
+  (multiple-value-bind (out err)
+      (wmc--run-counter "ADDMC" addmc
+                        (append (list "--cf" wcnf-file "--wf" "4")
+                                (when epsilon
+                                  (list "--ep" (format nil "~,16,,,,,'eE"
+                                                       (float epsilon 1.0d0)))))
+                        "addmc")
     (wmc--parse-count out err)))
 
 ;;; ----------------------------------------------------------------------------
@@ -256,10 +387,6 @@ the 's' line is no verdict.  ERR is included in error messages."
         (error "SharpSAT-TD result is not a number: ~S" line))
       val)))
 
-(defun wmc--read-file-string (path)
-  "The contents of PATH as a string, or \"\" if it does not exist."
-  (or (ignore-errors (uiop:read-file-string path)) ""))
-
 (defun wmc--run-sharpsat (wcnf-file &key (sharpsat *sharpsat*) (decot *sharpsat-decot*)
                                          (cache-mb *sharpsat-cache-mb*))
   "Run SharpSAT-TD on WCNF-FILE (:mcc-2024 dialect) in arbitrary-precision weighted
@@ -271,38 +398,18 @@ answer to give, so a timeout is an error."
     (error "SharpSAT-TD's decomposition time must be in (0.0001, 10000) seconds, got ~S" decot))
   (unless (and (integerp cache-mb) (plusp cache-mb))
     (error "SharpSAT-TD's cache limit must be a positive integer number of MB, got ~S" cache-mb))
-  (let* ((root (make-scratch-file-root))
-         (out-file (format nil "~A.sharpsat-out" root))
-         (err-file (format nil "~A.sharpsat-err" root))
-         (tmpdir (string-right-trim "/" (namestring (uiop:temporary-directory)))))
-    (unwind-protect
-         (multiple-value-bind (code timed-out)
-             (handler-case
-                 (run-program-to-file sharpsat
-                                      (list "-WE"
-                                            "-decot" (format nil "~F" decot)
-                                            "-decow" "100"
-                                            "-tmpdir" tmpdir
-                                            "-cs" (format nil "~D" cache-mb)
-                                            "-prec" "20"
-                                            wcnf-file)
-                                      out-file
-                                      :timeout *solver-timeout*
-                                      :error-file err-file)
-               (error (c)
-                 (error "could not run SharpSAT-TD (~A): ~A~%Put a 'sharpSAT' on PATH (bin/install-solvers.sh --only sharpsat-td)."
-                        sharpsat c)))
-           (let ((out (wmc--read-file-string out-file))
-                 (err (wmc--read-file-string err-file)))
-             (when timed-out
-               (error "SharpSAT-TD timed out after ~A s (*solver-timeout*); an exact count has no partial answer"
-                      *solver-timeout*))
-             (when (and code (not (zerop code)))
-               (error "SharpSAT-TD (~A) exited with code ~A.~%--- stdout ---~%~A~%--- stderr ---~%~A"
-                      sharpsat code out err))
-             (wmc--parse-sharpsat out err)))
-      (ignore-errors (delete-file out-file))
-      (ignore-errors (delete-file err-file)))))
+  (let ((tmpdir (string-right-trim "/" (namestring (uiop:temporary-directory)))))
+    (multiple-value-bind (out err)
+        (wmc--run-counter "SharpSAT-TD" sharpsat
+                          (list "-WE"
+                                "-decot" (format nil "~F" decot)
+                                "-decow" "100"
+                                "-tmpdir" tmpdir
+                                "-cs" (format nil "~D" cache-mb)
+                                "-prec" "20"
+                                wcnf-file)
+                          "sharpsat-td")
+      (wmc--parse-sharpsat out err))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Choosing a counter
@@ -324,15 +431,48 @@ rationals; callers only add, divide and compare, which works for both."
                                                      :cache-mb cache-mb))
              :mcc-2024 "SharpSAT-TD"))))
 
-(defun wmc--to-double (x)
-  "X as a double-float, or an error if it is outside double range.  A tiny count
-is not rounded to 0, since a Z of 0 would read as 'unsatisfiable'."
-  (let ((d (ignore-errors (float x 1.0d0))))
-    (when (or (null d)
-              (sb-ext:float-infinity-p d)
-              (and (zerop d) (not (zerop x))))
-      (error "the count is outside double-float range (about 1e-308 to 1e308); marginals, being ratios of counts, are unaffected"))
-    d))
+(defun wmc--log (x)
+  "Natural log of a positive rational or float X, computed without converting X to
+a double first -- so it works far outside double range."
+  (flet ((log-int (n)    ; n = m * 2^k with m held to 53 bits
+           (let ((k (max 0 (- (integer-length n) 53))))
+             (+ (log (float (ash n (- k)) 1.0d0)) (* k (log 2.0d0))))))
+    (let ((r (rational x)))
+      (- (log-int (numerator r)) (log-int (denominator r))))))
+
+(defun wmc--count-value (raw factor)
+  "The true count RAW * exp(FACTOR) as a NORMAL double-float, where RAW is the
+counter's result (a double from ADDMC, an exact rational from SharpSAT-TD) and
+FACTOR the log factor the writer folded out.  0 stays 0 (unsatisfiable).
+Anything outside the normal range is an error -- not a 0, which would read as
+unsatisfiable, and not a subnormal, which would print 17 digits of which only a
+few mean anything."
+  (when (zerop raw) (return-from wmc--count-value 0.0d0))
+  (let ((lz (+ (wmc--log raw) factor)))
+    (unless (< (log least-positive-normalized-double-float) lz
+               (log most-positive-double-float))
+      (error "the count is outside the normal double-float range (about 2.2e-308 to 1.8e308); marginals, being ratios of counts, are unaffected"))
+    (flet ((normal (x) (and x (not (sb-ext:float-infinity-p x))
+                            (>= (abs x) least-positive-normalized-double-float)
+                            x)))
+      ;; Most precise first: the raw count as a double times exp(factor), when
+      ;; both are normal; else exp of the log, which loses about |log Z| ulps.
+      (let* ((r (normal (ignore-errors (float raw 1.0d0))))
+             (e (normal (ignore-errors (exp factor))))
+             (p (and r e (normal (ignore-errors (* r e))))))
+        (or p (exp lz))))))
+
+(defun wmc--ratio (raw-a factor-a raw factor)
+  "Z_a / Z for two counts in (raw, log-factor) form, as a double in [0,1].  The
+raw ratio is taken exactly first (both rationals under SharpSAT-TD), and the
+factors enter only as their DIFFERENCE, so neither Z need be representable."
+  (if (zerop raw-a)
+      0.0d0
+      (let ((q (/ (rational raw-a) (rational raw)))
+            (d (- factor-a factor)))
+        (if (zerop d)
+            (float q 1.0d0)
+            (exp (+ (wmc--log q) d))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Conditioning: ground evidence -> hard clauses
@@ -412,15 +552,20 @@ WCNF-FILE was given explicitly."
           (let ((wcnf (or wcnf-file (wmc--scratch-wcnf)))
                 (keep (or keep-wcnf wcnf-file)))
             (unwind-protect
-                 (progn
-                   (with-open-file (s wcnf :direction :output
-                                           :if-exists :supersede :if-does-not-exist :create)
-                     (wmc--write-mcc clauses weight-forms a2i nvars s :scale scale
-                                                                      :dialect dialect))
-                   (let ((z (wmc--to-double (funcall run wcnf))))
-                     (when (and verbose keep-wcnf) (format t "; wcnf kept: ~A~%" wcnf))
-                     (when verbose (format t "(WMC ~,16,,,,,'eE)~%" z))
-                     z))
+                 ;; Fold forced literals out only into a PRIVATE scratch file: a
+                 ;; file the user keeps must denote the theory's own Z.
+                 (let* ((factor (with-open-file (s wcnf :direction :output
+                                                        :if-exists :supersede
+                                                        :if-does-not-exist :create)
+                                  (wmc--write-mcc clauses weight-forms a2i nvars s
+                                                  :scale scale :dialect dialect
+                                                  :fold (not keep))))
+                        (z (if (eq factor :unsat)
+                               0.0d0
+                               (wmc--count-value (funcall run wcnf) factor))))
+                   (when (and verbose keep-wcnf) (format t "; wcnf kept: ~A~%" wcnf))
+                   (when verbose (format t "(WMC ~,16,,,,,'eE)~%" z))
+                   z)
               (unless keep (ignore-errors (delete-file wcnf))))))))))
 
 (defun wmc-write-wcnf (scnf-file out-file &key (dialect :mcc-2020) scale
@@ -453,11 +598,17 @@ Returns (values out-file nvars nclauses)."
         (values out-file nvars (length clauses))))))
 
 (defun wmc--marginals (scnf-file counter &key out-file weighted-only keep-wcnf scale
-                                              evidence evidence-file counter-args (verbose t))
+                                              evidence evidence-file counter-args atoms
+                                              (verbose t))
   "The body of MARGINALS-ADDMC and MARGINALS-SHARPSAT: P(a) = Z_a / Z by clamping,
 counted by COUNTER (:addmc or :sharpsat-td, with COUNTER-ARGS passed to
-WMC--COUNTER).  The ratio is taken BEFORE converting to a double, so with
-SharpSAT-TD's exact rationals it is computed without underflow."
+WMC--COUNTER).  Each count is written with forced literals folded out (see
+WMC--WRITE-MCC) and comes back as (raw, log-factor); the ratio is taken exactly
+on the raws and the factors enter only as a difference (WMC--RATIO), so neither
+Z need fit in a double.  A clamp that unit propagation refutes is a count of 0
+without running the counter.  ATOMS, when given, restricts the clamped counts to
+those atoms -- 1 + k runs instead of 1 + n -- for a caller that needs only a few,
+as --hypotheses does; an atom the theory lacks is an error."
   (multiple-value-bind (run dialect name) (apply #'wmc--counter counter counter-args)
     ;; NB: WEIGHT-FORMS, not the special WEIGHTS (which parse resets) -- see wmc.
     (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
@@ -481,28 +632,38 @@ SharpSAT-TD's exact rationals it is computed without underflow."
             (let ((i2a (make-array (1+ nvars) :initial-element nil))
                   (wcnf (wmc--scratch-wcnf)))
               (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
-              (flet ((count-with (extra-units)
-                       (with-open-file (s wcnf :direction :output
-                                               :if-exists :supersede :if-does-not-exist :create)
-                         (wmc--write-mcc clauses weight-forms a2i nvars s
-                                         :extra-units extra-units :scale scale :dialect dialect))
-                       (funcall run wcnf)))
+              (flet ((count-with (extra-units)   ; -> (values raw log-factor)
+                       (let ((factor (with-open-file (s wcnf :direction :output
+                                                             :if-exists :supersede
+                                                             :if-does-not-exist :create)
+                                       (wmc--write-mcc clauses weight-forms a2i nvars s
+                                                       :extra-units extra-units :scale scale
+                                                       :dialect dialect :fold t))))
+                         (if (eq factor :unsat)
+                             (values 0 0.0d0)
+                             (values (funcall run wcnf) factor)))))
                 (unwind-protect
-                     (let* ((target-vars (if weighted-only
-                                             (mapcar (lambda (a) (gethash a a2i)) weight-atoms)
-                                             ;; hide internal reification atoms from the default
-                                             ;; listing (also skips a counter run each); they show
-                                             ;; under --weighted-only, where P(atom)=P(formula)
-                                             (mapcar (lambda (a) (gethash a a2i))
-                                                     (remove-if #'reified-formula-atom-p theory-atoms))))
-                            (z (count-with nil)))
-                       (when (<= z 0)
-                         (error "partition function is 0 (~A) -- ~:[the hard clauses are unsatisfiable~;the hard clauses are unsatisfiable, or a too-large :epsilon floored the count to 0; either way~], so no marginals exist"
-                                name (eq counter :addmc)))
+                     (let ((target-vars
+                             (cond (atoms
+                                    (mapcar (lambda (a)
+                                              (or (gethash a a2i)
+                                                  (error "~S is not an atom of ~A" a scnf-file)))
+                                            atoms))
+                                   (weighted-only
+                                    (mapcar (lambda (a) (gethash a a2i)) weight-atoms))
+                                   ;; hide internal reification atoms from the default
+                                   ;; listing (also skips a counter run each); they show
+                                   ;; under --weighted-only, where P(atom)=P(formula)
+                                   (t (mapcar (lambda (a) (gethash a a2i))
+                                              (remove-if #'reified-formula-atom-p theory-atoms))))))
+                       (multiple-value-bind (z zf) (count-with nil)
+                         (when (<= z 0)
+                           (error "partition function is 0 (~A) -- ~:[the hard clauses are unsatisfiable~;the hard clauses are unsatisfiable, or a too-large :epsilon floored the count to 0; either way~], so no marginals exist"
+                                  name (eq counter :addmc)))
                        (let ((results
                                (sort (loop for v in target-vars
-                                           for zt = (count-with (list v))
-                                           collect (cons (aref i2a v) (float (/ zt z) 1.0d0)))
+                                           collect (multiple-value-bind (zt tf) (count-with (list v))
+                                                     (cons (aref i2a v) (wmc--ratio zt tf z zf))))
                                      #'string< :key (lambda (c) (format nil "~S" (car c))))))
                          (when verbose
                            (dolist (r results)
@@ -512,11 +673,12 @@ SharpSAT-TD's exact rationals it is computed without underflow."
                                                        :if-exists :supersede :if-does-not-exist :create)
                              (dolist (r results)
                                (format o "(MARGINAL ~S ~,16,,,,,'eE)~%" (car r) (cdr r)))))
-                         results))
+                         results)))
                   (unless keep-wcnf (ignore-errors (delete-file wcnf))))))))))))
 
 (defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale epsilon
-                                       evidence evidence-file (addmc *addmc*) (verbose t))
+                                       evidence evidence-file atoms (addmc *addmc*)
+                                       (verbose t))
   "Exact marginal P(atom = true) of every atom in a weighted .scnf, via ADDMC.
 For partition function Z and each target atom's clamped count Z_a (Z with a unit
 clause forcing the atom true), reports P(a) = Z_a / Z.  This is exact but costs
@@ -531,16 +693,17 @@ with the theory as HARD clauses, so the reported marginals are CONDITIONAL on th
 evidence -- each P(a) becomes P(a | evidence); the formulas must be ground (see
 WMC--EVIDENCE-CLAUSES).  Atoms introduced only by the evidence (e.g. Tseitin
 auxiliaries) are not themselves reported.  Prints one (MARGINAL <atom> <p>) line
-per atom (sorted) and, with OUT-FILE, also writes them there.  Returns an alist of
+per atom (sorted) and, with OUT-FILE, also writes them there.  ATOMS restricts the
+report (and the clamped runs) to just those atoms.  Returns an alist of
 (atom . probability)."
   (wmc--marginals scnf-file :addmc
                   :out-file out-file :weighted-only weighted-only :keep-wcnf keep-wcnf
                   :scale scale :evidence evidence :evidence-file evidence-file
-                  :verbose verbose
+                  :atoms atoms :verbose verbose
                   :counter-args (list :addmc addmc :epsilon epsilon)))
 
 (defun marginals-sharpsat (scnf-file &key out-file weighted-only keep-wcnf scale
-                                          evidence evidence-file (sharpsat *sharpsat*)
+                                          evidence evidence-file atoms (sharpsat *sharpsat*)
                                           (decot *sharpsat-decot*)
                                           (cache-mb *sharpsat-cache-mb*) (verbose t))
   "MARGINALS-ADDMC with SharpSAT-TD as the counter: the same clamping, the same
@@ -553,5 +716,5 @@ small DECOT, matters."
   (wmc--marginals scnf-file :sharpsat-td
                   :out-file out-file :weighted-only weighted-only :keep-wcnf keep-wcnf
                   :scale scale :evidence evidence :evidence-file evidence-file
-                  :verbose verbose
+                  :atoms atoms :verbose verbose
                   :counter-args (list :sharpsat sharpsat :decot decot :cache-mb cache-mb)))

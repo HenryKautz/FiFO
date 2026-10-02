@@ -83,10 +83,10 @@ reach of exact counting.
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
   --decot <s>         (sharpsat-td only) seconds of tree-decomposition search per
-                      count (default 1).  Paid on EVERY count -- 1 + #atoms of them
+                      count, in (0.0001, 10000) (default 1).  Paid on EVERY count -- 1 + #atoms of them
                       -- so keep it small unless the theory is large and hard
   --cache-mb <n>      (sharpsat-td only) component-cache limit in MB (default 4000)
-  --samples <n>      (mc-sat only) number of retained samples (default 10000).
+  --samples <n>       (mc-sat only) number of retained samples (default 10000).
                       Monte-Carlo error falls as 1/sqrt(n)
   --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)
   --seed <n>          (mc-sat only) seed the sampler; the same seed reproduces the
@@ -340,7 +340,11 @@ if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
-if [[ -n "$DECOT" && ! "$DECOT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--decot must be a positive number of seconds, got: $DECOT"; fi
+# Same open interval wmc--run-sharpsat enforces, so the error comes before SBCL
+# loads rather than after.
+if [[ -n "$DECOT" ]] && ! awk -v d="$DECOT" 'BEGIN { exit !(d ~ /^([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?$/ && d+0 > 0.0001 && d+0 < 10000) }'; then
+  die "--decot must be a number of seconds in (0.0001, 10000), got: $DECOT"
+fi
 if [[ -n "$CACHE_MB" && ! "$CACHE_MB" =~ ^[1-9][0-9]*$ ]]; then die "--cache-mb must be a positive integer, got: $CACHE_MB"; fi
 [[ -z "$DECOT" || "$SOLVER" == "sharpsat-td" ]] || die "--decot applies to the sharpsat-td solver only"
 [[ -z "$CACHE_MB" || "$SOLVER" == "sharpsat-td" ]] || die "--cache-mb applies to the sharpsat-td solver only"

@@ -183,20 +183,23 @@ is better than dividing by zero."
 ;;; The exact back ends, behind one call
 ;;; ---------------------------------------------------------------------------
 
-(defun hp--marginals (scnf-file counter opts)
+(defun hp--marginals (scnf-file counter opts &optional atoms)
   "P(atom) for every atom of SCNF-FILE under COUNTER, as an alist (atom . p).
 Every back end already returns exactly this shape, so the dispatch is the only
-thing that differs."
+thing that differs.  ATOMS -- the hypotheses -- are all the caller reads, and the
+two CLAMPING counters (addmc, sharpsat-td) pay one run per atom, so they count
+only those: 1 + k runs instead of 1 + n.  The others get every marginal from one
+run or one circuit anyway."
   (let ((scale (getf opts :scale)))
     (cond
       ((string-equal counter "maxent")
        (marginals scnf-file :verbose nil :scale scale
                             :node-limit (or (getf opts :node-limit) 5000000)))
       ((string-equal counter "addmc")
-       (marginals-addmc scnf-file :verbose nil :scale scale
+       (marginals-addmc scnf-file :verbose nil :scale scale :atoms atoms
                                   :epsilon (getf opts :epsilon)))
       ((string-equal counter "sharpsat-td")
-       (marginals-sharpsat scnf-file :verbose nil :scale scale
+       (marginals-sharpsat scnf-file :verbose nil :scale scale :atoms atoms
                                      :decot (or (getf opts :decot) *sharpsat-decot*)
                                      :cache-mb (or (getf opts :cache-mb) *sharpsat-cache-mb*)))
       ((string-equal counter "ddnnf")
@@ -323,9 +326,9 @@ see THE IDENTITY in the file header; :best-rival is the single conditioned run
 marginals.sh already does."
   (let* ((ev-clauses (wmc--evidence-clauses ev-forms nil))
          (cond-file (hp--combined-scnf scnf-file ev-clauses "hypev"))
-         (cond-m (hp--marginals cond-file counter opts))
+         (cond-m (hp--marginals cond-file counter opts hyps))
          (uncond-m (when (eq baseline :per-hypothesis)
-                     (hp--marginals scnf-file counter opts))))
+                     (hp--marginals scnf-file counter opts hyps))))
     (unless (or keep (equal cond-file scnf-file))
       (ignore-errors (delete-file cond-file)))
     (let ((cs (mapcar (lambda (h) (hp--lookup cond-m h cond-file)) hyps)))

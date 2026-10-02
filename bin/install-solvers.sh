@@ -198,7 +198,13 @@ solver_have() {
       # sharpSAT runs flow_cutter_pace17 from its OWN directory (or from
       # $SHARPSAT_FLOWCUTTER), not via PATH, so both being on PATH is not enough.
       bin="$(command -v sharpSAT 2>/dev/null)" || return 1
-      [[ -n "${SHARPSAT_FLOWCUTTER:-}" && -x "${SHARPSAT_FLOWCUTTER:-}" ]] && return 0
+      # sharpSAT uses the variable whenever it is non-empty, without checking it,
+      # so a stale value breaks every count even with a good copy beside it.
+      if [[ -n "${SHARPSAT_FLOWCUTTER:-}" ]]; then
+        [[ -x "$SHARPSAT_FLOWCUTTER" ]] && return 0
+        HAVE_NOTE="SHARPSAT_FLOWCUTTER=$SHARPSAT_FLOWCUTTER is not executable (sharpSAT would use it anyway)"
+        return 1
+      fi
       # sharpSAT resolves symlinks to find its own directory, so do the same.
       local real; real="$(perl -MCwd -e 'print Cwd::abs_path(shift)' "$bin")"
       [[ -x "$(dirname "$real")/flow_cutter_pace17" ]] && return 0
