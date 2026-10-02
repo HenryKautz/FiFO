@@ -32,7 +32,7 @@ SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
 LOG_DIR="$SRC_ROOT/logs"
 BINDIR="$HOME/bin"
 
-ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl rc2 addmc d4 walksat maxpre)
+ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl rc2 addmc sharpsat-td d4 walksat maxpre)
 
 FORCE=0
 DRY=0
@@ -69,9 +69,10 @@ Set FIFO_SOLVERS to clone somewhere other than <FiFO>/Solvers -- worth doing whe
 the FiFO directory is inside a synced folder, since these build trees are large
 and entirely regenerable.
 
-Prerequisites: git, make, and a C/C++ compiler for all of them; cmake for addmc
-and d4.  On macOS, d4 additionally needs Homebrew with 'brew install gcc gmp
-boost cmake' -- its build uses the GNU toolchain, not Apple clang.
+Prerequisites: git, make, and a C/C++ compiler for all of them; cmake for addmc,
+sharpsat-td and d4; GMP and MPFR for sharpsat-td.  On macOS, d4 additionally
+needs Homebrew with 'brew install gcc gmp boost cmake', and sharpsat-td 'brew
+install gcc gmp mpfr cmake' -- both build with the GNU toolchain, not Apple clang.
 
 Most entries are a git clone plus a build; 'rc2' is instead 'pip install
 python-sat', since bin/rc2-maxsat.py ships with FiFO and only the library it
@@ -100,6 +101,7 @@ solver_desc() {
     rc2)              echo "EXACT weighted MaxSAT -- PySAT's RC2, the DEFAULT for --solver max-term" ;;
     maxpre)           echo "MaxPre 2 -- WCNF preprocessor (run in front of any MaxSAT solver)" ;;
     addmc)            echo "ADD-based weighted model counter -- exact marginals and Z" ;;
+    sharpsat-td)      echo "SharpSAT-TD exact weighted model counter -- marginals and Z (MCC 2021)" ;;
     d4)               echo "d4v2 decision-DNNF compiler -- exact marginals on structured instances" ;;
     walksat)          echo "WalkSAT v58 -mcsat -- approximate marginals by MC-SAT sampling" ;;
   esac
@@ -115,6 +117,7 @@ solver_repo() {
     rc2)              echo "(pip) python-sat" ;;
     maxpre)           echo "https://bitbucket.org/coreo-group/maxpre2.git" ;;
     addmc)            echo "https://github.com/HenryKautz/ADDMC.git" ;;
+    sharpsat-td)      echo "https://github.com/HenryKautz/sharpsat-td.git" ;;
     d4)               echo "https://github.com/HenryKautz/d4v2.git" ;;
     walksat)          echo "https://gitlab.com/HenryKautz/Walksat.git" ;;
   esac
@@ -144,6 +147,7 @@ solver_dir() {
     rc2)              echo "" ;;
     maxpre)           echo "maxpre2" ;;
     addmc)            echo "ADDMC" ;;
+    sharpsat-td)      echo "sharpsat-td" ;;
     d4)               echo "d4v2" ;;
     walksat)          echo "Walksat" ;;
   esac
@@ -160,6 +164,7 @@ solver_bins() {
     rc2)              echo "" ;;
     maxpre)           echo "maxpre" ;;
     addmc)            echo "addmc" ;;
+    sharpsat-td)      echo "sharpSAT flow_cutter_pace17" ;;
     d4)               echo "d4" ;;
     walksat)          echo "walksat" ;;
   esac
@@ -188,6 +193,16 @@ solver_have() {
       # out of the box.
       python3 -c "import pysat.examples.rc2" >/dev/null 2>&1 && return 0
       HAVE_NOTE="python-sat is not installed (bin/rc2-maxsat.py cannot run)"
+      return 1 ;;
+    sharpsat-td)
+      # sharpSAT runs flow_cutter_pace17 from its OWN directory (or from
+      # $SHARPSAT_FLOWCUTTER), not via PATH, so both being on PATH is not enough.
+      bin="$(command -v sharpSAT 2>/dev/null)" || return 1
+      [[ -n "${SHARPSAT_FLOWCUTTER:-}" && -x "${SHARPSAT_FLOWCUTTER:-}" ]] && return 0
+      # sharpSAT resolves symlinks to find its own directory, so do the same.
+      local real; real="$(perl -MCwd -e 'print Cwd::abs_path(shift)' "$bin")"
+      [[ -x "$(dirname "$real")/flow_cutter_pace17" ]] && return 0
+      HAVE_NOTE="$bin has no flow_cutter_pace17 beside it"
       return 1 ;;
     *)
       for bin in $(solver_bins "$1"); do
@@ -227,6 +242,15 @@ solver_prereq() {
     addmc)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       command -v g++   >/dev/null 2>&1 || missing="$missing g++" ;;
+    sharpsat-td)
+      command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
+      if [[ "$(uname)" == "Darwin" ]]; then
+        # The port's CMakeLists refuses Apple clang outright (the macOS port is
+        # built and tested with GCC only).
+        [[ -n "$(brew_gxx)" ]] || missing="$missing g++-N(brew install gcc)"
+      else
+        command -v g++ >/dev/null 2>&1 || missing="$missing g++"
+      fi ;;
     d4)
       command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
       if [[ "$(uname)" == "Darwin" ]]; then
@@ -320,6 +344,25 @@ solver_build() {
       # cmake refuses to configure without it.
       ( cd "$dir" && CMAKE_POLICY_VERSION_MINIMUM=3.5 bash INSTALL.sh ) || return 1
       install_bin "$dir/addmc" addmc ;;
+
+    sharpsat-td)
+      # A plain out-of-source cmake build rather than the repo's setupdev.sh,
+      # which copies its results over the checked-in Linux binaries in bin/ and
+      # so leaves the checkout dirty for the next pull.  On macOS, name Homebrew
+      # GCC: the port's CMakeLists refuses clang.  A fresh build directory each
+      # time, since CMake caches the compiler choice.
+      local st_cc=()
+      if [[ "$(uname)" == "Darwin" ]]; then
+        local gxx; gxx="$(brew_gxx)"
+        [[ -n "$gxx" ]] || return 1
+        st_cc=(-DCMAKE_CXX_COMPILER="$gxx" -DCMAKE_C_COMPILER="${gxx/g++-/gcc-}")
+      fi
+      ( cd "$dir" && rm -rf build && mkdir build && cd build \
+        && brew_env cmake .. ${st_cc[@]+"${st_cc[@]}"} && brew_env make -j ) || return 1
+      # The two MUST land in the same directory: sharpSAT looks for
+      # flow_cutter_pace17 beside itself.
+      install_bin "$dir/build/sharpSAT" sharpSAT || return 1
+      install_bin "$dir/build/flow_cutter_pace17" flow_cutter_pace17 ;;
 
     d4)
       if [[ "$(uname)" == "Darwin" ]]; then

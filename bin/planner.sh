@@ -62,6 +62,8 @@ usage() {
   echo "  --counter <name>  (with --marginals) the model counter: 'maxent' (default, built-in" >&2
   echo "               exact enumeration), 'addmc' (the ADDMC weighted model counter, found" >&2
   echo "               on PATH as 'addmc', same as marginals.sh --solver addmc)," >&2
+  echo "               'sharpsat-td' (the SharpSAT-TD exact counter, found on PATH as" >&2
+  echo "               'sharpSAT', same as marginals.sh --solver sharpsat-td)," >&2
   echo "               'ddnnf' (FiFO's own d-DNNF compiler) or 'd4' (the external d4" >&2
   echo "               compiler, same circuit machinery)," >&2
   echo "               'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT v58 -- one run for" >&2
@@ -84,7 +86,7 @@ PDDL_EVFILE=""        # --pddl-evidence-file
 PDDL_EVIDENCE_FORMS=()  # --pddl-evidence (repeatable)
 SPLIT_EVIDENCE=0  # --split-evidence: monitor axioms into the theory, assertion apart
 MARGINALS=0    # --marginals: weighted model counting instead of planning
-COUNTER=""     # --counter: model counter for --marginals (maxent | addmc binary)
+COUNTER=""     # --counter: model counter for --marginals (a name from solvers.dat)
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"

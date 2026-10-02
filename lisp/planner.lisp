@@ -14,11 +14,11 @@
 ;;;; (*satplan-numslices*, *cnf-format*, *solver*) explicitly at the start of
 ;;;; each iteration.
 
-;; marginals / marginals-addmc live in maxent.lisp / wmc.lisp; planner.sh loads
-;; them only for --marginals.  Declare them so this file compiles without an
-;; undefined-function warning when they are absent (they are only ever called on
-;; the --marginals path, where the shell has loaded them).
-(declaim (ftype (function (t &rest t) t) marginals marginals-addmc))
+;; marginals / marginals-addmc / marginals-sharpsat live in maxent.lisp / wmc.lisp;
+;; planner.sh loads them only for --marginals.  Declare them so this file compiles
+;; without an undefined-function warning when they are absent (they are only ever
+;; called on the --marginals path, where the shell has loaded them).
+(declaim (ftype (function (t &rest t) t) marginals marginals-addmc marginals-sharpsat))
 
 (defun planner-file (problem-path type)
   "The companion file of PROBLEM-PATH with the given TYPE, e.g. \"scnf\"."
@@ -271,12 +271,13 @@ MARGINALS switches from planning to inference: instead of searching for a plan,
 the problem (conjoined with any evidence) is instantiated once at the working
 horizon and handed to weighted model counting, printing P(atom | evidence) for
 each atom.  COUNTER names the model counter: \"maxent\" (default) is the built-in
-exact enumeration; \"addmc\", \"ddnnf\" and \"d4\" are the other exact counters
-(ADDMC, FiFO's own d-DNNF compiler, and the external d4 compiler); \"mc-sat\" is
+exact enumeration; \"addmc\", \"sharpsat-td\", \"ddnnf\" and \"d4\" are the other
+exact counters (ADDMC, SharpSAT-TD, FiFO's own d-DNNF compiler, and the external
+d4 compiler); \"mc-sat\" is
 APPROXIMATE MC-SAT sampling (one WalkSAT v58 run for all the marginals -- for
 horizons where exact counting times out; check the reported sampling efficiency).
 An unrecognised name is an error.  A counter is NAMED, never a path: each
-external one is found on PATH under its own name (addmc, d4, walksat).
+external one is found on PATH under its own name (addmc, sharpSAT, d4, walksat).
 
 STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
 PDDL translation, or the input itself for a .wff), and :SCNF returns after
@@ -380,6 +381,7 @@ wff/scnf.  Progress is printed to STREAM."
                       ;; marginals.sh --solver does.  The exact circuit counters
                       ;; need ddnnf.lisp, loaded by planner.sh.
                       ((string-equal counter "addmc") (marginals-addmc msc))
+                      ((string-equal counter "sharpsat-td") (marginals-sharpsat msc))
                       ((string-equal counter "ddnnf") (ddnnf-marginals msc))
                       ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4))
                       ;; Unreachable: the name was validated against the shared

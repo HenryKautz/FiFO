@@ -431,6 +431,19 @@ bin/marginals.sh problem.scnf --solver addmc --epsilon 1e-9   # faster, approxim
 
 Cost note: `marginals-addmc` does one ADDMC run for `Z` plus one per reported atom, so `--weighted-only` (or a small atom set) keeps the run count down on instances with many state atoms.
 
+**SharpSAT-TD, the second clamping counter.** `--solver sharpsat-td` (Lisp `marginals-sharpsat`, or `wmc … :counter :sharpsat-td`) does the same clamping with [SharpSAT-TD](https://github.com/Laakeri/sharpsat-td) (Korhonen & Järvisalo, winner of MCC 2021; the macOS port is [github.com/HenryKautz/sharpsat-td](https://github.com/HenryKautz/sharpsat-td)), fed the `:mcc-2024` dialect above. It differs from ADDMC in two ways that matter here:
+
+- **No underflow.** It counts in MPFR floats whose mantissa is 53 bits — no more digits than a double — but whose exponent is unbounded, and FiFO reads the printed count back as an exact rational, taking `Z_a / Z` before converting. So the double-precision floor ADDMC shares with the Lisp enumeration is gone: forty atoms forced true at cost 20 give `Z ≈ e⁻⁸⁰⁰ ≈ 1e-348`, where ADDMC's `Z` is 0 and it reports nothing, yet SharpSAT-TD still returns a free atom's marginal as exactly `σ(−θ)`. (`wmc.sh` then refuses to *print* that `Z` as a double rather than print 0.)
+- **A fixed cost per count.** Its decisions are guided by a tree decomposition that its companion `flow_cutter_pace17` computes first, for `--decot` seconds (default 1) — an anytime search that always uses the whole budget, on *every* one of the 1 + n counts. It pays off on large theories (on LogisticsCosts pb1, `Z` in 1.4 s against d4's 3.9 s, agreeing to 2e-16) and costs on small ones with many atoms, where `--weighted-only` and a smaller `--decot` help.
+
+```sh
+bin/marginals.sh problem.scnf --solver sharpsat-td --weighted-only
+bin/marginals.sh problem.scnf --solver sharpsat-td --decot 0.2      # small theory, many atoms
+bin/wmc.sh       problem.scnf --counter sharpsat-td
+```
+
+`bin/install-solvers.sh --only sharpsat-td` builds it and installs `sharpSAT` and `flow_cutter_pace17` side by side, which they must be. Cross-checked against maxent enumeration, the ddnnf compiler and d4 by `tests/run-test-sharpsat.sh`.
+
 ------
 
 ### d-DNNF compilation, FiFO's own (no external binary)
@@ -715,7 +728,7 @@ and rc2 was 2.7x faster besides.
 
 ### Conditioning on evidence
 
-`wmc`, `marginals-addmc`, the `ddnnf`/`d4` solvers, and `mc-sat` all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver ddnnf`, `--solver d4`, `--solver mc-sat` and `--solver max-term` — and, with `--hypotheses`, to *every* back end including `maxent`, since there the evidence is conjoined into the theory rather than passed as a back-end keyword; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles. `mc-sat` samples from the conditioned distribution — the evidence clauses are simply part of the hard set every SampleSAT call must satisfy.)
+`wmc`, `marginals-addmc`, `marginals-sharpsat`, the `ddnnf`/`d4` solvers, and `mc-sat` all take **evidence** to compute *conditional* quantities: `P(A | E) = WMC(theory ∧ E ∧ A) / WMC(theory ∧ E)`. Conditioning on `E` simply means adding `E` to the **hard** clauses (evidence has probability 1), so with `E` supplied every reported marginal becomes `P(atom | E)` and `wmc` returns the conditioned partition function `WMC(theory ∧ E)`. (The `--evidence` / `--evidence-file` flags below apply to `--solver addmc`, `--solver sharpsat-td`, `--solver ddnnf`, `--solver d4`, `--solver mc-sat` and `--solver max-term` — and, with `--hypotheses`, to *every* back end including `maxent`, since there the evidence is conjoined into the theory rather than passed as a back-end keyword; with the circuit solvers, unit-literal evidence reuses the compiled circuit while non-unit evidence recompiles. `mc-sat` samples from the conditioned distribution — the evidence clauses are simply part of the hard set every SampleSAT call must satisfy.)
 
 - `:evidence` (Lisp) / `--evidence '<form>'` (shell, repeatable) — a **ground** FiFO formula. It is clausified by FiFO's own parser (`(implies (P A) (P B))` → `(OR (NOT (P A)) (P B))`, etc.) and conjoined with the theory. Multiple forms are conjoined.
 - `:evidence-file` / `--evidence-file <f>` — a file of ground FiFO formulas, conjoined with any `--evidence` forms.

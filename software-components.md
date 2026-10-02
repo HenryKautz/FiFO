@@ -56,7 +56,8 @@ than down it.
     .cnf + .map              .wcnf + .map                    ├─ maxent    exact, in Lisp
     │                        │    ▲                          ├─ ddnnf     exact, in Lisp
     │                        │    └─ MaxPre 2 (optional)     ├─ addmc     exact, external
-    │                        │       preprocess/reconstruct  ├─ d4        exact, external
+    │                        │       preprocess/reconstruct  ├─ sharpsat-td exact, external
+    │                        │                               ├─ d4        exact, external
     ▼                        ▼                               ├─ mc-sat    sampling
     SAT solver               MaxSAT solver                   └─ max-term  1+n MaxSAT runs
     kissat                   anytime  tt-open-wbo-inc,       │
@@ -114,7 +115,7 @@ numbers on the clauses, never the shape of the pipeline.
 | [`planner.sh`](#plannersh) | pddl2fifo → *(per horizon)* instantiate → propositionalize → SAT; then re-solve the smallest feasible horizon in WCNF if the domain has costs | the plan and its cost, plus `.wff`, `.scnf`, `.cnf`/`.wcnf`, `.map`, `.satout`, `.answer` beside the problem. With `--marginals`, marginals at the working horizon instead of a plan |
 | [`recognize.sh`](#recognizesh) | one instantiation, `2n` clamped MaxSAT solves (comply / not-comply per hypothesis); hypotheses parsed from the `:goal`; `--evidence-kind pddl\|fifo` | `summary.tsv` — costs, likelihood, prior, posterior per hypothesis — and the argmax on stdout |
 | [`marginals.sh`](#marginalssh) | reads the `.scnf` **directly**; no DIMACS stage except inside `max-term`, which writes its own wcnf | `(MARGINAL <atom> <p>)` lines, or `(MAXTERM-MARGINAL ...)` for `--solver max-term`; `--out` also writes them to a file |
-| [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC | `(WMC <Z>)`, the partition function |
+| [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC (or SharpSAT-TD with `--counter sharpsat-td`) | `(WMC <Z>)`, the partition function |
 | [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
 | [`learn-pddl.sh`](#learn-pddlsh) | pddl2fifo → instantiate → learn → rewrite the domain | a `.pddl` domain with each `:probability` replaced by the learned `:cost` (and a problem file when preferences or fluent costs carry targets) |
 | [`install-solvers.sh`](#install-solverssh) | none — bootstrap | solver binaries in `~/bin`; checkouts under `Solvers/` |
@@ -183,13 +184,15 @@ bin/install-solvers.sh [--all] [--only <solver>]... [--bindir <dir>] [--dry-run]
 
 A solver that is already usable is skipped. **Usable** is checked per solver
 rather than by mere presence on `PATH`: a `walksat` without `-mcsat` (v57 or
-earlier) counts as missing and gets replaced, and `d4` is looked for on `PATH` or
-in the install directory, since FiFO does not search `PATH` for it.
+earlier) counts as missing and gets replaced, `d4` is looked for on `PATH` or
+in the install directory, since FiFO does not search `PATH` for it, and a
+`sharpSAT` counts only if `flow_cutter_pace17` sits beside it (symlinks
+resolved), since that is where `sharpSAT` looks for it.
 
 | Option | Meaning |
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
-| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `rc2`, `addmc`, `d4`, `walksat`, `maxpre`. |
+| `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `rc2`, `addmc`, `sharpsat-td`, `d4`, `walksat`, `maxpre`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -214,11 +217,13 @@ failed.
 
 Prerequisites are checked *before* cloning, so a missing tool is reported as a
 one-line "missing build prerequisites: cmake" rather than a wall of compiler
-errors. All of them need `git`, `make`, and a C/C++ compiler, except `rc2`, which needs `python3` and `pip`; `addmc` and `d4`
-also need `cmake`; `nuwls-c` needs GMP and `maxpre` needs Boost (both found via
+errors. All of them need `git`, `make`, and a C/C++ compiler, except `rc2`, which needs `python3` and `pip`; `addmc`, `sharpsat-td` and `d4`
+also need `cmake`; `nuwls-c` needs GMP, `sharpsat-td` GMP and MPFR, and `maxpre` needs Boost (all found via
 the Homebrew prefix, which the script puts on `CPATH`/`LIBRARY_PATH`); on macOS `d4` additionally needs Homebrew with
-`brew install gcc gmp boost cmake`, because its build uses the GNU toolchain
-rather than Apple clang.
+`brew install gcc gmp boost cmake`, and `sharpsat-td` `brew install gcc gmp mpfr cmake`, because both build with the GNU toolchain
+rather than Apple clang (the SharpSAT-TD port's CMake refuses clang outright). `sharpsat-td` is built
+out-of-source with plain CMake rather than the repository's `setupdev.sh`, which would copy its results over the
+checked-in Linux binaries in the checkout's `bin/` and leave it dirty for the next pull.
 
 Not covered: the alternative solvers FiFO does not drive directly (Mallob,
 Painless, MaxHS) and the two that install through a package manager (RC2 via
@@ -331,7 +336,7 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 | `--pddl-evidence-file <f>` | A file of such PDDL modal forms. |
 | `--split-evidence` | With `--stop-after scnf` and a single `(occur-in-order …)`: fold the observation monitor's **axioms** into the problem scnf and write its one assertion literal to `<root>-assertion.txt`. The axioms are determined and count-neutral, so one instantiated theory then serves both polarities — condition on the assertion to comply, negate it not to. Used by [`recognize.sh`](#recognizesh). |
 | `--marginals` | Run weighted model counting instead of planning: print `P(atom \| evidence)` at the working horizon, with no plan search. |
-| `--counter <name>` | With `--marginals`: the same back ends `marginals.sh --solver` offers — `maxent` (default, exact enumeration), `addmc`, `ddnnf`, `d4` (the other exact counters), `mc-sat` (approximate sampling). A counter is **named, never a path**; each external one is found on `PATH` under its own name. An unrecognised name is an error. |
+| `--counter <name>` | With `--marginals`: the same back ends `marginals.sh --solver` offers — `maxent` (default, exact enumeration), `addmc`, `sharpsat-td`, `ddnnf`, `d4` (the other exact counters), `mc-sat` (approximate sampling). A counter is **named, never a path**; each external one is found on `PATH` under its own name. An unrecognised name is an error. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
 
@@ -463,14 +468,16 @@ marginals.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
-| `--solver <name>` | Back end, validated against [`lisp/solvers.dat`](#lispsolversdat) and accepting its abbreviations (`dnnf`, `mcsat`, `maxterm`): `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58), `max-term` (**approximate, and a different quantity** — see below). |
+| `--solver <name>` | Back end, validated against [`lisp/solvers.dat`](#lispsolversdat) and accepting its abbreviations (`dnnf`, `mcsat`, `maxterm`, `sharpsat`): `maxent` (default; exact Lisp enumeration — small instances), `addmc` (exact; ADDMC weighted model counter), `sharpsat-td` (exact; the SharpSAT-TD counter, clamping like `addmc` but with an unbounded exponent — see [SharpSAT-TD](#solvers-and-external-tools)), `ddnnf` (exact; FiFO's own d-DNNF compiler, pure Lisp), `d4` (exact; same circuit machinery, structure compiled by the external d4), `mc-sat` (**approximate**; MC-SAT sampling via WalkSAT v58), `max-term` (**approximate, and a different quantity** — see below). |
 | `--weighted-only` | Report (and enumerate) only the weighted atoms. Much cheaper when there are many state atoms. Also reveals the internal `(WEIGHTED-FORMULA n)` atoms carrying formula weights. |
 | `--out <file>` | Also write the `(MARGINAL ...)` lines to a file. |
-| `--node-limit <int>` | Search-effort cap: enumeration nodes for `maxent` (default 5 000 000), circuit nodes for `ddnnf` (default 2 000 000). Not accepted by `addmc`/`d4`/`mc-sat`. |
+| `--node-limit <int>` | Search-effort cap: enumeration nodes for `maxent` (default 5 000 000), circuit nodes for `ddnnf` (default 2 000 000). Not accepted by `addmc`/`sharpsat-td`/`d4`/`mc-sat`. |
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header the learning pipeline records (1 if absent). `--scale 1` uses the raw weights. Applies to every back end. |
-| `--evidence <form>` | Condition on a **ground** FiFO formula, conjoined as a hard constraint, so the results become `P(atom \| form)`. Repeatable. `addmc`/`ddnnf`/`d4`/`mc-sat`/`max-term`, or **any** back end together with `--hypotheses` (where evidence is conjoined into the theory rather than passed as a back-end keyword, so `maxent` works too). |
+| `--evidence <form>` | Condition on a **ground** FiFO formula, conjoined as a hard constraint, so the results become `P(atom \| form)`. Repeatable. `addmc`/`sharpsat-td`/`ddnnf`/`d4`/`mc-sat`/`max-term`, or **any** back end together with `--hypotheses` (where evidence is conjoined into the theory rather than passed as a back-end keyword, so `maxent` works too). |
 | `--evidence-file <f>` | A file of ground FiFO formulas, conjoined with any `--evidence`. |
 | `--epsilon <e>` | *(addmc)* ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. A positive value trades exactness for speed/memory. |
+| `--decot <s>` | *(sharpsat-td)* Seconds of tree-decomposition search per count (default 1). Flowcutter is anytime and always spends the whole budget, and marginals make 1 + n counts, so this is a floor on the run time — keep it small unless the theory is large and hard. |
+| `--cache-mb <n>` | *(sharpsat-td)* Component-cache limit in MB (default 4000). Always passed: left to itself SharpSAT-TD sizes the cache from "free" RAM, which its macOS build reads as **total** physical memory. |
 | `--save-circuit <f>` | *(ddnnf/d4)* After compiling, persist the circuit to `<f>`; this run still reports marginals. |
 | `--circuit <f>` | *(ddnnf/d4)* Load a saved circuit and query it **without** recompiling — give this instead of a `.scnf`. Unit-literal `--evidence` reuses it; non-unit evidence recompiles from the stored clauses. `--scale` re-weights it for free. |
 | `--samples <n>` | *(mc-sat)* Retained samples (default 10 000). Monte-Carlo error falls as `1/√n`. |
@@ -590,7 +597,7 @@ A convenient way to produce the input: `planner.sh <problem.pddl> --stop-after s
 ### `wmc.sh`
 
 The exact weighted model count — the partition function `Z = Σ_{x∈F} exp(−cost(x))`
-— of a weighted `.scnf`, via ADDMC.
+— of a weighted `.scnf`, via ADDMC or SharpSAT-TD.
 
 ```sh
 wmc.sh <file.scnf> [options]
@@ -598,11 +605,14 @@ wmc.sh <file.scnf> [options]
 
 | Option | Meaning |
 |---|---|
+| `--counter <name>` | `addmc` (default) or `sharpsat-td`. The other counters do not compute a `Z` on their own and are refused. SharpSAT-TD's count carries an unbounded exponent but `Z` is printed as a double, so a `Z` outside about 1e-308 … 1e308 is an **error**, never a printed 0 (which would read as unsatisfiable); marginals, being ratios, are unaffected. |
+| `--decot <s>` | *(sharpsat-td)* Tree-decomposition budget in seconds (default 1). |
+| `--cache-mb <n>` | *(sharpsat-td)* Component-cache limit in MB (default 4000). |
 | `--scale <n>` | Divide integer weights by `n` before exponentiating. Default: the `scale: N` header (1 if absent). |
-| `--epsilon <e>` | ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. |
+| `--epsilon <e>` | *(addmc)* ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. |
 | `--evidence <form>` | Condition on a ground FiFO formula, so `Z` becomes the conditioned count. Repeatable. |
 | `--evidence-file <f>` | A file of ground FiFO formulas. |
-| `--wcnf <file>` | Write (and keep) the intermediate MCC weighted CNF here. |
+| `--wcnf <file>` | Write (and keep) the intermediate weighted CNF here — MCC 2020 for `addmc`, MCC 2024 for `sharpsat-td`, which are **not** interchangeable. |
 | `--keep-wcnf` | Keep the intermediate `.wcnf` scratch file instead of deleting it. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
@@ -843,6 +853,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-cli.sh` | The `solve.sh` / `map.sh` output contract: all five verdicts reach stdout, extracted bindings are printed and labelled, and stripping `;` lines reproduces the `.answer` file byte for byte. Also pins the verdict-detection fix — a solver banner containing "MaxSAT" must not read as a SAT verdict. |
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-hypotheses.sh` | `--hypotheses` and the two baselines, against a fixture counted by hand: h1 has four times the models of h2 but the evidence supports them equally, so best-rival gives 4/5 vs 1/5 while per-hypothesis gives 1/2 vs 1/2. Carries the identity's anchor (P(O\|h) recomputed a different way, by conditioning on h and reading the evidence atom's marginal), a positive control on a symmetric fixture where the two baselines must agree exactly, cross-back-end agreement, the max-term delta, and the error paths. The maxent/ddnnf cases need no binary; addmc/d4/max-term skip cleanly. |
+| `tests/run-test-sharpsat.sh` | The SharpSAT-TD counter at every entry point, each number against an **independent** oracle: marginals against maxent enumeration on the `Probability/` fixtures and against the ddnnf compiler on a SatPlan theory (Switch at 4 slices — **not** the tracked scnf, whose marginals are all 0/1, so a comparison there is vacuous, and the suite refuses to pass on such one), `--evidence` against ddnnf's, `Z = 2e⁻¹+1` by hand through `wmc.sh`, the hand-counted hypotheses fixture, and `planner.sh --counter sharpsat-td` against `--counter maxent`. The load-bearing case is **underflow**: forty atoms forced true at cost 20 plus a free one at cost 1 give `Z ≈ 1e-348`, below double range, yet `P(B)` must still be exactly `σ(−1)` — and `wmc.sh` must refuse to print that `Z` rather than print 0 — with ADDMC failing on the same file as the control. Mutation-checked: reading the count as a double instead of an exact rational turns that case into "partition function is 0". Also the 2024 dialect reaching the binary, a missing `flow_cutter_pace17` reported by name, and the option guards. Skips cleanly (exit 0) with no `sharpSAT` on `PATH`. |
 | `tests/run-test-solvers.sh` | The shared `lisp/solvers.dat` table and the validation every CLI does against it. The load-bearing case proves the *mechanism*: a solver and a counter appended to a copy of the table are picked up by **both** the shell and the Lisp with no code change. Also every entry point refusing an unknown name, the wrong kind and a missing binary; `planner.sh` failing before writing a `.wff`; `recognize.sh` failing up front rather than in 3n runs; the `no-planner` asymmetry; counter abbreviations; paths exempt from the name check; the bundled `rc2` resolving to `bin/`; a missing table naming the file from both sides; and bash 3.2. Needs no solver installed. |
 | `tests/run-test-recognize.sh` | `recognize.sh`'s merged fast path. The load-bearing case checks `--method fast` against `--method plan-runs` — an *independent oracle*, not numbers recorded in the test — so it tests the `T∨ ∧ hypI ≡ Tᵢ` identity rather than the arithmetic. Also count-neutrality of the monitor axioms directly (everything else rests on it), that the assertion literal is resolved rather than carrying `NUMSLICES`, that the negated form flips only the assertion, that `c(O)`/`c(¬O)` survive into `summary.tsv`, the flags, and slice-pinned FiFO evidence through the same path. For hypothesis discovery and priors: a `(hypN)` in a *comment* is not a hypothesis (the case the old grep failed), the same weights in a different order give an identical summary (the point of naming them), a non-nullary disjunct and an unknown prior name are refused, and the old positional file is refused with the new spelling. `--priors-from-preferences` is pinned *exactly*: `(preference h0 (hyp0) ln 2)` must give the same posteriors as `--prior hyp0=2` with no preference, which fixes π ∝ exp(w) rather than any nearby formula, and the costs must match the preference-free problem, proving the strip. The best-rival case requires the posterior to **vary**, not merely sum to 1 — a flat 0.1 across ten hypotheses sums to 1 too, and is what a broken run returns. Skips cleanly without a MaxSAT solver. |
 | `tests/run-test-evgen.sh` | `SatPlan/evgen.sh`, the evidence generator: behavioral, against a ppgen fixture solved by `planner.sh`. Emitted positives are exactly the solution's true literals at the requested slices; `--observe` restricts (including a mixed fluent+action list); positives and negatives partition the restricted universe; the settings header replays byte for byte; fifteen error paths fire. The two load-bearing cases: the true observations reproduce the plan's cost while a shifted observation costs more (so the evidence really binds), and the last slice carries no actions under `--negative-evidence` — checked there because the positives-only form of that assertion passes vacuously. Skips cleanly without a MaxSAT solver. Also the `--recognition` mode and the recognize.sh guards: one `(and ...)` form carrying the same literals as the default mode, `--negative-evidence` refused with it, a multi-form file rejected by recognize.sh with the fix named, and the horizon raised to the largest slice observed. `--export-dataset` gets a full round trip against a real benchmark: export from IntrusionDetectionCosts, diff `hyps.dat` against the published source dataset, re-import through make-recognition-instance.lisp, and solve the result under its own `obs.dat`. `--export-constraints` is verified by SOLVING the export: the constraints must be exactly the solution's literals at the requested slices, the exported problem must hit the source plan's cost, and moving one constraint to another slice must break it; plus the occur-sometime caveat comment appearing iff an action is observed. `--export-ordering-constraints` adds the same-slice refusal, the single spanning constraint, and a solve-and-perturb check, and `--nonstrict-ordering 1` exporting a tie that strict refuses, whose strict form is unsatisfiable at the same horizon |
@@ -900,7 +911,7 @@ need. The interpreter's own API (`parse`, `instantiate`, `propositionalize`,
 | `reweight.lisp` | The independent log-odds weight estimator, and the shared `.scnf` reader/writer. |
 | `maxent.lisp` | The exact iterative MaxEnt estimator, and `(marginals ...)` — exact marginal inference by enumeration. |
 | `plearn.lisp` | The PDDL weight-learning orchestrator behind `learn-pddl.sh`. |
-| `wmc.lisp` | The ADDMC bridge: `(wmc ...)` and `(marginals-addmc ...)`, plus the MCC weighted-CNF writer and the evidence clausifier the other back ends reuse. `(wmc-write-wcnf ...)` exposes that writer on its own, with `:dialect :mcc-2020` (ADDMC's `--wf 4`, the default) or `:mcc-2024` (the post-2020 competition format SharpSAT-TD reads). The two are **not** textually interconvertible: they disagree on what an unstated literal polarity means — ADDMC defaults it to 1.0, SharpSAT-TD infers `1 − w` or refuses — so the 2024 writer states both polarities of every variable explicitly rather than leaning on a convention the two counters do not share. |
+| `wmc.lisp` | The ADDMC and SharpSAT-TD bridges: `(wmc ... :counter :addmc\|:sharpsat-td)`, `(marginals-addmc ...)` and `(marginals-sharpsat ...)` — one clamping implementation, `wmc--marginals`, with the counter chosen by `wmc--counter`, which also picks the dialect each reads. SharpSAT-TD's count is parsed from its decimal output as an **exact rational** (`wmc--decimal-to-rational`), not by the Lisp reader, which would round to a double and underflow to 0 below 1e-308 — the range SharpSAT-TD's unbounded MPFR exponent exists for; the ratio `Z_a/Z` is taken before converting. (Its mantissa is MPFR's default 53 bits — SharpSAT-TD never sets a precision — so the gain over ADDMC is range, not digits.) Every SharpSAT-TD run goes through `run-program-to-file`, so `*solver-timeout*` bounds it like any other solver run, with stderr captured for the error message. Also the MCC weighted-CNF writer and the evidence clausifier the other back ends reuse. `(wmc-write-wcnf ...)` exposes that writer on its own, with `:dialect :mcc-2020` (ADDMC's `--wf 4`, the default) or `:mcc-2024` (the post-2020 competition format SharpSAT-TD reads). The two are **not** textually interconvertible: they disagree on what an unstated literal polarity means — ADDMC defaults it to 1.0, SharpSAT-TD infers `1 − w` or refuses — so the 2024 writer states both polarities of every variable explicitly rather than leaning on a convention the two counters do not share. |
 | `ddnnf.lisp` | FiFO's own d-DNNF compiler and circuit evaluator, the d4 importer, and circuit persistence. |
 | `maxterm.lisp` | The max-term bridge: `(marginals-maxterm ...)` — `1+n` MaxSAT solves per query, exclusive-group detection from the theory, and post-hoc log-odds priors. Answers a different question from the counting back ends, and labels its output `(MAXTERM-MARGINAL ...)` to say so. |
 | `mcsat.lisp` | The MC-SAT bridge: `(marginals-mcsat ...)`, the WCNF writer in MLN sign convention, CDCL seeding, and the diagnostics. |
@@ -926,6 +937,7 @@ is, where it comes from, and what its build needs.
 | SAT (feasibility) | `*solver*` | `kissat` on `PATH`; choose another with `solve.sh --solver`, `planner.sh --solver`, or `solve`'s `:solver` |
 | MaxSAT (costs) | `*solver*` (rebound) | `tt-open-wbo-inc-Glucose4_1` on `PATH`; choose another with `map.sh --solver`, `planner.sh --weighted-solver`, or `solve`'s `:solver` |
 | ADDMC | `*addmc*` | `addmc` on `PATH` |
+| SharpSAT-TD | `*sharpsat*` | `sharpSAT` on `PATH`, with `flow_cutter_pace17` beside it (or `$SHARPSAT_FLOWCUTTER`) |
 | d4 | `*d4*` | `d4` on `PATH` (d4v2 builds it as `demo/compiler/build/compiler`; the installer renames it) |
 | WalkSAT (MC-SAT) | `*walksat*` | `walksat` on `PATH`, and it must have `-mcsat` (v58+) |
 
@@ -1226,6 +1238,42 @@ instead of CUDD's `1e-12`. That default matters: FiFO scales costs by 100, so a
 legitimate count can be `exp(−69) ≈ 1e-30`, which the stock default would floor to
 zero.
 
+**SharpSAT-TD**
+
+- Upstream: https://github.com/Laakeri/sharpsat-td (Korhonen & Järvisalo, winner
+  of MCC 2021)
+- macOS port: https://github.com/HenryKautz/sharpsat-td — builds on Apple Silicon
+  with Homebrew GCC and still on Linux (verified on arm64 and x86-64)
+- Found on `PATH` as `sharpSAT` (Lisp variable `*sharpsat*`), with its companion
+  `flow_cutter_pace17` in the **same directory** — `sharpSAT` looks for it beside
+  its own executable, then in `$SHARPSAT_FLOWCUTTER`, then the working directory
+
+An exact weighted model counter in the sharpSAT line (component caching, clause
+learning), whose decisions are guided by a tree decomposition that flowcutter
+computes first. FiFO feeds it the MCC-2024 dialect, in arbitrary-precision mode
+(`-WE`), and reads the decimal count back as an exact rational. That mode never
+sets MPFR's precision, so the mantissa is 53 bits like a double — but the
+exponent is unbounded, so a `Z` of 1e-348 is carried where a double underflows to
+0. Marginals stay right in that regime; `wmc.sh` refuses to print such a `Z`.
+
+Two costs to know. Flowcutter is anytime and always runs its whole budget
+(`--decot`, default 1 s), on **every** count — and clamping makes 1 + n counts —
+so on many atoms it is slower than ADDMC on small theories even where it is faster
+per count on large ones (pb1: 1.4 s against d4's 3.9 s for `Z`). And it must be
+given a cache limit: left to itself it sizes the cache from free RAM, which its
+macOS build reads as **total** RAM, so FiFO always passes `-cs` (`--cache-mb`,
+default 4000).
+
+*Installation notes:* the port's own README covers the build; in short,
+`./setupdev.sh` (which picks the newest Homebrew `g++-N` on macOS), never the
+`static` variant on macOS, and the port's CMake refuses Apple clang unless given
+`-DALLOW_CLANG=ON`. `setupdev.sh` overwrites the checked-in Linux binaries in the
+checkout's `bin/`, which is why `install-solvers.sh` builds with plain CMake
+instead. The upstream code ran flowcutter through `timeout(1)`, which macOS does
+not have; the port runs it in-process (SIGTERM to its process group after the
+budget, SIGKILL after a grace period, and an `alarm()` backstop so it cannot
+outlive a killed `sharpSAT`).
+
 **d4 (d4v2)**
 
 - Upstream: https://github.com/crillab/d4v2
@@ -1293,10 +1341,11 @@ scripts by pipeline stage and output; this table gives them by solver.
 | `marginals.sh --solver maxent` | exact marginals | none — built-in enumeration |
 | `marginals.sh --solver ddnnf` | exact marginals | none — built-in d-DNNF compiler |
 | `marginals.sh --solver addmc` | exact marginals | ADDMC |
+| `marginals.sh --solver sharpsat-td` | exact marginals | SharpSAT-TD (+ its flowcutter) |
 | `marginals.sh --solver d4` | exact marginals | d4 (structure) + FiFO circuit evaluation |
 | `marginals.sh --solver mc-sat` | approximate marginals | WalkSAT v58 `-mcsat` (+ `kissat` to seed) |
 | `marginals.sh --solver max-term` | max-term pseudo-marginals | **any** MaxSAT solver via `--maxsat-solver`. Exact ones — `rc2-maxsat.py` (the default), `wmaxcdcl`, `EvalMaxSAT_bin` — prove optimality; an anytime one (`tt-open-wbo-inc-*`, `nuwls-c`) runs fine but its solves are counted as unproved and warned about |
-| `wmc.sh` | partition function `Z` | ADDMC |
+| `wmc.sh` | partition function `Z` | ADDMC, or SharpSAT-TD with `--counter sharpsat-td` |
 | `learn.sh --method log-odds` | closed-form fit | none |
 | `learn.sh --method maxent` | exact iterative fit | none — built-in enumeration |
 | `learn-pddl.sh` | either of the above | none |

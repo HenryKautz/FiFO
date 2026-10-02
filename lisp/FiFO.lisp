@@ -239,8 +239,9 @@ share a root and overwrite -- or delete -- each other's .cnf/.satout files."
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 
-(defun run-program-to-file (program args outfile &key timeout)
-  "Run PROGRAM with ARGS, sending stdout to OUTFILE.  When TIMEOUT (seconds) is a
+(defun run-program-to-file (program args outfile &key timeout error-file)
+  "Run PROGRAM with ARGS, sending stdout to OUTFILE (and stderr to ERROR-FILE if
+given, else discarding it).  When TIMEOUT (seconds) is a
 positive number and the process outlives it, send SIGTERM -- an anytime MaxSAT
 solver responds by printing the best solution it has found, so the partial output
 is still useful -- and escalate to SIGKILL after *solver-kill-grace* seconds.
@@ -248,7 +249,8 @@ Returns (values exit-code timed-out-p)."
   (with-open-file (out outfile :direction :output :if-exists :supersede
                                :if-does-not-exist :create)
     (let ((proc (sb-ext:run-program program args :search t :output out
-                                    :error nil :wait nil))
+                                    :error error-file :if-error-exists :supersede
+                                    :wait nil))
           (timed-out nil))
       (unwind-protect
            (let ((limit (solver-time-limit timeout)))

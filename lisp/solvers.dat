@@ -52,6 +52,7 @@ counter    maxent                           exact   builtin              -      
 counter    ddnnf                            exact   builtin              dnnf         -
 counter    addmc                            exact   needs:addmc          -            addmc
 counter    d4                               exact   needs:d4             -            d4
+counter    sharpsat-td                      exact   needs:sharpSAT       sharpsat     sharpsat-td
 counter    mc-sat                           approx  needs:walksat        mcsat        walksat
 counter    max-term                         approx  no-planner           maxterm      rc2
 

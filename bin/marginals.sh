@@ -25,7 +25,7 @@ Compute the marginal probability P(atom = true) of every atom in a weighted .scn
 under the Gibbs distribution defined by its (WEIGHT ...) costs over the feasible
 set (the assignments satisfying its hard (OR ...) clauses).  All atoms are
 reported, weighted or not (e.g. SatPlan Holds state atoms, not just Occurs action
-atoms).  Four of the back ends are exact (the default, maxent, is enumeration --
+atoms).  Five of the back ends are exact (the default, maxent, is enumeration --
 intended for small instances); mc-sat samples instead, for instances past the
 reach of exact counting.
 
@@ -45,6 +45,12 @@ reach of exact counting.
                                 but the Boolean structure is compiled by the external
                                 state-of-the-art d4 (d4v2) compiler -- for instances
                                 too structured for the home-grown compiler
+                        sharpsat-td  the SharpSAT-TD exact counter (MCC 2021
+                                winner; tree-decomposition guided), clamping like
+                                addmc: one run for Z plus one per atom, each paying
+                                --decot seconds of decomposition search.  Counts
+                                carry an unbounded exponent, so marginals stay
+                                right where a double Z would underflow
                         max-term  APPROXIMATE and NOT a Gibbs marginal: the
                                 maximum-term approximation, sigma(beta*(cost with
                                 the atom false - cost with it true)), from 1+n
@@ -76,7 +82,11 @@ reach of exact counting.
   --epsilon <e>       (addmc only) ADDMC's CUDD terminal-merging tolerance (--ep);
                       default 0 = exact (full double precision).  A positive value
                       trades exactness for speed/memory.
-  --samples <n>       (mc-sat only) number of retained samples (default 10000).
+  --decot <s>         (sharpsat-td only) seconds of tree-decomposition search per
+                      count (default 1).  Paid on EVERY count -- 1 + #atoms of them
+                      -- so keep it small unless the theory is large and hard
+  --cache-mb <n>      (sharpsat-td only) component-cache limit in MB (default 4000)
+  --samples <n>      (mc-sat only) number of retained samples (default 10000).
                       Monte-Carlo error falls as 1/sqrt(n)
   --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)
   --seed <n>          (mc-sat only) seed the sampler; the same seed reproduces the
@@ -129,7 +139,7 @@ reach of exact counting.
                       by SAT entailment, catching encodings the syntactic scan
                       misses (auxiliary-variable at-most-one, or exclusivity that
                       is entailed rather than stated)
-  --evidence <form>   (addmc/ddnnf/d4/mc-sat/max-term) condition on a GROUND FiFO formula: it is
+  --evidence <form>   (addmc/sharpsat-td/ddnnf/d4/mc-sat/max-term) condition on a GROUND FiFO formula: it is
                       clausified and conjoined with the theory as a hard
                       constraint, so the reported marginals become P(atom | form).
                       Repeatable; multiple --evidence are conjoined.  E.g.
@@ -137,7 +147,7 @@ reach of exact counting.
                       --evidence '(implies (holds (on s1) 1) (p a))'
                       With ddnnf, unit-literal evidence reuses the compiled circuit;
                       a non-unit form triggers a recompile.
-  --evidence-file <f> (addmc/ddnnf/d4/mc-sat/max-term, or any solver with
+  --evidence-file <f> (addmc/sharpsat-td/ddnnf/d4/mc-sat/max-term, or any solver with
                       --hypotheses) a file of ground FiFO formulas to condition on,
                       conjoined with any --evidence forms.  Evidence must be ground
                       (over atoms already in the scnf); quantified evidence needs
@@ -197,11 +207,13 @@ The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 Every external back end is found on PATH under its own name -- 'addmc', 'd4',
-'walksat' -- so use a different build the way you would for any other program,
-by putting it earlier on PATH.  bin/install-solvers.sh builds and installs all
-three under those names.
+'sharpSAT', 'walksat' -- so use a different build the way you would for any other
+program, by putting it earlier on PATH.  bin/install-solvers.sh builds and
+installs all four under those names.
 
 ADDMC is https://github.com/HenryKautz/ADDMC (a macOS fork of vardigroup/ADDMC).
+SharpSAT-TD is https://github.com/HenryKautz/sharpsat-td (a macOS port of
+Laakeri/sharpsat-td); its flow_cutter_pace17 must be installed beside sharpSAT.
 d4 is https://github.com/HenryKautz/d4v2, whose demo/compiler build is installed
 as 'd4'.  MC-SAT needs WalkSAT version 58 or later
 (https://gitlab.com/HenryKautz/Walksat, the Walksat_v58_MC-SAT directory);
@@ -231,6 +243,8 @@ MAXSAT_SOLVER=""
 VERIFY_GROUPS=0
 SCALE=""
 EPSILON=""
+DECOT=""
+CACHE_MB=""
 EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
@@ -256,7 +270,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
-    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; shift 2 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, sharpsat-td, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; shift 2 ;;
     --query)          [[ $# -ge 2 ]] || die "--query needs an argument"; QUERY+=("$2"); shift 2 ;;
     --query-file)     [[ $# -ge 2 ]] || die "--query-file needs an argument"; QUERY_FILE="$2"; shift 2 ;;
     --hypotheses)     [[ $# -ge 2 ]] || die "--hypotheses needs an argument"; HYPOTHESES+=("$2"); shift 2 ;;
@@ -283,6 +297,8 @@ while [[ $# -gt 0 ]]; do
     --no-sat-seed)    NO_SAT_SEED=1; shift ;;
     --scale)          [[ $# -ge 2 ]] || die "--scale needs an argument"; SCALE="$2"; shift 2 ;;
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
+    --decot)          [[ $# -ge 2 ]] || die "--decot needs an argument"; DECOT="$2"; shift 2 ;;
+    --cache-mb)       [[ $# -ge 2 ]] || die "--cache-mb needs an argument"; CACHE_MB="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
     --save-circuit)   [[ $# -ge 2 ]] || die "--save-circuit needs an argument"; SAVE_CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
@@ -324,12 +340,16 @@ if [[ -n "$NODE_LIMIT" && ! "$NODE_LIMIT" =~ ^[0-9]+$ ]]; then die "--node-limit
 if [[ -n "$SCALE" && ! "$SCALE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--scale must be a positive number, got: $SCALE"; fi
 if [[ -n "$EPSILON" && ! "$EPSILON" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then die "--epsilon must be a non-negative number, got: $EPSILON"; fi
 [[ -z "$EPSILON" || "$SOLVER" == "addmc" ]] || die "--epsilon applies to the addmc solver only"
+if [[ -n "$DECOT" && ! "$DECOT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--decot must be a positive number of seconds, got: $DECOT"; fi
+if [[ -n "$CACHE_MB" && ! "$CACHE_MB" =~ ^[1-9][0-9]*$ ]]; then die "--cache-mb must be a positive integer, got: $CACHE_MB"; fi
+[[ -z "$DECOT" || "$SOLVER" == "sharpsat-td" ]] || die "--decot applies to the sharpsat-td solver only"
+[[ -z "$CACHE_MB" || "$SOLVER" == "sharpsat-td" ]] || die "--cache-mb applies to the sharpsat-td solver only"
 # On the --hypotheses path evidence is conjoined into a combined scnf rather than
 # passed as a back-end keyword, so it works for EVERY counter, maxent included.
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]] \
    && [[ "$HYP_PATH" -eq 0 ]]; then
-  [[ "$SOLVER" == "addmc" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" || "$SOLVER" == "mc-sat" \
-     || "$SOLVER" == "max-term" ]] || die "--evidence/--evidence-file apply to the addmc, ddnnf, d4, mc-sat and max-term solvers only
+  [[ "$SOLVER" == "addmc" || "$SOLVER" == "sharpsat-td" || "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" \
+     || "$SOLVER" == "mc-sat" || "$SOLVER" == "max-term" ]] || die "--evidence/--evidence-file apply to the addmc, sharpsat-td, ddnnf, d4, mc-sat and max-term solvers only
   (or to any counter together with --hypotheses, where evidence is conjoined into the theory)"
 fi
 if [[ "$SOLVER" != "mc-sat" ]]; then
@@ -380,6 +400,8 @@ else
   [[ -n "$BETA" ]] && KW="$KW :beta $BETA"
   [[ -n "$NODE_LIMIT" ]] && KW="$KW :node-limit $NODE_LIMIT"
   [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
+  [[ -n "$DECOT" ]] && KW="$KW :decot $DECOT"
+  [[ -n "$CACHE_MB" ]] && KW="$KW :cache-mb $CACHE_MB"
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   [[ -n "$SAMPLES" ]] && KW="$KW :samples $SAMPLES"
@@ -583,6 +605,26 @@ if [[ "$SOLVER" == "addmc" ]]; then
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
     --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(handler-case (progn (marginals-addmc \"$SCNF\" $KW) (sb-ext:exit :code 0))
+              (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
+fi
+
+if [[ "$SOLVER" == "sharpsat-td" ]]; then
+  [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent and ddnnf solvers, not sharpsat-td"
+  # _fifo_require_counter has already checked that sharpSAT is on PATH; it cannot
+  # see whether flow_cutter_pace17 is beside it, which sharpSAT reports itself.
+  KW=""
+  [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
+  [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
+  [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
+  [[ -n "$DECOT" ]] && KW="$KW :decot $DECOT"
+  [[ -n "$CACHE_MB" ]] && KW="$KW :cache-mb $CACHE_MB"
+  [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
+  [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
+  exec sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
+    --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+    --eval "(handler-case (progn (marginals-sharpsat \"$SCNF\" $KW) (sb-ext:exit :code 0))
               (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
 fi
 
