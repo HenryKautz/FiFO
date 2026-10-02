@@ -72,6 +72,68 @@ unset, SharpSAT-TD sizes the cache from 'free' RAM, which its macOS build reads
 as TOTAL physical memory -- 95% of all RAM, enough to drive the machine into swap.
 The authors suggest about half the memory you can spare, minus 500.")
 
+(defvar *wmc-jobs* 4
+  "How many clamped counts the marginals back ends (ADDMC, SharpSAT-TD) run at
+once.  The 1 + n counts are independent and, under SharpSAT-TD, each spends most
+of its time in flowcutter's fixed budget, so they parallelize almost perfectly.
+1 runs them one at a time.  Under SharpSAT-TD the cache limit is a TOTAL budget
+split across the jobs (see MARGINALS-SHARPSAT), so more jobs never means more
+memory.")
+
+;;; ----------------------------------------------------------------------------
+;;; Running independent counts in parallel
+;;; ----------------------------------------------------------------------------
+
+(defvar *wmc-scratch-lock* (sb-thread:make-mutex :name "wmc scratch names")
+  "Serializes MAKE-SCRATCH-FILE-ROOT, whose random half draws from one shared
+random state: two threads drawing at once could get the SAME root, and then read
+and delete each other's files -- the collision class the pid in the root exists
+to prevent between processes.")
+
+(defun wmc--scratch-root ()
+  (sb-thread:with-mutex (*wmc-scratch-lock*) (make-scratch-file-root)))
+
+(defun wmc--parallel-map (fn items jobs)
+  "(multiple-value-list (FN item)) for each of ITEMS, in order, on up to JOBS
+threads.  The first error any job signals is re-signalled here once all have
+stopped, and no new job starts after it.
+
+New SBCL threads see the GLOBAL value of a special, not the caller's binding, so
+a (let ((*solver-timeout* 2)) ...) around the call would silently be lost --
+every count would run under the default 600 s.  The specials a count reads are
+therefore captured here and rebound in each thread."
+  (let ((n (length items)))
+    (if (or (<= jobs 1) (<= n 1))
+        (mapcar (lambda (x) (multiple-value-list (funcall fn x))) items)
+        (let ((vec (coerce items 'vector))
+              (results (make-array n))
+              (next 0)
+              (err nil)
+              (lock (sb-thread:make-mutex :name "wmc jobs"))
+              (timeout *solver-timeout*)
+              (grace *solver-kill-grace*)
+              (cwd *default-pathname-defaults*))
+          (flet ((worker ()
+                   (let ((*solver-timeout* timeout)
+                         (*solver-kill-grace* grace)
+                         (*default-pathname-defaults* cwd))
+                     (loop
+                       (let ((i (sb-thread:with-mutex (lock)
+                                  (when (and (null err) (< next n))
+                                    (prog1 next (incf next))))))
+                         (unless i (return))
+                         (handler-case
+                             (setf (aref results i)
+                                   (multiple-value-list (funcall fn (aref vec i))))
+                           (error (e)
+                             (sb-thread:with-mutex (lock)
+                               (unless err (setf err e))))))))))
+            (mapc #'sb-thread:join-thread
+                  (loop repeat (min jobs n)
+                        collect (sb-thread:make-thread #'worker :name "wmc count"))))
+          (when err (error err))
+          (coerce results 'list)))))
+
 ;;; ----------------------------------------------------------------------------
 ;;; Emitting MCC-2020 weighted CNF
 ;;; ----------------------------------------------------------------------------
@@ -80,7 +142,7 @@ The authors suggest about half the memory you can spare, minus 500.")
   "A unique scratch .wcnf path (in the current directory, using FiFO's
 scratch-file naming), so a generated/deleted scratch file can never collide with
 or clobber a user's file."
-  (format nil "~A.wcnf" (make-scratch-file-root)))
+  (format nil "~A.wcnf" (wmc--scratch-root)))
 
 (defun wmc--literal-costs (weights a2i)
   "From the (WEIGHT literal w) forms, return a hash table mapping a signed DIMACS
@@ -307,7 +369,7 @@ error messages.  ADDMC prints one solution line 's wmc <value>' (or 's mc
 *SOLVER-TIMEOUT* like every other solver run, and return (values stdout stderr).
 NAME is for messages and INSTALL the install-solvers.sh name.  An exact counter
 has no partial answer, so a timeout or a non-zero exit is an error."
-  (let* ((root (make-scratch-file-root))
+  (let* ((root (wmc--scratch-root))
          (out-file (format nil "~A.counter-out" root))
          (err-file (format nil "~A.counter-err" root)))
     (unwind-protect
@@ -599,7 +661,7 @@ Returns (values out-file nvars nclauses)."
 
 (defun wmc--marginals (scnf-file counter &key out-file weighted-only keep-wcnf scale
                                               evidence evidence-file counter-args atoms
-                                              (verbose t))
+                                              (jobs *wmc-jobs*) (verbose t))
   "The body of MARGINALS-ADDMC and MARGINALS-SHARPSAT: P(a) = Z_a / Z by clamping,
 counted by COUNTER (:addmc or :sharpsat-td, with COUNTER-ARGS passed to
 WMC--COUNTER).  Each count is written with forced literals folded out (see
@@ -608,7 +670,9 @@ on the raws and the factors enter only as a difference (WMC--RATIO), so neither
 Z need fit in a double.  A clamp that unit propagation refutes is a count of 0
 without running the counter.  ATOMS, when given, restricts the clamped counts to
 those atoms -- 1 + k runs instead of 1 + n -- for a caller that needs only a few,
-as --hypotheses does; an atom the theory lacks is an error."
+as --hypotheses does; an atom the theory lacks is an error.  The clamped counts
+are independent and run JOBS at a time (default *WMC-JOBS*) after Z, which runs
+first and alone; KEEP-WCNF keeps Z's file."
   (multiple-value-bind (run dialect name) (apply #'wmc--counter counter counter-args)
     ;; NB: WEIGHT-FORMS, not the special WEIGHTS (which parse resets) -- see wmc.
     (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
@@ -632,16 +696,26 @@ as --hypotheses does; an atom the theory lacks is an error."
             (let ((i2a (make-array (1+ nvars) :initial-element nil))
                   (wcnf (wmc--scratch-wcnf)))
               (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
-              (flet ((count-with (extra-units)   ; -> (values raw log-factor)
-                       (let ((factor (with-open-file (s wcnf :direction :output
-                                                             :if-exists :supersede
-                                                             :if-does-not-exist :create)
-                                       (wmc--write-mcc clauses weight-forms a2i nvars s
-                                                       :extra-units extra-units :scale scale
-                                                       :dialect dialect :fold t))))
-                         (if (eq factor :unsat)
-                             (values 0 0.0d0)
-                             (values (funcall run wcnf) factor)))))
+              ;; COUNT-WITH writes FILE and counts it; with no FILE it uses its own
+              ;; scratch file and deletes it, which is what lets the clamped
+              ;; counts run concurrently (WMC--PARALLEL-MAP).  Everything it reads
+              ;; besides its argument is read-only here.
+              (labels ((count-in (file extra-units)   ; -> (values raw log-factor)
+                         (let ((factor (with-open-file (s file :direction :output
+                                                               :if-exists :supersede
+                                                               :if-does-not-exist :create)
+                                         (wmc--write-mcc clauses weight-forms a2i nvars s
+                                                         :extra-units extra-units :scale scale
+                                                         :dialect dialect :fold t))))
+                           (if (eq factor :unsat)
+                               (values 0 0.0d0)
+                               (values (funcall run file) factor))))
+                       (count-with (extra-units &optional file)
+                         (if file
+                             (count-in file extra-units)
+                             (let ((own (wmc--scratch-wcnf)))
+                               (unwind-protect (count-in own extra-units)
+                                 (ignore-errors (delete-file own)))))))
                 (unwind-protect
                      (let ((target-vars
                              (cond (atoms
@@ -656,14 +730,20 @@ as --hypotheses does; an atom the theory lacks is an error."
                                    ;; under --weighted-only, where P(atom)=P(formula)
                                    (t (mapcar (lambda (a) (gethash a a2i))
                                               (remove-if #'reified-formula-atom-p theory-atoms))))))
-                       (multiple-value-bind (z zf) (count-with nil)
+                       ;; Z first, alone and in WCNF (the file KEEP-WCNF keeps), so an
+                       ;; unsatisfiable theory fails before any clamp is started.
+                       (multiple-value-bind (z zf) (count-with nil wcnf)
                          (when (<= z 0)
                            (error "partition function is 0 (~A) -- ~:[the hard clauses are unsatisfiable~;the hard clauses are unsatisfiable, or a too-large :epsilon floored the count to 0; either way~], so no marginals exist"
                                   name (eq counter :addmc)))
                        (let ((results
-                               (sort (loop for v in target-vars
-                                           collect (multiple-value-bind (zt tf) (count-with (list v))
-                                                     (cons (aref i2a v) (wmc--ratio zt tf z zf))))
+                               (sort (mapcar (lambda (v zr)
+                                               (cons (aref i2a v)
+                                                     (wmc--ratio (first zr) (second zr) z zf)))
+                                             target-vars
+                                             (wmc--parallel-map
+                                              (lambda (v) (count-with (list v)))
+                                              target-vars jobs))
                                      #'string< :key (lambda (c) (format nil "~S" (car c))))))
                          (when verbose
                            (dolist (r results)
@@ -678,7 +758,7 @@ as --hypotheses does; an atom the theory lacks is an error."
 
 (defun marginals-addmc (scnf-file &key out-file weighted-only keep-wcnf scale epsilon
                                        evidence evidence-file atoms (addmc *addmc*)
-                                       (verbose t))
+                                       (jobs *wmc-jobs*) (verbose t))
   "Exact marginal P(atom = true) of every atom in a weighted .scnf, via ADDMC.
 For partition function Z and each target atom's clamped count Z_a (Z with a unit
 clause forcing the atom true), reports P(a) = Z_a / Z.  This is exact but costs
@@ -694,27 +774,30 @@ evidence -- each P(a) becomes P(a | evidence); the formulas must be ground (see
 WMC--EVIDENCE-CLAUSES).  Atoms introduced only by the evidence (e.g. Tseitin
 auxiliaries) are not themselves reported.  Prints one (MARGINAL <atom> <p>) line
 per atom (sorted) and, with OUT-FILE, also writes them there.  ATOMS restricts the
-report (and the clamped runs) to just those atoms.  Returns an alist of
-(atom . probability)."
+report (and the clamped runs) to just those atoms.  The clamped runs go JOBS at a
+time (*WMC-JOBS*).  Returns an alist of (atom . probability)."
   (wmc--marginals scnf-file :addmc
                   :out-file out-file :weighted-only weighted-only :keep-wcnf keep-wcnf
                   :scale scale :evidence evidence :evidence-file evidence-file
-                  :atoms atoms :verbose verbose
+                  :atoms atoms :jobs jobs :verbose verbose
                   :counter-args (list :addmc addmc :epsilon epsilon)))
 
 (defun marginals-sharpsat (scnf-file &key out-file weighted-only keep-wcnf scale
                                           evidence evidence-file atoms (sharpsat *sharpsat*)
                                           (decot *sharpsat-decot*)
-                                          (cache-mb *sharpsat-cache-mb*) (verbose t))
+                                          (cache-mb *sharpsat-cache-mb*)
+                                          (jobs *wmc-jobs*) (verbose t))
   "MARGINALS-ADDMC with SharpSAT-TD as the counter: the same clamping, the same
 arguments and output, but each count is SharpSAT-TD's (in the :mcc-2024 dialect)
 and comes back as an exact rational, so Z_a/Z does not underflow even where a
-double Z would.  DECOT is flowcutter's per-call budget in seconds and CACHE-MB the
-cache limit (see *SHARPSAT-DECOT*, *SHARPSAT-CACHE-MB*).  The run makes 1 + n
-calls, each paying DECOT, so on a theory with many atoms --weighted-only, or a
-small DECOT, matters."
-  (wmc--marginals scnf-file :sharpsat-td
-                  :out-file out-file :weighted-only weighted-only :keep-wcnf keep-wcnf
-                  :scale scale :evidence evidence :evidence-file evidence-file
-                  :atoms atoms :verbose verbose
-                  :counter-args (list :sharpsat sharpsat :decot decot :cache-mb cache-mb)))
+double Z would.  DECOT is flowcutter's per-call budget in seconds (see
+*SHARPSAT-DECOT*).  The run makes 1 + n calls, each paying DECOT, which is why
+they run JOBS at a time.  CACHE-MB is a TOTAL budget: each run gets CACHE-MB /
+JOBS (at least 100), so adding jobs never adds memory."
+  (let* ((jobs (max 1 jobs))
+         (per-job (if (> jobs 1) (max 100 (floor cache-mb jobs)) cache-mb)))
+    (wmc--marginals scnf-file :sharpsat-td
+                    :out-file out-file :weighted-only weighted-only :keep-wcnf keep-wcnf
+                    :scale scale :evidence evidence :evidence-file evidence-file
+                    :atoms atoms :jobs jobs :verbose verbose
+                    :counter-args (list :sharpsat sharpsat :decot decot :cache-mb per-job))))

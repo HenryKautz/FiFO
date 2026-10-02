@@ -477,7 +477,8 @@ marginals.sh <file.scnf> [options]
 | `--evidence-file <f>` | A file of ground FiFO formulas, conjoined with any `--evidence`. |
 | `--epsilon <e>` | *(addmc)* ADDMC's CUDD terminal-merging tolerance (`--ep`); default 0 = exact. A positive value trades exactness for speed/memory. |
 | `--decot <s>` | *(sharpsat-td)* Seconds of tree-decomposition search per count (default 1). Flowcutter is anytime and always spends the whole budget, and marginals make 1 + n counts, so this is a floor on the run time — keep it small unless the theory is large and hard. |
-| `--cache-mb <n>` | *(sharpsat-td)* Component-cache limit in MB (default 4000). Always passed: left to itself SharpSAT-TD sizes the cache from "free" RAM, which its macOS build reads as **total** physical memory. |
+| `--cache-mb <n>` | *(sharpsat-td)* Component-cache **budget** in MB (default 4000), split evenly across `--jobs` (at least 100 per run), so more jobs never means more memory. Always passed: left to itself SharpSAT-TD sizes the cache from "free" RAM, which its macOS build reads as **total** physical memory. |
+| `--jobs <n>` | *(addmc, sharpsat-td)* How many of the 1 + n clamped counts run at once (default 4, `*wmc-jobs*`). They are independent, so this divides the wall-clock time — measured on Switch at 4 slices (31 SharpSAT-TD counts): 25 s at 1, 9 s at 4, 6 s at 8. `Z` runs first and alone. The other back ends count once and refuse it. |
 | `--save-circuit <f>` | *(ddnnf/d4)* After compiling, persist the circuit to `<f>`; this run still reports marginals. |
 | `--circuit <f>` | *(ddnnf/d4)* Load a saved circuit and query it **without** recompiling — give this instead of a `.scnf`. Unit-literal `--evidence` reuses it; non-unit evidence recompiles from the stored clauses. `--scale` re-weights it for free. |
 | `--samples <n>` | *(mc-sat)* Retained samples (default 10 000). Monte-Carlo error falls as `1/√n`. |
@@ -911,7 +912,7 @@ need. The interpreter's own API (`parse`, `instantiate`, `propositionalize`,
 | `reweight.lisp` | The independent log-odds weight estimator, and the shared `.scnf` reader/writer. |
 | `maxent.lisp` | The exact iterative MaxEnt estimator, and `(marginals ...)` — exact marginal inference by enumeration. |
 | `plearn.lisp` | The PDDL weight-learning orchestrator behind `learn-pddl.sh`. |
-| `wmc.lisp` | The ADDMC and SharpSAT-TD bridges: `(wmc ... :counter :addmc\|:sharpsat-td)`, `(marginals-addmc ...)` and `(marginals-sharpsat ...)` — one clamping implementation, `wmc--marginals`, with the counter chosen by `wmc--counter`, which also picks the dialect each reads. SharpSAT-TD's count is parsed from its decimal output as an **exact rational** (`wmc--decimal-to-rational`), not by the Lisp reader, which would round to a double and underflow to 0 below 1e-308 — the range SharpSAT-TD's unbounded MPFR exponent exists for; the ratio `Z_a/Z` is taken before converting. (Its mantissa is MPFR's default 53 bits — SharpSAT-TD never sets a precision — so the gain over ADDMC is range, not digits.) Both counters' runs go through `run-program-to-file` (`wmc--run-counter`), so `*solver-timeout*` bounds them like any other solver run, with stderr captured for the error message. Each individual weight is still written as a double, so FiFO's own counting runs **fold** every literal that unit propagation forces out of the file into a log factor (and, in the 2024 dialect, rescale each free variable's pair so the larger weight is 1); a forced cost of 800 then gives exact marginals under either counter, a clamp refuted by propagation costs no counter run, and a weight that still will not fit — a free atom at cost ±720 — is an error naming the atom rather than a 0 written into the file. `wmc-write-wcnf` never folds, since its file must denote the theory's own `Z`. `:atoms` restricts the clamped counts, which `--hypotheses` uses. Also the MCC weighted-CNF writer and the evidence clausifier the other back ends reuse. `(wmc-write-wcnf ...)` exposes that writer on its own, with `:dialect :mcc-2020` (ADDMC's `--wf 4`, the default) or `:mcc-2024` (the post-2020 competition format SharpSAT-TD reads). The two are **not** textually interconvertible: they disagree on what an unstated literal polarity means — ADDMC defaults it to 1.0, SharpSAT-TD infers `1 − w` or refuses — so the 2024 writer states both polarities of every variable explicitly rather than leaning on a convention the two counters do not share. |
+| `wmc.lisp` | The ADDMC and SharpSAT-TD bridges: `(wmc ... :counter :addmc\|:sharpsat-td)`, `(marginals-addmc ...)` and `(marginals-sharpsat ...)` — one clamping implementation, `wmc--marginals`, with the counter chosen by `wmc--counter`, which also picks the dialect each reads. SharpSAT-TD's count is parsed from its decimal output as an **exact rational** (`wmc--decimal-to-rational`), not by the Lisp reader, which would round to a double and underflow to 0 below 1e-308 — the range SharpSAT-TD's unbounded MPFR exponent exists for; the ratio `Z_a/Z` is taken before converting. (Its mantissa is MPFR's default 53 bits — SharpSAT-TD never sets a precision — so the gain over ADDMC is range, not digits.) Both counters' runs go through `run-program-to-file` (`wmc--run-counter`), so `*solver-timeout*` bounds them like any other solver run, with stderr captured for the error message. Each individual weight is still written as a double, so FiFO's own counting runs **fold** every literal that unit propagation forces out of the file into a log factor (and, in the 2024 dialect, rescale each free variable's pair so the larger weight is 1); a forced cost of 800 then gives exact marginals under either counter, a clamp refuted by propagation costs no counter run, and a weight that still will not fit — a free atom at cost ±720 — is an error naming the atom rather than a 0 written into the file. `wmc-write-wcnf` never folds, since its file must denote the theory's own `Z`. `:atoms` restricts the clamped counts, which `--hypotheses` uses. The clamped counts run `:jobs` at a time (`wmc--parallel-map`, SBCL threads, each count in its own scratch file); because new SBCL threads see a special's **global** value, the pool captures `*solver-timeout*`/`*solver-kill-grace*` and rebinds them in each worker, and scratch-file names are drawn under a lock, since `make-scratch-file-root`'s random state is shared. Also the MCC weighted-CNF writer and the evidence clausifier the other back ends reuse. `(wmc-write-wcnf ...)` exposes that writer on its own, with `:dialect :mcc-2020` (ADDMC's `--wf 4`, the default) or `:mcc-2024` (the post-2020 competition format SharpSAT-TD reads). The two are **not** textually interconvertible: they disagree on what an unstated literal polarity means — ADDMC defaults it to 1.0, SharpSAT-TD infers `1 − w` or refuses — so the 2024 writer states both polarities of every variable explicitly rather than leaning on a convention the two counters do not share. |
 | `ddnnf.lisp` | FiFO's own d-DNNF compiler and circuit evaluator, the d4 importer, and circuit persistence. |
 | `maxterm.lisp` | The max-term bridge: `(marginals-maxterm ...)` — `1+n` MaxSAT solves per query, exclusive-group detection from the theory, and post-hoc log-odds priors. Answers a different question from the counting back ends, and labels its output `(MAXTERM-MARGINAL ...)` to say so. |
 | `mcsat.lisp` | The MC-SAT bridge: `(marginals-mcsat ...)`, the WCNF writer in MLN sign convention, CDCL seeding, and the diagnostics. |
@@ -1259,10 +1260,11 @@ exponent is unbounded, so a `Z` of 1e-348 is carried where a double underflows t
 Two costs to know. Flowcutter is anytime and always runs its whole budget
 (`--decot`, default 1 s), on **every** count — and clamping makes 1 + n counts —
 so on many atoms it is slower than ADDMC on small theories even where it is faster
-per count on large ones (pb1: 1.4 s against d4's 3.9 s for `Z`). And it must be
-given a cache limit: left to itself it sizes the cache from free RAM, which its
-macOS build reads as **total** RAM, so FiFO always passes `-cs` (`--cache-mb`,
-default 4000).
+per count on large ones (pb1: 1.4 s against d4's 3.9 s for `Z`) — which is why the
+counts run `--jobs` at a time (default 4). And it must be given a cache limit:
+left to itself it sizes the cache from free RAM, which its macOS build reads as
+**total** RAM, so FiFO always passes `-cs` (`--cache-mb`, default 4000, split
+across the jobs).
 
 *Installation notes:* the port's own README covers the build; in short,
 `./setupdev.sh` (which picks the newest Homebrew `g++-N` on macOS), never the
@@ -1272,7 +1274,10 @@ checkout's `bin/`, which is why `install-solvers.sh` builds with plain CMake
 instead. The upstream code ran flowcutter through `timeout(1)`, which macOS does
 not have; the port runs it in-process (SIGTERM to its process group after the
 budget, SIGKILL after a grace period, and an `alarm()` backstop so it cannot
-outlive a killed `sharpSAT`).
+outlive a killed `sharpSAT`). When `sharpSAT` itself is sent SIGTERM — as FiFO's
+`*solver-timeout*` does — or SIGINT/SIGHUP during the decomposition, it kills
+flowcutter and deletes both temp files before dying of the signal; a signal it
+inherited as ignored (`nohup`) stays ignored.
 
 **d4 (d4v2)**
 

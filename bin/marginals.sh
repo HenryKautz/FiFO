@@ -85,7 +85,11 @@ reach of exact counting.
   --decot <s>         (sharpsat-td only) seconds of tree-decomposition search per
                       count, in (0.0001, 10000) (default 1).  Paid on EVERY count -- 1 + #atoms of them
                       -- so keep it small unless the theory is large and hard
-  --cache-mb <n>      (sharpsat-td only) component-cache limit in MB (default 4000)
+  --cache-mb <n>      (sharpsat-td only) component-cache budget in MB (default
+                      4000), split evenly across --jobs
+  --jobs <n>          (addmc, sharpsat-td) how many of the 1 + n clamped counts
+                      run at once (default 4).  They are independent, so this
+                      divides the wall-clock time; 1 runs them in turn
   --samples <n>       (mc-sat only) number of retained samples (default 10000).
                       Monte-Carlo error falls as 1/sqrt(n)
   --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)
@@ -245,6 +249,7 @@ SCALE=""
 EPSILON=""
 DECOT=""
 CACHE_MB=""
+JOBS=""
 EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
@@ -299,6 +304,7 @@ while [[ $# -gt 0 ]]; do
     --epsilon)        [[ $# -ge 2 ]] || die "--epsilon needs an argument"; EPSILON="$2"; shift 2 ;;
     --decot)          [[ $# -ge 2 ]] || die "--decot needs an argument"; DECOT="$2"; shift 2 ;;
     --cache-mb)       [[ $# -ge 2 ]] || die "--cache-mb needs an argument"; CACHE_MB="$2"; shift 2 ;;
+    --jobs)           [[ $# -ge 2 ]] || die "--jobs needs an argument"; JOBS="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
     --save-circuit)   [[ $# -ge 2 ]] || die "--save-circuit needs an argument"; SAVE_CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
@@ -348,6 +354,9 @@ fi
 if [[ -n "$CACHE_MB" && ! "$CACHE_MB" =~ ^[1-9][0-9]*$ ]]; then die "--cache-mb must be a positive integer, got: $CACHE_MB"; fi
 [[ -z "$DECOT" || "$SOLVER" == "sharpsat-td" ]] || die "--decot applies to the sharpsat-td solver only"
 [[ -z "$CACHE_MB" || "$SOLVER" == "sharpsat-td" ]] || die "--cache-mb applies to the sharpsat-td solver only"
+if [[ -n "$JOBS" && ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then die "--jobs must be a positive integer, got: $JOBS"; fi
+[[ -z "$JOBS" || "$SOLVER" == "addmc" || "$SOLVER" == "sharpsat-td" ]] \
+  || die "--jobs applies to the addmc and sharpsat-td solvers only (the others count once, not 1 + n times)"
 # On the --hypotheses path evidence is conjoined into a combined scnf rather than
 # passed as a back-end keyword, so it works for EVERY counter, maxent included.
 if [[ ${#EVIDENCE_FORMS[@]} -gt 0 || -n "$EVFILE" ]] \
@@ -406,6 +415,7 @@ else
   [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
   [[ -n "$DECOT" ]] && KW="$KW :decot $DECOT"
   [[ -n "$CACHE_MB" ]] && KW="$KW :cache-mb $CACHE_MB"
+  [[ -n "$JOBS" ]] && KW="$KW :jobs $JOBS"
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   [[ -n "$SAMPLES" ]] && KW="$KW :samples $SAMPLES"
@@ -602,6 +612,7 @@ if [[ "$SOLVER" == "addmc" ]]; then
   [[ "$WEIGHTED_ONLY" -eq 1 ]] && KW="$KW :weighted-only t"
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
   [[ -n "$EPSILON" ]] && KW="$KW :epsilon $EPSILON"
+  [[ -n "$JOBS" ]] && KW="$KW :jobs $JOBS"
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \
@@ -622,6 +633,7 @@ if [[ "$SOLVER" == "sharpsat-td" ]]; then
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
   [[ -n "$DECOT" ]] && KW="$KW :decot $DECOT"
   [[ -n "$CACHE_MB" ]] && KW="$KW :cache-mb $CACHE_MB"
+  [[ -n "$JOBS" ]] && KW="$KW :jobs $JOBS"
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \

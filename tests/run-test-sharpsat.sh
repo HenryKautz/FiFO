@@ -253,6 +253,28 @@ if [[ "$N" == 7 ]] && cmp -s <(grep '^(HYPOTHESIS' h.out) <(grep '^(HYPOTHESIS' 
   ok "--hypotheses clamps only the hypotheses (7 sharpSAT calls, not 14)"
 else bad "--hypotheses clamps only the hypotheses (7 sharpSAT calls, not 14)" "$N calls"; fi
 
+# --- 9b'. parallel clamps: same answers, really concurrent, cache split --------
+# A logging wrapper records each run's start, end and -cs value.  Concurrency is
+# read from the ORDER of the start/end lines (+1 / -1, running maximum), which is
+# deterministic where a wall-clock speed-up would be flaky.
+printf '#!/bin/sh\necho "start $*" >> %s/par.log\n"%s" "$@"; rc=$?\necho end >> %s/par.log\nexit $rc\n' \
+  "$TMP" "$REAL" "$TMP" > wrap/sharpSAT
+chmod +x wrap/sharpSAT
+: > par.log
+PATH="$TMP/wrap:$PATH" bash "$M" "$SW" --solver sharpsat-td --jobs 1 2>/dev/null | split > j1.m
+MAX1="$(awk '/^start/{c++; if(c>m)m=c} /^end/{c--} END{print m+0}' par.log)"
+: > par.log
+PATH="$TMP/wrap:$PATH" bash "$M" "$SW" --solver sharpsat-td --jobs 4 --cache-mb 1000 2>/dev/null | split > j4.m
+MAX4="$(awk '/^start/{c++; if(c>m)m=c} /^end/{c--} END{print m+0}' par.log)"
+CS="$(grep -o -- '-cs [0-9]*' par.log | sort -u | tr '\n' ' ')"
+if [[ -s j1.m ]] && cmp -s j1.m j4.m; then ok "--jobs 4 gives the same marginals as --jobs 1"
+else bad "--jobs 4 gives the same marginals as --jobs 1" "outputs differ or empty"; fi
+if [[ "$MAX1" == 1 && "$MAX4" -ge 2 && "$MAX4" -le 4 ]]; then
+  ok "--jobs 4 runs counts concurrently (max $MAX4 at once; 1 with --jobs 1)"
+else bad "--jobs 4 runs counts concurrently" "max at once: jobs1=$MAX1 jobs4=$MAX4"; fi
+if [[ "$CS" == "-cs 250 " ]]; then ok "--cache-mb 1000 over 4 jobs gives each run -cs 250"
+else bad "--cache-mb 1000 over 4 jobs gives each run -cs 250" "got: $CS"; fi
+
 # --- 9c. ADDMC is bounded by *solver-timeout* too ------------------------------
 # A stand-in 'addmc' that never finishes: before, wmc--run-addmc had no timeout
 # and this hung forever.
@@ -265,6 +287,28 @@ OUT="$(PATH="$TMP/slow:$PATH" sbcl --noinform --non-interactive \
             (error (e) (format t \"ERROR: ~A~%\" e)))" 2>&1)"
 if grep -q 'ADDMC timed out after 2 s' <<<"$OUT"; then ok "ADDMC is bounded by *solver-timeout*"
 else bad "ADDMC is bounded by *solver-timeout*" "$(tr '\n' ' ' <<<"$OUT" | tail -c 140)"; fi
+# ... and the caller's binding reaches the WORKER THREADS: new SBCL threads see a
+# special's global value, so without the rebinding in wmc--parallel-map the
+# clamped counts would run under the default 600 s.  This stand-in ANSWERS its
+# first call -- Z, which runs alone in the main thread -- and stalls on the rest,
+# so only the workers are under test.  (A first version stalled on every call;
+# Z then timed out in the main thread and the case passed with the rebinding
+# removed, testing nothing.  Mutation-checked since: without the rebinding this
+# runs the full 60 s and fails with a different error.)
+mkdir -p slow2
+printf '#!/bin/sh\nif [ ! -f %s/slow2/first-done ]; then touch %s/slow2/first-done; echo "s wmc 1.0"; exit 0; fi\nexec sleep 60\n' \
+  "$TMP" "$TMP" > slow2/addmc
+chmod +x slow2/addmc
+T0=$SECONDS
+OUT="$(PATH="$TMP/slow2:$PATH" sbcl --noinform --non-interactive \
+  --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+  --eval "(handler-case (let ((*solver-timeout* 2) (*solver-kill-grace* 1))
+                          (marginals-addmc \"$REPO/Probability/test_marginals.scnf\" :jobs 3
+                                           :evidence nil))
+            (error (e) (format t \"ERROR: ~A~%\" e)))" 2>&1)"
+if grep -q 'ADDMC timed out after 2 s' <<<"$OUT" && (( SECONDS - T0 < 60 )); then
+  ok "a caller's *solver-timeout* reaches the parallel workers"
+else bad "a caller's *solver-timeout* reaches the parallel workers" "$((SECONDS - T0)) s: $(tr '\n' ' ' <<<"$OUT" | tail -c 120)"; fi
 
 # --- 9d. the installer's usability check agrees with sharpSAT's own lookup ------
 # sharpSAT uses $SHARPSAT_FLOWCUTTER whenever it is set, without checking it, so
@@ -293,6 +337,8 @@ refused "--epsilon refused for sharpsat-td" "--epsilon applies to the addmc" bas
 refused "--decot must be a number" "--decot must be a number of seconds" bash "$M" "$F" --solver sharpsat-td --decot fast
 refused "--decot 0 refused before Lisp loads" "in (0.0001, 10000)" bash "$M" "$F" --solver sharpsat-td --decot 0
 refused "--decot 10000 refused before Lisp loads" "in (0.0001, 10000)" bash "$W" "$F" --counter sharpsat-td --decot 10000
+refused "--jobs must be a positive integer" "--jobs must be a positive integer" bash "$M" "$F" --solver sharpsat-td --jobs 0
+refused "--jobs refused for a one-run back end" "--jobs applies to the addmc and sharpsat-td" bash "$M" "$F" --solver ddnnf --jobs 2
 refused "wmc.sh refuses a counter with no Z" "must be addmc or sharpsat-td" bash "$W" "$F" --counter maxent
 refused "wmc.sh --decot needs sharpsat-td" "--decot applies to the sharpsat-td" bash "$W" "$F" --decot 2
 

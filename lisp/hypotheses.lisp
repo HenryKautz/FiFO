@@ -197,9 +197,11 @@ run or one circuit anyway."
                             :node-limit (or (getf opts :node-limit) 5000000)))
       ((string-equal counter "addmc")
        (marginals-addmc scnf-file :verbose nil :scale scale :atoms atoms
+                                  :jobs (or (getf opts :jobs) *wmc-jobs*)
                                   :epsilon (getf opts :epsilon)))
       ((string-equal counter "sharpsat-td")
        (marginals-sharpsat scnf-file :verbose nil :scale scale :atoms atoms
+                                     :jobs (or (getf opts :jobs) *wmc-jobs*)
                                      :decot (or (getf opts :decot) *sharpsat-decot*)
                                      :cache-mb (or (getf opts :cache-mb) *sharpsat-cache-mb*)))
       ((string-equal counter "ddnnf")
@@ -433,7 +435,7 @@ cell); :per-hypothesis is R&G's difference, 2n clamped solves."
                              &key hypotheses evidence evidence-file
                                   (baseline :best-rival) (counter "maxent")
                                   priors out-file (verbose t)
-                                  scale beta node-limit epsilon decot cache-mb maxsat-solver
+                                  scale beta node-limit epsilon decot cache-mb jobs maxsat-solver
                                   samples burnin seed unitprop walk-prob temp
                                   cutoff init-cutoff init-tries (seed-from-sat t)
                                   keep-intermediates)
@@ -453,7 +455,7 @@ Results print as (HYPOTHESIS <atom> :posterior p ...), deliberately NOT as
          (prs (mapcar (lambda (c) (cons (hp--as-atom (car c)) (cdr c))) priors))
          (ev-forms (append evidence (when evidence-file (wmc--read-forms evidence-file))))
          (opts (list :scale scale :beta beta :node-limit node-limit :epsilon epsilon
-                     :decot decot :cache-mb cache-mb
+                     :decot decot :cache-mb cache-mb :jobs jobs
                      :samples samples :burnin burnin :seed seed :unitprop unitprop
                      :walk-prob walk-prob :temp temp :cutoff cutoff
                      :init-cutoff init-cutoff :init-tries init-tries
