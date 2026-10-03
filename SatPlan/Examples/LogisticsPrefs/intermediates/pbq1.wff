@@ -120,10 +120,12 @@
  (all s slices true
   (exists l location true (and (in-city l pgh) (holds (at t l) s)))))
 
-;; Preferences (soft): violated when the body fails;
+;; Preferences (soft): violated exactly when the body fails;
 ;; (weight ...) charges the metric cost of each violation
 (or (all p package true (holds (at p bos-airport) numslices))
     (pref-violated all-packages-to-bos))
+(or (not (all p package true (holds (at p bos-airport) numslices)))
+    (not (pref-violated all-packages-to-bos)))
 (weight (pref-violated all-packages-to-bos) 20)
 
 (include "../../../lisp/satplan.wff")

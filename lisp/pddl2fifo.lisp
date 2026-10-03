@@ -1057,11 +1057,22 @@ actions."
 ;;; A (preference <name> <body>) declared in the :goal or :constraints section is
 ;;; a soft requirement: violating it costs the weight given to (is-violated <name>)
 ;;; in the :metric.  We reify the body's satisfaction with a fresh proposition
-;;; (pref-violated <name>): the hard clause (or <body> (pref-violated <name>))
-;;; forces the proposition true whenever the body is false, and the soft weight
-;;; (weight (pref-violated <name>) w) charges w when it is true.  The MaxSAT solver
-;;; then minimizes total weight, so (pref-violated <name>) is true in the answer
-;;; exactly for the violated preferences.
+;;; (pref-violated <name>) as the BICONDITIONAL (pref-violated <name>) <=> (not
+;;; <body>), emitted as two hard clauses: (or <body> (pref-violated <name>)) forces
+;;; it true whenever the body is false, and (or (not <body>) (not (pref-violated
+;;; <name>))) forces it false whenever the body holds.  The soft weight (weight
+;;; (pref-violated <name>) w) charges w when it is true, so (pref-violated <name>)
+;;; is true in the answer exactly for the violated preferences.
+;;;
+;;; The second clause is redundant for MaxSAT -- an optimizer never pays an
+;;; unforced penalty -- but NOT for model counting.  With the first clause alone,
+;;; pref-violated is FREE whenever the body holds, so every plan that satisfies the
+;;; preference is counted twice, once paying the penalty: weight (1 + e^-w) where
+;;; it should be 1.  Measured on a free goal with :odds 2: P = 0.75 one-way, 2/3
+;;; (the intended "twice as likely") with both clauses.  The biconditional makes
+;;; pref-violated DETERMINED by the plan, i.e. count-neutral, as REIFY-FORMULA in
+;;; FiFO.lisp does for weighted formulas.  Each clause ORs the body with a single
+;;; literal, which FiFO always expands explicitly, so no gensym selector is added.
 
 (defun pddl-odds-value (r context)
   "Validate the R of an :odds R slot and return it as a double float."
@@ -1702,6 +1713,13 @@ the (preference ...) forms found in either section."
     (write form :stream out))
   (terpri out))
 
+(defun write-preference-reification (out name body)
+  "Write the two hard clauses of (pref-violated NAME) <=> (not BODY) to OUT;
+BODY is the already-translated preference body.  See the Preferences comment
+above PDDL-ODDS-VALUE for why the second clause is needed."
+  (write-form out `(or ,body (pref-violated ,name)))
+  (write-form out `(or (not ,body) (not (pref-violated ,name)))))
+
 (defun pddl2fifo (problem-file &key domain-file (satplan-path "satplan.wff")
                                     pddl-evidence)
   "Translate the PDDL PROBLEM-FILE (and its domain) into a FiFO wff file.
@@ -2071,13 +2089,12 @@ none)."
               ;; <name>) and charge its violation weight via a soft (weight ...).
               (when active-prefs
                 (terpri out)
-                (format out ";; Preferences (soft): violated when the body fails;~%")
+                (format out ";; Preferences (soft): violated exactly when the body fails;~%")
                 (format out ";; (weight ...) charges the metric cost of each violation~%")
                 (dolist (entry active-prefs)
                   (destructuring-bind (name body . w) entry
-                    (write-form out
-                      `(or ,(translate-preference-body name body forbidden effect-preds)
-                           (pref-violated ,name)))
+                    (write-preference-reification
+                     out name (translate-preference-body name body forbidden effect-preds))
                     (write-form out `(weight (pref-violated ,name) ,w)))))
               ;; Preference probabilities: reify as above, but give (pref-violated
               ;; <name>) a target marginal -- the weight is learned downstream.  The
@@ -2088,9 +2105,8 @@ none)."
                 (format out ";; Preference probabilities (target P(satisfied); learned)~%")
                 (dolist (entry prob-prefs)
                   (destructuring-bind (name body p) entry
-                    (write-form out
-                      `(or ,(translate-preference-body name body forbidden effect-preds)
-                           (pref-violated ,name)))
+                    (write-preference-reification
+                     out name (translate-preference-body name body forbidden effect-preds))
                     (write-form out
                       `(probability (pref-violated ,name) ,(- 1 p) (:pref ,name))))))
               ;; Per-step fluent costs: charge the cost for every slice the fluent holds.

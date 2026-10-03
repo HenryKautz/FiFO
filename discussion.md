@@ -65,13 +65,12 @@ There are three coherent ways to set up such a model:
    the natural way to think about the actions, this is the most comfortable
    path.
 
-One FiFO-specific caveat when encoding goal priors as weighted preferences: the
-preference reification is one-directional — the encoding forces `pref-violated`
-when the preference body fails, but does not force it *false* when the body
-holds. That is harmless for MaxSAT, but under weighted model counting it admits
-spurious models in which a satisfied preference still pays the violation weight.
-For recognition instances, encode disjunct priors with weights directly on
-goal-selection literals rather than through the preference machinery.
+An earlier caveat here no longer applies: the preference reification used to be
+one-directional (it forced `pref-violated` when the body failed but not *false*
+when it held), which admitted spurious models under weighted model counting.
+pddl2fifo now emits the biconditional, so `pref-violated` is determined by the
+plan and a preference weight is an exact odds factor on its body under every
+counting back end.
 
 ### References
 

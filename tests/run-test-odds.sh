@@ -143,6 +143,33 @@ else
   bad "the same :odds 2 is signed per site" "action $AC, preference $PV"
 fi
 
+# --- 5b. ...and that it MEANS twice as likely, by exact marginals -----------
+# The checks above pin the emitted number only.  A preference is a FACTOR on the
+# odds of its body, so adding (preference p1 (on s2) :odds 2) must multiply the
+# odds of (on s2) at the end by exactly 2 against the same problem without it.
+# That holds only if (pref-violated p1) is DETERMINED by the plan: the one-way
+# encoding (or body pref-violated) leaves it free when the body holds, counting
+# each such plan twice, and the factor comes out 3 (measured).  Tolerance 1e-3:
+# the odds are formed from 6-digit marginals near 0.96.
+sed 's/ (preference p1 (on s2) :odds 2)//' prob.pddl > base.pddl
+for p in prob base; do
+  bash "$BIN/planner.sh" $p.pddl --domain dom.pddl --numslices 3 --stop-after scnf \
+       >> wff.log 2>&1
+done
+GOAL='(HOLDS (ON S2) 3)'
+P1=$(bash "$BIN/marginals.sh" prob.scnf --solver maxent 2>&1 | grep -F "(MARGINAL $GOAL " | awk '{print $NF}' | tr -d ')')
+P0=$(bash "$BIN/marginals.sh" base.scnf --solver maxent 2>&1 | grep -F "(MARGINAL $GOAL " | awk '{print $NF}' | tr -d ')')
+if grep -q 'PREF' base.scnf || ! grep -q 'PREF-VIOLATED' prob.scnf; then
+  bad "a preference's :odds 2 doubles its body's odds" "fixture: base must lack, prob must have, the preference"
+elif [[ -z "$P0" || -z "$P1" ]]; then
+  bad "a preference's :odds 2 doubles its body's odds" "no marginal for $GOAL (P0='$P0' P1='$P1')"
+else
+  F=$(awk -v a="$P1" -v b="$P0" 'BEGIN{printf "%.6f", (a/(1-a))/(b/(1-b))}')
+  awk -v f="$F" 'BEGIN{d=f-2; if(d<0)d=-d; exit !(d<1e-3)}' \
+    && ok "a preference's :odds 2 doubles its body's odds (marginals)" \
+    || bad "a preference's :odds 2 doubles its body's odds" "odds factor $F, want 2 (3 = one-way encoding)"
+fi
+
 # --- 6. :odds R equals writing the number out ------------------------------
 sed "s/:odds 2/:cost -$LN2/" dom.pddl > dom-n.pddl
 sed -e "s/(on s2) :odds 3/(on s2) -$LN3/" -e "s/(on s2) :odds 2/(on s2) $LN2/" prob.pddl > prob-n.pddl
