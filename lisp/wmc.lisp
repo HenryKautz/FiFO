@@ -546,18 +546,47 @@ factors enter only as their DIFFERENCE, so neither Z need be representable."
     (with-open-file (in path :direction :input)
       (loop for f = (read in nil :eof) until (eq f :eof) collect f))))
 
-(defun wmc--evidence-clauses (evidence evidence-file)
+(defun wmc--evidence-namespace (theory)
+  "A namespace for evidence auxiliary atoms that THEORY does not already use:
+EVIDENCE, else EVIDENCE2, EVIDENCE3, ...  THEORY is the list of (OR ...) clauses
+the evidence will be conjoined with, or a hash table keyed by its atoms.  A
+theory can hold evidence atoms of its own -- hypotheses.lisp writes conditioned
+theories to disk -- and conditioning one AGAIN must not reuse their names, or
+two unrelated definitions would be forced equal."
+  (let ((used (make-hash-table)))
+    (flet ((note (atom)
+             (when (and (auxiliary-atom-p atom) (cddr atom))
+               (setf (gethash (second atom) used) t))))
+      (if (hash-table-p theory)
+          (maphash (lambda (atom v) (declare (ignore v)) (note atom)) theory)
+          (dolist (cl theory)
+            (dolist (lit (cdr cl)) (note (rw--literal-atom-and-sign lit))))))
+    (loop for k from 1
+          for ns = (if (= k 1)
+                       'evidence
+                       (intern (format nil "EVIDENCE~D" k) (symbol-package 'evidence)))
+          unless (gethash ns used) return ns)))
+
+(defun wmc--evidence-clauses (evidence evidence-file &optional theory)
   "Clausify ground FiFO EVIDENCE formulas (a list of forms) plus the forms in
 EVIDENCE-FILE into hard (OR ...) clauses, using FiFO's parser, to be conjoined
-with the theory -- i.e. to condition on them.  The formulas must be GROUND
+with THEORY -- i.e. to condition on it.  The formulas must be GROUND
 (propositional, over atoms already named in the scnf): grounding a quantified or
 parametric formula needs the domains in the .wff, which the scnf has discarded.
-Returns the list of clauses (possibly empty)."
+THEORY (its clauses, or a hash keyed by its atoms) is consulted only to pick an
+auxiliary-atom namespace it does not already use; pass it whenever the result
+will be conjoined with it.  Returns the list of clauses (possibly empty)."
   (let ((forms (append evidence
                        (when evidence-file (wmc--read-forms evidence-file)))))
     (when forms
       (handler-case
-          (parse forms) ; resets FiFO's globals; we read the scnf separately, so harmless
+          ;; (parse ...) resets FiFO's globals -- harmless, as the scnf is read
+          ;; separately -- but it also restarts auxiliary-atom numbering at 1,
+          ;; while these clauses are conjoined with a theory that has its own
+          ;; (TSEITIN 1), and possibly (TSEITIN EVIDENCE 1) from an earlier
+          ;; conditioning.  The namespace keeps them apart.
+          (let ((*aux-atom-namespace* (wmc--evidence-namespace theory)))
+            (parse forms))
         (error (c)
           (error "could not clausify evidence ~S:~%  ~A~%Evidence must be a GROUND formula over atoms already in the scnf; quantified or parametric evidence needs the .wff (re-instantiate with the assertion added)."
                  forms c))))))
@@ -606,7 +635,7 @@ WCNF-FILE was given explicitly."
       (let* ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
                                    weight-forms))
              (scale (rw--resolve-scale scnf-file scale verbose))
-             (evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+             (evidence-clauses (wmc--evidence-clauses evidence evidence-file clauses))
              (clauses (append clauses evidence-clauses)))
         (when (and verbose evidence-clauses)
           (format t "; conditioning on ~D evidence clause~:P~%" (length evidence-clauses)))
@@ -646,7 +675,7 @@ Returns (values out-file nvars nclauses)."
     (let* ((weight-atoms (mapcar (lambda (wf) (rw--literal-atom-and-sign (second wf)))
                                  weight-forms))
            (scale (rw--resolve-scale scnf-file scale verbose))
-           (evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+           (evidence-clauses (wmc--evidence-clauses evidence evidence-file clauses))
            (clauses (append clauses evidence-clauses)))
       (when (and verbose evidence-clauses)
         (format t "; conditioning on ~D evidence clause~:P~%" (length evidence-clauses)))
@@ -685,7 +714,7 @@ first and alone; KEEP-WCNF keeps Z's file."
           (when verbose (format t "; no weighted atoms in ~A~%" scnf-file))
           (return-from wmc--marginals nil))
         (setf scale (rw--resolve-scale scnf-file scale verbose))
-        (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+        (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file clauses))
                ;; report only theory atoms (and weighted atoms), never evidence-only auxiliaries
                (theory-atoms (remove-duplicates (append (wmc--clause-atoms clauses) weight-atoms)
                                                 :test #'equal :from-end t))
@@ -725,11 +754,12 @@ first and alone; KEEP-WCNF keeps Z's file."
                                             atoms))
                                    (weighted-only
                                     (mapcar (lambda (a) (gethash a a2i)) weight-atoms))
-                                   ;; hide internal reification atoms from the default
-                                   ;; listing (also skips a counter run each); they show
-                                   ;; under --weighted-only, where P(atom)=P(formula)
+                                   ;; hide auxiliary atoms (reification, Tseitin) from
+                                   ;; the default listing (also skips a counter run
+                                   ;; each); reified ones show under --weighted-only,
+                                   ;; where P(atom)=P(formula)
                                    (t (mapcar (lambda (a) (gethash a a2i))
-                                              (remove-if #'reified-formula-atom-p theory-atoms))))))
+                                              (remove-if #'auxiliary-atom-p theory-atoms))))))
                        ;; Z first, alone and in WCNF (the file KEEP-WCNF keeps), so an
                        ;; unsatisfiable theory fails before any clamp is started.
                        (multiple-value-bind (z zf) (count-with nil wcnf)

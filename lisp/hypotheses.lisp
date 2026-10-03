@@ -102,19 +102,15 @@ silent failure plan--resolve-evidence exists to catch."
     (when dups
       (error "hypothesis ~S given more than once" (first dups)))))
 
-(defun hp--auxiliary-atom-p (a)
-  "An atom the clausifier itself minted -- a Tseitin selector gensym (uninterned)
-or a reified-formula atom.  These legitimately do not occur in the theory."
-  (or (and (symbolp a) (null (symbol-package a)))
-      (reified-formula-atom-p a)))
-
 (defun hp--check-evidence (ev-clauses atoms)
   "Every atom the evidence names must already be in the theory.  FiFO's parser
 mints a fresh proposition for one that is not, and that proposition occurs in no
 other clause -- so the evidence would CONSTRAIN NOTHING and the run would quietly
 report the unconditioned answer.  Exactly the failure plan--resolve-evidence
 exists to catch on the planner side, and it is just as silent here."
-  (let ((strays (remove-if (lambda (a) (or (hp--auxiliary-atom-p a)
+  ;; An auxiliary atom the clausifier minted for the evidence itself legitimately
+  ;; does not occur in the theory; any other missing atom is a stray.
+  (let ((strays (remove-if (lambda (a) (or (evidence-aux-atom-p a)
                                            (member a atoms :test #'equal)))
                            (wmc--clause-atoms ev-clauses))))
     (when strays
@@ -265,8 +261,8 @@ Returns (values deltas n-unproved beta)."
            (b (or (getf opts :beta) (/ 1d0 sc)))
            (soft-atoms (mapcar (lambda (w) (nth-value 0 (rw--literal-atom-and-sign (second w))))
                                weight-forms))
-           (pos (wmc--evidence-clauses ev-forms nil))
-           (neg (wmc--evidence-clauses (list (hp--negate-forms ev-forms)) nil)))
+           (pos (wmc--evidence-clauses ev-forms nil clauses))
+           (neg (wmc--evidence-clauses (list (hp--negate-forms ev-forms)) nil clauses)))
       ;; One index over EVERY atom either side can mention, so the two clause
       ;; sets speak the same variable numbering.
       (multiple-value-bind (a2i nvars)
@@ -326,7 +322,8 @@ the theory entails it or we merely assumed it."
   "The exact counters.  :per-hypothesis is two back-end runs and a division --
 see THE IDENTITY in the file header; :best-rival is the single conditioned run
 marginals.sh already does."
-  (let* ((ev-clauses (wmc--evidence-clauses ev-forms nil))
+  (let* ((ev-clauses (wmc--evidence-clauses ev-forms nil
+                                            (and ev-forms (nth-value 0 (rw--read-scnf scnf-file)))))
          (cond-file (hp--combined-scnf scnf-file ev-clauses "hypev"))
          (cond-m (hp--marginals cond-file counter opts hyps))
          (uncond-m (when (eq baseline :per-hypothesis)
@@ -482,9 +479,9 @@ Results print as (HYPOTHESIS <atom> :posterior p ...), deliberately NOT as
       (declare (ignore probs file-opts))
       (let ((theory-atoms (hp--theory-atoms clauses weight-forms)))
         (hp--check-hypotheses hyps theory-atoms scnf-file)
-        (hp--check-evidence (wmc--evidence-clauses ev-forms nil) theory-atoms))
+        (hp--check-evidence (wmc--evidence-clauses ev-forms nil clauses) theory-atoms))
       (let* ((prior-v (hp--priors-vector hyps prs))
-             (excl (hp--exclusivity clauses (wmc--evidence-clauses ev-forms nil) hyps))
+             (excl (hp--exclusivity clauses (wmc--evidence-clauses ev-forms nil clauses) hyps))
              (rows (if (string-equal counter "max-term")
                        (hp--maxterm-rows scnf-file hyps ev-forms baseline prior-v prs
                                          opts verbose)

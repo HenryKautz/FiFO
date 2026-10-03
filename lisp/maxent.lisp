@@ -497,10 +497,11 @@ an alist (atom . probability)."
                                           collect (cons (aref i2a v) (aref m b)))
                                     #'string-lessp
                                     :key (lambda (pair) (princ-to-string (car pair))))))
-                  ;; Suppress internal reification atoms from the default listing;
-                  ;; they still show under --weighted-only (P(atom) = P(formula)).
+                  ;; Suppress auxiliary atoms (reification, Tseitin) from the default
+                  ;; listing; reified ones still show under --weighted-only
+                  ;; (P(atom) = P(formula)).
                   (unless weighted-only
-                    (setq result (remove-if #'reified-formula-atom-p result :key #'car)))
+                    (setq result (remove-if #'auxiliary-atom-p result :key #'car)))
                   (flet ((emit (stream)
                            (dolist (pair result)
                              (format stream "(MARGINAL ~S ~,6F)~%" (car pair) (cdr pair)))))

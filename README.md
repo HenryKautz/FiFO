@@ -396,7 +396,9 @@ The input formulas need not be in conjunctive normal form. Converting a formula 
 
 the size of the output CNF is $O(MLD^N)$.
 
-When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to a model of the output formula.
+When new propositions are introduced in this manner, the relationship between the input and output formulas is that the output formula entails the input formula and any model of the input formula can be extended to **exactly one** model of the output formula. Each new proposition is *defined* — it is a function of the user's propositions — so the encoding preserves not just satisfiability but the number of models, which is what makes it safe for model counting and marginal inference as well as for SAT and MaxSAT.
+
+The new propositions are written `(TSEITIN n)`, numbered in order, and are left out of answers and marginal listings. For an OR of two sub-formulas whose clause lists are L and R, a selector S is defined as one of them (S ⇔ D, D being whichever of L, R is cheaper to define) and the disjunction becomes "S or the other side"; to define S as a conjunction of clauses, each multi-literal clause d gets its own proposition H ⇔ d. These definitions are asserted at top level rather than inside the formula, because an enclosing OR would otherwise be distributed over them and switch them off. Small ORs are multiplied out instead (when |L|·|R| ≤ |L|+|R|+1). Weighted formulas are encoded the same way. Because the names are FiFO's own, `TSEITIN` and `WEIGHTED-FORMULA` are reserved: a predicate with either name is an error.
 
 ## Common Binary Relationship Patterns
 
@@ -801,7 +803,7 @@ This runs `solve` on `tests_solve/<testname>.wff`, writes `tests_solve/<testname
 diff tests_solve/<testname>.answer gold_solve/<testname>_gold.answer
 ```
 
-**Note:** Gensym symbols (`#:XXnnn`) in instantiate output will have different numbers across SBCL sessions. When gensyms are present, compare clause counts and structure rather than exact text.
+**Note:** instantiate output is deterministic: the compact encoding's auxiliary propositions are numbered `(TSEITIN 1)`, `(TSEITIN 2)`, … in order. They used to be uninterned gensyms (`#:XXnnn`), which not only varied between sessions but did not survive being written to an `.scnf` and read back (each occurrence became a different atom), silently dropping the constraint. Every `.scnf` reader now refuses a file containing one; regenerate it.
 
 ### Known limitation: compact-encoding and nested exists
 

@@ -33,9 +33,12 @@ _fifo_print_answer() {   # _fifo_print_answer <answer-file>
     return 1
   fi
   verdict="$(head -1 "$f" | tr -d '\r')"
-  # Payload lines are the s-expressions after the verdict.  (*OBJECTIVE* N) is
-  # metadata rather than part of the model, so it is counted separately.
-  n=$(grep -c '^(' "$f" 2>/dev/null)
+  # Payload lines are the non-empty lines after the verdict.  NOT just those
+  # starting with '(': a 0-ary atom is written bare (A, not (A)), and counting
+  # parenthesised lines only reported "0 atom(s)" above a list of them.
+  # (*OBJECTIVE* N) is metadata rather than part of the model, so it is
+  # counted separately.
+  n=$(tail -n +2 "$f" | grep -c '[^[:space:]]')
   obj=$(grep -c '^(\*OBJECTIVE\*' "$f" 2>/dev/null)
   n=$(( n - obj ))
 

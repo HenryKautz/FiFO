@@ -335,7 +335,7 @@ which case the marginals are the starting assignment and must not be used."
         (when verbose (format t "; no weighted atoms in ~A~%" scnf-file))
         (return-from marginals-mcsat nil))
       (setf scale (rw--resolve-scale scnf-file scale verbose))
-      (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file))
+      (let* ((evidence-clauses (wmc--evidence-clauses evidence evidence-file clauses))
              ;; report only theory atoms (and weighted atoms), never evidence-only auxiliaries
              (theory-atoms (remove-duplicates (append (wmc--clause-atoms clauses) weight-atoms)
                                               :test #'equal :from-end t))
@@ -366,10 +366,10 @@ which case the marginals are the starting assignment and must not be used."
                       (ignore-errors (delete-file wcnf))))
               (let* ((targets (if weighted-only
                                   weight-atoms
-                                  ;; hide internal reification atoms from the default
-                                  ;; listing; they show under --weighted-only, where
-                                  ;; P(atom) = P(the reified formula)
-                                  (remove-if #'reified-formula-atom-p theory-atoms)))
+                                  ;; hide auxiliary atoms (reification, Tseitin) from
+                                  ;; the default listing; reified ones show under
+                                  ;; --weighted-only, where P(atom) = P(the formula)
+                                  (remove-if #'auxiliary-atom-p theory-atoms)))
                      (efficiency (mcsat--efficiency diagnostics))
                      (frozen (mcsat--frozen-p diagnostics))
                      (results (sort (loop for a in targets

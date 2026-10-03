@@ -2,6 +2,10 @@
 
 (ql:quickload :cl-ppcre :silent t)
 
+;; Auxiliary-atom predicates and the scnf gensym guard, shared with reweight.lisp
+;; (which the counting chain loads without this file).
+(load (merge-pathnames "auxatoms.lisp" (or *load-pathname* *default-pathname-defaults*)))
+
 ;; SAT program used by satisfy
 (defvar *solver* "kissat")
 
@@ -150,6 +154,42 @@ exactly where it was."
 ;; convention (like pddl2fifo's pref-violated / ObsDone atoms) -- do NOT add it to
 ;; reserved-words, or parse-name would reject the very atoms reify-formula builds.
 (defvar *reified-formula-counter* 0)
+;; Counter for the compact encoding's (TSEITIN <n>) selector atoms (see
+;; multiply-clauses).  Same lifetime as *reified-formula-counter*: reset per parse,
+;; CONTINUED by parse-same-env -- which is what keeps the planner's evidence scnf
+;; and prove's query clauses from reusing the theory's numbers.
+(defvar *tseitin-counter* 0)
+;; The DEFINING clauses of the (TSEITIN <n>) atoms minted in the current
+;; theory-building scope (see clauses-with-definitions), asserted at top level.
+;; They are kept apart from the formula's own clauses because an enclosing OR
+;; distributes over those: a definition that came back to multiply-clauses as
+;; part of L or R would gain the other disjunct, (x or (not S) or d), and stop
+;; defining S whenever x held -- leaving S free there, and every such model
+;; counted more than once.  Its global value is :NONE, so minting a selector
+;; OUTSIDE a scope is an error rather than a definition silently dropped.
+(defvar *tseitin-definitions* :none)
+
+(defun clauses-with-definitions (thunk)
+  "Call THUNK, which parses formulas into clause lists, and return its clauses
+followed by the definitions of every TSEITIN atom it minted.  The ONLY way a
+parse becomes a theory -- parse-same-env and prove's queries go through it --
+so no caller can forget the definitions, and none can leak from one parse into
+the next."
+  (let ((*tseitin-definitions* '()))
+    (let ((clauses (funcall thunk)))
+      (append clauses (reverse *tseitin-definitions*)))))
+;; *aux-atom-namespace* is defined in auxatoms.lisp.
+;; The one auxiliary atom a parse may legitimately mention: reify-formula parses
+;; the biconditional for the (WEIGHTED-FORMULA n) it has just minted.  Any other
+;; user-written (TSEITIN ...) / (WEIGHTED-FORMULA ...) is refused by
+;; parse-proposition.  Declared here, before reify-formula binds it.
+(defvar *aux-atom-being-defined* nil)
+
+(defun make-aux-atom (kind n)
+  "The auxiliary atom (KIND n), or (KIND namespace n) under *aux-atom-namespace*."
+  (if *aux-atom-namespace*
+      (list kind *aux-atom-namespace* n)
+      (list kind n)))
 ;; Output format for weighted cnf files: CNF (cw comment lines), WCNF-OLD
 ;; (old DIMACS "p wcnf" format), or WCNF (2022 DIMACS format with h lines)
 (defvar *cnf-format* 'CNF)
@@ -465,6 +505,9 @@ banner."
                         :static-list
                         (loop while (not (eql 'EOF (setq STATIC-FACT (read OBS nil 'EOF))))
                               collect STATIC-FACT))))
+            ;; Check EVERY clause before writing any, so a failure cannot leave a
+            ;; truncated theory behind in the superseded file.
+            (dolist (C CL) (scnf-check-no-gensyms C WFFFILE))
             (loop for C in CL do (format OUTS "~S~%" C))
             (loop for W in Weights do (format OUTS "~S~%" W))
             (loop for P in Probabilities do (format OUTS "~S~%" P))
@@ -510,6 +553,7 @@ or maxent.lisp)."
                                                (member (car clause) '(or weight option)))
                                     (error "malformed scnf form (expected (OR ...), (WEIGHT ...), or (OPTION ...)): ~S"
                                            clause))
+                                  (scnf-check-no-gensyms clause SCNFFILE)
                                collect clause))))
           (clauses (remove-if (lambda (f) (member (car f) '(weight option))) all-forms))
           (weights (remove-if-not (lambda (f) (eql (car f) 'weight)) all-forms))
@@ -615,7 +659,10 @@ or maxent.lisp)."
                       ;; Remove negative integers
                       (setq solndata (remove-if (lambda (x) (<= x 0)) solndata)))))
               ;; call soln2lit to create sorted list of true literals
-              (setq litdata (soln2lit mapdata solndata sort-by-time))
+              ;; (TSEITIN ...) selectors are clausification artefacts, not part of
+              ;; the model anyone asked for, so they are left out of the answer.
+              (setq litdata (remove-if #'tseitin-atom-p
+                                       (soln2lit mapdata solndata sort-by-time)))
               ;; Print list of true literals to outfile, with the objective (if any) first.
               (with-open-file (OS SOLNFILE :direction :output :if-exists :supersede)
                 (format OS "SAT~%")
@@ -864,7 +911,8 @@ argument beats a prior setq and neither outlives SOLVE."
              (dom (cadar notfound))
              ;; construct-query expects (var (term...)) for both found and notfound
              (query (construct-query (append found notfound) test qbody))
-             (wff (append (mapcar (lambda (c) (cons 'or c)) (parse-schema query))
+             (wff (append (mapcar (lambda (c) (cons 'or c))
+                                  (clauses-with-definitions (lambda () (parse-schema query))))
                           assumptions))
              (result (test-scnf wff)))
         (if debugp
@@ -939,7 +987,9 @@ argument beats a prior setq and neither outlives SOLVE."
               ;; extraction.
               (multiple-value-bind (sat-result model)
                   (test-scnf (append (mapcar (lambda (c) (cons 'or c))
-                                             (parse-schema (construct-query notfound test qbody)))
+                                             (clauses-with-definitions
+                                              (lambda () (parse-schema
+                                                          (construct-query notfound test qbody)))))
                                      assumptions))
                 (cond ((eq sat-result 'SAT)
                         (values 'COUNTEREXAMPLE model))
@@ -977,6 +1027,7 @@ argument beats a prior setq and neither outlives SOLVE."
   (setq Probabilities nil)
   (clrhash *probability-gids*)
   (setq *reified-formula-counter* 0)
+  (setq *tseitin-counter* 0)
   (setf (gethash 'TRUE StaticPredicates) 1)
   (setf (gethash 'TRUE StaticLiterals) 1)
   (setf (gethash 'FALSE StaticPredicates) 1)
@@ -992,7 +1043,7 @@ argument beats a prior setq and neither outlives SOLVE."
   (assign-probability-gids SCHEMA-LIST)
   (mapcar #'(lambda (c) (cons 'or c))
     (remove-valid-clauses
-     (parse-schema-list SCHEMA-LIST))))
+     (clauses-with-definitions (lambda () (parse-schema-list SCHEMA-LIST))))))
 
 ;; Global variables used by parse statics
 (defvar new-static)
@@ -1046,7 +1097,11 @@ argument beats a prior setq and neither outlives SOLVE."
   ;; positive literal; take the car of each clause to recover it.
   ;; static-body-mode prevents parse-formula from treating static
   ;; predicates as truth-value checks so newly derived literals get asserted.
-  (let ((static-body-mode t))
+  ;; Static bodies admit no OR, so no Tseitin definitions arise.  Bound to :NONE
+  ;; so that, were one minted here, it would be an error rather than a
+  ;; definition attached to the theory being parsed around it.
+  (let ((static-body-mode t)
+        (*tseitin-definitions* :none))
     (parse-unit-statics (mapcar #'car (parse-schema FORM)))))
 
 ;; Recursive version of remove-valid-clauses blew up recursion stack
@@ -1100,27 +1155,22 @@ forms in the or/not/implies/equiv contexts, where they have no non-degenerate
 meaning (a weight/probability form contributes no clause of its own)."
   (and (consp F) (member (car F) '(weight probability))))
 
-(defun reified-formula-atom-p (atom)
-  "True for a fresh auxiliary atom (WEIGHTED-FORMULA n) minted by reify-formula.
-Marginal reporters use this to suppress these internal atoms from the default
-(all-atoms) listing; they still surface under --weighted-only, since P(that atom)
-is exactly P(the reified formula)."
-  (and (consp atom) (eq (car atom) 'WEIGHTED-FORMULA)))
-
 (defun reify-formula (phi)
   "Reify the compound formula PHI into a fresh determined atom
 A = (WEIGHTED-FORMULA n) plus the hard clauses of the biconditional A <=> PHI.
 Because A is fully determined by PHI, the biconditional constrains nothing about
 PHI's own atoms (it is count-neutral under weighted model counting), so P(A) =
 P(PHI): attaching a weight or target marginal to A applies it exactly when PHI
-holds.  The biconditional is expanded with *compact-encoding* disabled so it
-introduces no gensym selector atoms -- those would not survive the scnf ~S
-round-trip (each #:XXn reads back as a distinct symbol).  PHI is parsed in the
-current binding environment, so this works per-grounding inside all/exists.
-Returns (values A clauses)."
+holds.  The biconditional is expanded with the CURRENT *compact-encoding*: its
+selectors are defined (TSEITIN n) atoms, count-neutral like A itself.  (It used
+to be expanded with the compact encoding forced off, because the selectors were
+gensyms that did not survive the scnf round trip -- which made a weight on a
+quantified formula exponential: 735 clauses for an exists over six values whose
+unweighted form takes 23.)  PHI is parsed in the current binding environment, so
+this works per-grounding inside all/exists.  Returns (values A clauses)."
   (let* ((n (incf *reified-formula-counter*))
-         (atom (list 'WEIGHTED-FORMULA n))
-         (*compact-encoding* nil))
+         (atom (make-aux-atom 'WEIGHTED-FORMULA n))
+         (*aux-atom-being-defined* atom))
     (values atom (parse-equiv (list atom phi)))))
 
 (defun odds-to-cost (r context)
@@ -1420,17 +1470,73 @@ solve.sh / map.sh flag."
 
 (defun multiply-clauses (L R)
   (let ((result
+          ;; Multiply out when the product is no bigger than |L|+|R|+1.  This is
+          ;; the old cutoff (min < 2 or |L|+|R| < 5) plus the 2-by-3 case, where
+          ;; the defined selector costs 14 clauses and 3 new atoms against a
+          ;; product of 6.  Do NOT compare the product against the selector's
+          ;; full LOCAL cost instead: that multiplies out more small ORs, whose
+          ;; longer clauses make every selector above them dearer -- measured,
+          ;; test_alldiff went from 6824 clauses to 19143 and nested-exists from
+          ;; 388 to 635.
           (if (or (null *compact-encoding*)
-                  (< (length L) 2)
-                  (< (length R) 2)
-                  (< (+ (length L) (length R)) 5))
+                  (<= (* (length L) (length R)) (+ (length L) (length R) 1)))
               (explicit-multiply-clauses L R)
-              (let ((g (gensym "XX"))) ;; g selects whether L or R must be true
-                (append (mapcar #'(lambda (c) (cons g c)) R)
-                        (mapcar #'(lambda (c) (cons (list 'not g) c)) L))))))
+              (tseitin-or L R))))
     (trace-message "[TRACE] Multiply: ~D x ~D -> ~D clauses~%"
                    (length L) (length R) (length result))
     result))
+
+(defun tseitin-or (L R)
+  "Clauses of (L or R), where L and R are clause lists, via a selector atom S
+DEFINED as one side: S <=> D, where D is whichever of L, R is cheaper to define
+and O is the other.  RETURNS only
+    (not S) -> O  S or o               for each clause o of O
+which is (L or R) given the definition, and PUSHES the definition of S onto
+*tseitin-definitions*, to be asserted unconditionally at top level:
+    S -> D        (not S) or d         for each clause d of D
+    D -> S        S or (not d1) or ... the negations of D's clauses
+To negate a non-unit clause d, a second atom H <=> d is minted, d being a
+disjunction: (not H) or d, and H or (not x) for each literal x of d.  The
+definitions must stay out of the returned clauses: an enclosing OR distributes
+over those, and a definition weakened that way no longer defines anything.
+
+Every new atom is a FUNCTION of the theory's own atoms, so each model of
+(L or R) extends to EXACTLY ONE model of these clauses: satisfiability, MaxSAT
+optima, model counts and marginals are all unchanged.  The selector this
+replaces was a free gensym with only the first two clause groups -- free
+whenever both sides held, so every such model was counted twice -- and, being
+uninterned, it did not even survive the scnf round trip (see auxatoms.lisp).
+The cost is linear: one clause per literal of each non-unit clause of D, plus
+one per clause, against the |L|*|R| clauses of the explicit product."
+  (when (eq *tseitin-definitions* :none)
+    (error "internal: the compact encoding minted a selector outside a ~
+clauses-with-definitions scope, so its definition would be lost"))
+  (multiple-value-bind (D O) (if (<= (tseitin-definition-cost L) (tseitin-definition-cost R))
+                                 (values L R)
+                                 (values R L))
+      (let* ((s (make-aux-atom 'TSEITIN (incf *tseitin-counter*)))
+             (not-s (list 'not s))
+             (negations '())
+             (definitions '())
+             (d-has-empty nil))
+        (dolist (d D)
+          (cond ((null d) (setq d-has-empty t))      ; D is false: S is forced false
+                ((null (cdr d)) (push (complement-literal (car d)) negations))
+                (t (let ((h (make-aux-atom 'TSEITIN (incf *tseitin-counter*))))
+                     (push (cons (list 'not h) d) definitions)            ; H -> d
+                     (dolist (x d)                                        ; d -> H
+                       (push (list h (complement-literal x)) definitions))
+                     (push (list 'not h) negations)))))
+        (dolist (c (append (mapcar (lambda (c) (cons not-s c)) D)
+                           (unless d-has-empty (list (cons s (nreverse negations))))
+                           (nreverse definitions)))
+          (push c *tseitin-definitions*))
+        (mapcar (lambda (c) (cons s c)) O))))
+
+(defun tseitin-definition-cost (side)
+  "Clauses needed, beyond one per clause, to define a selector as SIDE: |d|+1
+for each multi-literal clause d (its H <=> d), 0 for a unit."
+  (loop for c in side when (cdr c) sum (1+ (length c))))
 
 (defun merge-clauses (C1 C2)
   (remove-duplicates (append C1 C2) :test #'equal))
@@ -1753,9 +1859,21 @@ bound.  Referencing a bound domain symbol returns the stored list verbatim."
 (defun parse-proposition (P)
   (cond ((null P) (error "Unexpected empty set"))
         ((atom P) P)
-        (t (let ((name (parse-name (car P)))
-                 (args (parse-terms (cdr P))))
-             (if (null args) name (cons name args))))))
+        (t (let* ((name (parse-name (car P)))
+                  (args (parse-terms (cdr P)))
+                  (prop (if (null args) name (cons name args))))
+             ;; TSEITIN and WEIGHTED-FORMULA name FiFO's own auxiliary atoms.  A
+             ;; user atom spelled the same way would BE that atom -- a (tseitin 1)
+             ;; of the user's constrains the compact encoding's selector, and
+             ;; interpret would drop it from the answer -- so they are reserved.
+             ;; Not via reserved-words, which parse-name applies to the bare
+             ;; symbol and would also reject the atoms FiFO itself builds.
+             (when (and (auxiliary-atom-p prop)
+                        (not (equal prop *aux-atom-being-defined*)))
+               (error "~S: ~A is reserved for FiFO's auxiliary atoms (the compact ~
+encoding's selectors and reified weighted formulas); rename the predicate"
+                      prop (car prop)))
+             prop))))
 
 (defun parse-terms (TERMS)
   (cond ((null TERMS) nil)

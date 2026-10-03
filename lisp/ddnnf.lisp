@@ -645,12 +645,17 @@ times the evidence clamp factor."
 ;;; Evidence: ground literals clamp (reuse); anything else recompiles
 ;;; ----------------------------------------------------------------------------
 
-(defun ddnnf--form-clause->ints (clause a2i)
+(defun ddnnf--form-clause->ints (clause a2i &optional new-var)
   "Convert a ground FiFO (OR lit ...) form to a list of signed DIMACS literals,
-erroring if any atom is not already in the theory."
+erroring if any atom is not already in the theory -- except an auxiliary atom
+the clausifier minted for the evidence itself, e.g. (TSEITIN EVIDENCE 1), which
+by construction is in no theory: NEW-VAR, when given, is called on it and must
+return a fresh variable (and record it in A2I).  Only NAMESPACED auxiliaries
+qualify: a stray (TSEITIN 9) given a fresh variable would constrain nothing."
   (mapcar (lambda (lit)
             (multiple-value-bind (atom positivep) (rw--literal-atom-and-sign lit)
-              (let ((i (gethash atom a2i)))
+              (let ((i (or (gethash atom a2i)
+                           (and new-var (evidence-aux-atom-p atom) (funcall new-var atom)))))
                 (unless i
                   (error "evidence atom ~S is not in the theory; evidence must be ground over existing atoms"
                          atom))
@@ -662,27 +667,46 @@ erroring if any atom is not already in the theory."
 evidence becomes a CLAMP and the compiled circuit is reused; any non-unit evidence
 clause is added as a hard clause and the circuit is recompiled (no reuse).
 Returns (values circuit* clamp)."
-  (let ((ev (wmc--evidence-clauses evidence evidence-file)))
+  (let ((ev (wmc--evidence-clauses evidence evidence-file (ddnnf-a2i circuit))))
     (if (null ev)
         (values circuit nil)
-        (let ((units '()) (nonunits '()) (clamp (make-hash-table)))
+        (let* ((units '()) (nonunits '()) (clamp (make-hash-table))
+               ;; Compound evidence may mint auxiliary atoms (Tseitin selectors)
+               ;; the compiled theory has no variable for.  They get fresh
+               ;; variables in a COPY of the map (the circuit's own is untouched)
+               ;; and force a recompile, since a clamp cannot name them.  The copy
+               ;; is made only when one is present, so the common case -- unit
+               ;; evidence clamped onto a reused circuit -- pays nothing for it.
+               (a2i (if (some (lambda (a) (and (evidence-aux-atom-p a)
+                                               (not (gethash a (ddnnf-a2i circuit)))))
+                              (wmc--clause-atoms ev))
+                        (let ((copy (make-hash-table :test #'equal)))
+                          (maphash (lambda (k v) (setf (gethash k copy) v)) (ddnnf-a2i circuit))
+                          copy)
+                        (ddnnf-a2i circuit)))
+               (nvars (ddnnf-nvars circuit))
+               (new-var (lambda (atom) (setf (gethash atom a2i) (incf nvars)))))
           (dolist (cl ev)
-            (let ((ints (ddnnf--form-clause->ints cl (ddnnf-a2i circuit))))
+            (let ((ints (ddnnf--form-clause->ints cl a2i new-var)))
               (if (null (cdr ints))
                   (let ((l (car ints)))
                     (push l units)
                     (setf (gethash (abs l) clamp) (if (plusp l) 1 -1)))
                   (push ints nonunits))))
           (cond
-            (nonunits
+            ((or nonunits (> nvars (ddnnf-nvars circuit)))
              (let ((newc (ddnnf--build
                           (ddnnf--normalize-clauses
                            (append (ddnnf-clauses circuit) nonunits (mapcar #'list units)))
-                          (ddnnf-nvars circuit) (ddnnf-a2i circuit)
+                          nvars a2i
                           (ddnnf-leaf-cost circuit) (ddnnf-scale circuit))))
                (when verbose
-                 (format t "; evidence has ~D non-unit clause~:P; recompiled (circuit not reused)~%"
-                         (length nonunits)))
+                 (if nonunits
+                     (format t "; evidence has ~D non-unit clause~:P; recompiled (circuit not reused)~%"
+                             (length nonunits))
+                     (format t "; evidence introduces ~D auxiliary atom~:P the circuit lacks; ~
+recompiled (circuit not reused)~%"
+                             (- nvars (ddnnf-nvars circuit)))))
                (values newc nil)))
             (t
              (when (and verbose units)
@@ -716,10 +740,11 @@ Returns (values circuit* clamp)."
              (results (sort (loop for v in targets
                                   collect (cons (aref i2a v) (/ (aref ztrue v) z)))
                             #'string-lessp :key (lambda (p) (princ-to-string (car p))))))
-        ;; Suppress internal reification atoms from the default listing; they
-        ;; still show under --weighted-only (P(atom) = P(the reified formula)).
+        ;; Suppress auxiliary atoms (reification, Tseitin) from the default
+        ;; listing; reified ones still show under --weighted-only
+        ;; (P(atom) = P(the reified formula)).
         (unless weighted-only
-          (setq results (remove-if #'reified-formula-atom-p results :key #'car)))
+          (setq results (remove-if #'auxiliary-atom-p results :key #'car)))
         (flet ((emit (s) (dolist (r results)
                            (format s "(MARGINAL ~S ~,6F)~%" (car r) (cdr r)))))
           (when verbose (emit *standard-output*))

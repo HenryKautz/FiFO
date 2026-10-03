@@ -50,6 +50,7 @@
 ;;; the starting point for the iterative MaxEnt fit (S8/S9), not the fixed point.
 
 (ql:quickload :cl-ppcre :silent t)
+(load (merge-pathnames "auxatoms.lisp" (or *load-pathname* *default-pathname-defaults*)))
 
 (defun rw--atom-p (x)
   "True if X is usable as a literal's atom: a proposition (PRED args...) or a
@@ -115,6 +116,7 @@ is not (OR ...), (PROBABILITY ...), (WEIGHT ...), or (OPTION ...)."
                          until (eq f :eof)
                          do (unless (and (consp f) (member (car f) '(or probability weight option)))
                               (error "malformed scnf form (expected (OR ...), (PROBABILITY ...), (WEIGHT ...), or (OPTION ...)): ~S" f))
+                            (scnf-check-no-gensyms f scnf-file)
                          collect f)))))
     (values (remove-if-not (lambda (f) (eq (car f) 'or)) forms)
             (remove-if-not (lambda (f) (eq (car f) 'probability)) forms)
