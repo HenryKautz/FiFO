@@ -143,8 +143,35 @@ fallback obvious: anything else stays one opaque formula, as before."
       (occur-in-order-split (first evidence-forms))
       (values nil nil)))
 
+;;; Projection header.  Projected knowledge compilation (marginals.sh --project
+;;; with --solver d4) keeps only the actions, the goal atoms and the weighted
+;;; atoms, and needs to know which atoms those are.  The scnf records clauses,
+;;; not provenance, so the planner -- which has the parsed goal and the grounded
+;;; actions domain in hand -- writes them as comment lines every reader skips:
+;;;   ; fifo-projection-horizon: N
+;;;   ; fifo-projection-actions: (<action term> ...)   OCCURS at slices 1..N-1
+;;;   ; fifo-projection-goal: (<fluent term> ...)       HOLDS at slice N
+;;; In the scnf itself, rather than in a sidecar file, so a copy or a
+;;; concatenation (plan--scnf-to-solve, hypotheses.lisp) carries it along and it
+;;; cannot describe a different horizon from the clauses beside it.  At the TOP
+;;; of the file (written through instantiate's :preamble), so the reader stops
+;;; at the first clause instead of scanning a file that can run to hundreds of MB.
+
+(defun plan--write-projection-header (out n goal-atoms)
+  "Write the projection comment lines to the stream OUT, for a theory being
+instantiated at N slices.  The action terms are the ACTIONS domain FiFO just
+grounded (in Bind); GOAL-ATOMS are pddl2fifo's ground atoms of the hard goal (NIL
+for a .wff input, whose goal the planner never parsed -- the goal line is then
+omitted and the compiler reads the goal from the clauses instead).  Printed flat:
+a pretty-printer line break would split a header line."
+  (let ((actions (and (boundp 'Bind) (hash-table-p Bind) (gethash 'ACTIONS Bind)))
+        (*print-pretty* nil))
+    (format out "; fifo-projection-horizon: ~D~%" n)
+    (when actions (format out "; fifo-projection-actions: ~S~%" actions))
+    (when goal-atoms (format out "; fifo-projection-goal: ~S~%" goal-atoms))))
+
 (defun plan--instantiate (wff n problem-scnf evidence-forms evidence-scnf
-                          &key split-evidence assertion-file)
+                          &key split-evidence assertion-file goal-atoms)
   "Instantiate the problem WFF at N slices into PROBLEM-SCNF (assumes
 *satplan-numslices* / *cnf-format* are already set).  When EVIDENCE-FORMS is
 non-NIL, parse them IN THE SAME ENVIRONMENT -- so quantifiers ground over the
@@ -155,7 +182,8 @@ not concatenate (see PLAN--SCNF-TO-SOLVE).
 The evidence is checked against the problem theory first; see
 PLAN--RESOLVE-EVIDENCE for why a literal the problem cannot have is a silent
 wrong answer without it."
-  (unless (instantiate wff :scnfile problem-scnf)
+  (unless (instantiate wff :scnfile problem-scnf
+                           :preamble (lambda (out) (plan--write-projection-header out n goal-atoms)))
     (error "instantiation failed at ~A slices" n))
   (when evidence-forms
     (multiple-value-bind (axioms assertion)
@@ -231,7 +259,7 @@ objective."
                   domain-file (satplan-path "satplan.wff")
                   stop-after (longer 0)
                   evidence evidence-file pddl-evidence pddl-evidence-file
-                  marginals (counter "maxent") split-evidence
+                  marginals (counter "maxent") split-evidence project
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -278,6 +306,9 @@ APPROXIMATE MC-SAT sampling (one WalkSAT v58 run for all the marginals -- for
 horizons where exact counting times out; check the reported sampling efficiency).
 An unrecognised name is an error.  A counter is NAMED, never a path: each
 external one is found on PATH under its own name (addmc, sharpSAT, d4, walksat).
+PROJECT (with \"d4\" only) compiles just the projection onto the actions, the
+final-slice goal atoms and the weighted atoms, verified exact first, and reports
+only those (see DDNNF-COMPILE-D4).
 
 STOP-AFTER halts the pipeline early: :WFF returns once the wff exists (just the
 PDDL translation, or the input itself for a .wff), and :SCNF returns after
@@ -305,7 +336,7 @@ wff/scnf.  Progress is printed to STREAM."
          (assertion-scnf (planner-sibling problem-path "-assertion" "txt"))
          (combined-scnf  (planner-sibling problem-path "-combined" "scnf")))
     (handler-case
-        (let ((reach-min nil))
+        (let ((reach-min nil) (goal-atoms nil))
           ;; Build the wff from PDDL when needed, capturing the reachability bound
           ;; and the FiFO translation of any PDDL-style evidence.
           (cond
@@ -313,13 +344,13 @@ wff/scnf.  Progress is printed to STREAM."
              (when pddl-evidence-forms
                (error "--pddl-evidence requires a PDDL problem; a .wff input has no PDDL to translate against (use --evidence with FiFO forms)")))
             (t
-             (multiple-value-bind (out rmin ev-fifo)
+             (multiple-value-bind (out rmin ev-fifo gatoms)
                  (apply #'pddl2fifo (namestring problem-path)
                         :satplan-path satplan-path
                         :pddl-evidence pddl-evidence-forms
                         (when domain-file (list :domain-file domain-file)))
                (unless out (error "wff generation failed"))
-               (setq reach-min rmin)
+               (setq reach-min rmin goal-atoms gatoms)
                ;; PDDL evidence, now FiFO, joins any FiFO --evidence.
                (setq evidence-forms (append evidence-forms ev-fifo)))))
           (when (eq stop-after :wff)
@@ -339,6 +370,7 @@ wff/scnf.  Progress is printed to STREAM."
             (when (eq stop-after :scnf)
               (setq *satplan-numslices* lo *cnf-format* 'cnf)
               (plan--instantiate wff lo scnf evidence-forms evidence-scnf
+                                 :goal-atoms goal-atoms
                                  :split-evidence split-evidence
                                  :assertion-file assertion-scnf)
               (let ((split (and split-evidence
@@ -359,12 +391,15 @@ wff/scnf.  Progress is printed to STREAM."
               ;; Accept the same spellings the shell does, and validate against
               ;; the shared table rather than a hand-written list.
               (setq counter (resolve-table-name counter "counter"))
+              (when (and project (not (string-equal counter "d4")))
+                (error "projection applies to the d4 counter only (got ~A)" counter))
               (unless (member counter (counter-names :planner) :test #'string=)
                 (error "unknown counter ~S -- expected one of ~{~A~^, ~}~@
                         (a counter is named, not a path; the names live in solvers.dat)"
                        counter (counter-names :planner)))
               (setq *satplan-numslices* lo *cnf-format* 'wcnf)
-              (plan--instantiate wff lo scnf evidence-forms evidence-scnf)
+              (plan--instantiate wff lo scnf evidence-forms evidence-scnf
+                                 :goal-atoms goal-atoms)
               (let ((msc (plan--scnf-to-solve scnf evidence-forms evidence-scnf combined-scnf)))
                 (format stream "Computing marginals at ~A time slices with the ~A counter~:[~; (conditioned on evidence)~]...~%"
                         lo (if (string-equal counter "maxent") "maxent enumeration" counter)
@@ -383,7 +418,8 @@ wff/scnf.  Progress is printed to STREAM."
                       ((string-equal counter "addmc") (marginals-addmc msc))
                       ((string-equal counter "sharpsat-td") (marginals-sharpsat msc))
                       ((string-equal counter "ddnnf") (ddnnf-marginals msc))
-                      ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4))
+                      ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4
+                                                                         :project project))
                       ;; Unreachable: the name was validated against the shared
                       ;; table above.  A name, never a path -- this used to accept
                       ;; a pathname and run it as an ADDMC binary, which meant
@@ -395,7 +431,8 @@ wff/scnf.  Progress is printed to STREAM."
             (loop for n from lo to hi until found do
               (format stream "Trying ~A time slices with ~A (cnf)...~%" n sat-solver)
               (setq *satplan-numslices* n *cnf-format* 'cnf *solver* sat-solver)
-              (plan--instantiate wff n scnf evidence-forms evidence-scnf)
+              (plan--instantiate wff n scnf evidence-forms evidence-scnf
+                                 :goal-atoms goal-atoms)
               (let ((psc (plan--scnf-to-solve scnf evidence-forms evidence-scnf combined-scnf)))
                 (unless (propositionalize psc :cnffile cnf :mapfile map)
                   (error "propositionalization failed at ~A slices" n)))
@@ -426,7 +463,8 @@ wff/scnf.  Progress is printed to STREAM."
                       (format stream "Minimizing cost at ~A time slices with ~A (wcnf)...~%"
                               n weighted-solver)
                       (setq *satplan-numslices* n *cnf-format* 'wcnf *solver* weighted-solver)
-                      (plan--instantiate wff n scnf evidence-forms evidence-scnf)
+                      (plan--instantiate wff n scnf evidence-forms evidence-scnf
+                                         :goal-atoms goal-atoms)
                       (let ((psc (plan--scnf-to-solve scnf evidence-forms evidence-scnf combined-scnf)))
                         (unless (propositionalize psc :cnffile wcnf :mapfile map)
                           (error "propositionalization failed at ~A slices" n)))

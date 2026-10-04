@@ -203,7 +203,10 @@ run or one circuit anyway."
       ((string-equal counter "ddnnf")
        (ddnnf-marginals scnf-file :verbose nil :scale scale))
       ((string-equal counter "d4")
-       (ddnnf-marginals scnf-file :verbose nil :scale scale :compiler :d4))
+       ;; A projected compile keeps the hypotheses: they are what is read.
+       (ddnnf-marginals scnf-file :verbose nil :scale scale :compiler :d4
+                                  :project (getf opts :project)
+                                  :project-atoms (append (getf opts :project-atoms) atoms)))
       ((string-equal counter "mc-sat")
        ;; :verbose nil suppresses the sampler's own diagnostics, so re-raise the
        ;; two that mean the numbers are WRONG rather than merely noisy.  A frozen
@@ -435,6 +438,7 @@ cell); :per-hypothesis is R&G's difference, 2n clamped solves."
                                   scale beta node-limit epsilon decot cache-mb jobs maxsat-solver
                                   samples burnin seed unitprop walk-prob temp
                                   cutoff init-cutoff init-tries (seed-from-sat t)
+                                  project project-atoms
                                   keep-intermediates)
   "Posterior over the competing HYPOTHESES atoms of SCNF-FILE given evidence.
 
@@ -456,9 +460,13 @@ Results print as (HYPOTHESIS <atom> :posterior p ...), deliberately NOT as
                      :samples samples :burnin burnin :seed seed :unitprop unitprop
                      :walk-prob walk-prob :temp temp :cutoff cutoff
                      :init-cutoff init-cutoff :init-tries init-tries
-                     :seed-from-sat seed-from-sat))
+                     :seed-from-sat seed-from-sat
+                     :project project
+                     :project-atoms (mapcar #'hp--as-atom project-atoms)))
          (*maxterm-solver* (or maxsat-solver *maxterm-solver*)))
     (setq counter (resolve-table-name counter "counter"))
+    (when (and project (not (string-equal counter "d4")))
+      (error "projection applies to the d4 counter only (got ~A)" counter))
     (unless (member counter *hypothesis-counters* :test #'string-equal)
       (error "unknown counter ~S -- expected one of ~{~A~^, ~}~%~
               (a counter is named, not a path; put the binary on PATH under its own name)"

@@ -162,6 +162,19 @@ reach of exact counting.
                       it WITHOUT recompiling (give this instead of a .scnf file).
                       Unit-literal --evidence reuses it; non-unit evidence recompiles
                       from the stored clauses.  --scale re-weights it for free.
+  --project           (d4 only) compile the PROJECTION onto the atoms that matter
+                      instead of the whole theory: the actions, the goal atoms
+                      at the final slice, every weighted atom, any --hypotheses
+                      and --evidence atoms, and --project-also atoms.  Actions
+                      and goal atoms come from the header planner.sh writes into
+                      the scnf (else: OCCURS atoms and the final-slice goal
+                      clauses).  Before compiling it CHECKS, with one kissat call,
+                      that those atoms determine every other one -- which makes
+                      the projected marginals exactly the full ones -- and
+                      refuses, naming an undetermined atom, when they do not.
+                      Only the kept atoms are reported.  Often much faster on
+                      plan-recognition theories, but not always: measure.
+  --project-also <atom>  keep this atom too (repeatable); needs --project
   --hypotheses <atom> treat these atoms as COMPETING HYPOTHESES and report a
                       posterior over them rather than a marginal per atom.
                       Repeatable.  Works with every --solver, and evidence is
@@ -254,6 +267,9 @@ EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
 CIRCUIT=""
+PROJECT=0
+PROJECT_ALSO=()
+SOLVER_GIVEN=0
 SAMPLES=""
 BURNIN=""
 SEED=""
@@ -275,7 +291,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)        print_usage; exit 0 ;;
-    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, sharpsat-td, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; shift 2 ;;
+    --solver)         [[ $# -ge 2 ]] || die "--solver needs an argument (maxent, addmc, sharpsat-td, ddnnf, d4, mc-sat or max-term)"; SOLVER="$2"; SOLVER_GIVEN=1; shift 2 ;;
     --query)          [[ $# -ge 2 ]] || die "--query needs an argument"; QUERY+=("$2"); shift 2 ;;
     --query-file)     [[ $# -ge 2 ]] || die "--query-file needs an argument"; QUERY_FILE="$2"; shift 2 ;;
     --hypotheses)     [[ $# -ge 2 ]] || die "--hypotheses needs an argument"; HYPOTHESES+=("$2"); shift 2 ;;
@@ -307,13 +323,21 @@ while [[ $# -gt 0 ]]; do
     --jobs)           [[ $# -ge 2 ]] || die "--jobs needs an argument"; JOBS="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
-    --save-circuit)   [[ $# -ge 2 ]] || die "--save-circuit needs an argument"; SAVE_CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
-    --circuit)        [[ $# -ge 2 ]] || die "--circuit needs an argument"; CIRCUIT="$2"; SOLVER="ddnnf"; shift 2 ;;
+    # --save-circuit / --circuit imply a circuit back end only when no --solver
+    # was given.  They used to set it unconditionally, so an explicit --solver
+    # given before them was silently replaced: --solver d4 compiled with FiFO's
+    # own compiler, and --solver addmc ran ddnnf instead of being refused.
+    --save-circuit)   [[ $# -ge 2 ]] || die "--save-circuit needs an argument"; SAVE_CIRCUIT="$2"; shift 2 ;;
+    --circuit)        [[ $# -ge 2 ]] || die "--circuit needs an argument"; CIRCUIT="$2"; shift 2 ;;
+    --project)        PROJECT=1; shift ;;
+    --project-also)   [[ $# -ge 2 ]] || die "--project-also needs an atom"; PROJECT_ALSO+=("$2"); shift 2 ;;
     -*)               die "unknown option: $1" ;;
     *)                if [[ -z "$SCNF" ]]; then SCNF="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
 done
 
+# A circuit option with no --solver means FiFO's own compiler (order-independent).
+if [[ "$SOLVER_GIVEN" -eq 0 && ( -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ) ]]; then SOLVER="ddnnf"; fi
 # --solver names a COUNTER here; validated (and abbreviations resolved) against
 # lisp/solvers.dat, the same table the Lisp reads.
 SOLVER="$(_fifo_require_counter "$SOLVER" marginals marginals.sh)" || exit 2
@@ -334,6 +358,21 @@ if [[ "$SOLVER" != "max-term" ]]; then
 fi
 if [[ -n "$CIRCUIT" || -n "$SAVE_CIRCUIT" ]]; then
   [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]] || die "--circuit/--save-circuit apply to the ddnnf and d4 solvers only"
+fi
+# Projection: only d4 can compile one (it honours a 'c p show' line), and a saved
+# circuit already is whatever it was compiled as.
+[[ ${#PROJECT_ALSO[@]} -eq 0 || "$PROJECT" -eq 1 ]] || die "--project-also needs --project"
+if [[ "$PROJECT" -eq 1 ]]; then
+  [[ "$SOLVER" == "d4" ]] || die "--project applies to the d4 solver only"
+  [[ -z "$CIRCUIT" ]] || die "--project compiles a circuit; a --circuit is already compiled (projected or not)"
+  # The exactness check is a kissat call (*ddnnf-definability-solver*); check it
+  # is installed now, not after the theory has been read and indexed.
+  _fifo_require_solver kissat sat marginals.sh >/dev/null || exit 2
+fi
+PROJECT_KW=""
+if [[ "$PROJECT" -eq 1 ]]; then
+  PROJECT_KW=":project t"
+  [[ ${#PROJECT_ALSO[@]} -gt 0 ]] && PROJECT_KW="$PROJECT_KW :project-atoms (quote ( ${PROJECT_ALSO[*]} ))"
 fi
 if [[ -n "$CIRCUIT" ]]; then
   [[ -f "$CIRCUIT" ]] || die "circuit file not found: $CIRCUIT"
@@ -428,6 +467,7 @@ else
   [[ -n "$INIT_CUTOFF" ]] && KW="$KW :init-cutoff $INIT_CUTOFF"
   [[ -n "$INIT_TRIES" ]] && KW="$KW :init-tries $INIT_TRIES"
   [[ "$NO_SAT_SEED" -eq 1 ]] && KW="$KW :seed-from-sat nil"
+  [[ -n "$PROJECT_KW" ]] && KW="$KW $PROJECT_KW"
   # max-term needs a weighted solver that PROVES optimality: the per-hypothesis
   # score is a difference of two minima, so two upper bounds do not cancel.
   if [[ "$SOLVER" == "max-term" ]]; then
@@ -481,6 +521,7 @@ if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   [[ -n "$SAVE_CIRCUIT" ]] && KW="$KW :save-circuit \"$SAVE_CIRCUIT\""
+  [[ -n "$PROJECT_KW" ]] && KW="$KW $PROJECT_KW"
   if [[ -n "$CIRCUIT" ]]; then
     SCNF_ARG="nil"; KW="$KW :circuit \"$CIRCUIT\""
   else

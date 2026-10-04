@@ -69,6 +69,10 @@ usage() {
   echo "               'mc-sat' (APPROXIMATE MC-SAT sampling via WalkSAT v58 -- one run for" >&2
   echo "               all marginals, for horizons where exact counting times out; watch the" >&2
   echo "               reported sampling efficiency).  An unknown name is an error." >&2
+  echo "  --project    (with --marginals --counter d4) compile only the projection onto the" >&2
+  echo "               actions, the final-slice goal atoms and the weighted atoms, after a" >&2
+  echo "               SAT check that it is exact; only those atoms are reported" >&2
+  echo "               (see marginals.sh --project)." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -87,6 +91,7 @@ PDDL_EVIDENCE_FORMS=()  # --pddl-evidence (repeatable)
 SPLIT_EVIDENCE=0  # --split-evidence: monitor axioms into the theory, assertion apart
 MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (a name from solvers.dat)
+PROJECT=0      # --project: projected compilation (--marginals --counter d4 only)
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
@@ -112,6 +117,7 @@ while [[ $# -gt 0 ]]; do
     --split-evidence) SPLIT_EVIDENCE=1; shift ;;
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
+    --project)   PROJECT=1; shift ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -129,6 +135,7 @@ fi
 if [[ -n "$EVFILE" && ! -f "$EVFILE" ]]; then echo "evidence file not found: $EVFILE" >&2; exit 2; fi
 if [[ -n "$PDDL_EVFILE" && ! -f "$PDDL_EVFILE" ]]; then echo "pddl-evidence file not found: $PDDL_EVFILE" >&2; exit 2; fi
 if [[ -n "$COUNTER" && "$MARGINALS" -ne 1 ]]; then echo "--counter applies only with --marginals" >&2; exit 2; fi
+if [[ "$PROJECT" -eq 1 && "$MARGINALS" -ne 1 ]]; then echo "--project applies only with --marginals --counter d4" >&2; exit 2; fi
 if { [[ ${#PDDL_EVIDENCE_FORMS[@]} -gt 0 ]] || [[ -n "$PDDL_EVFILE" ]]; } && [[ "$PROBLEM" == *.wff ]]; then
   echo "--pddl-evidence requires a PDDL problem, not a .wff (use --evidence with FiFO forms)" >&2; exit 2
 fi
@@ -173,6 +180,11 @@ WEIGHTED_SOLVER="$(_fifo_require_solver "$WEIGHTED_SOLVER" maxsat planner.sh)" |
 if [[ -n "$COUNTER" ]]; then
   COUNTER="$(_fifo_require_counter "$COUNTER" planner planner.sh)" || exit 2
 fi
+if [[ "$PROJECT" -eq 1 && "$COUNTER" != "d4" ]]; then
+  echo "--project applies only with --counter d4 (only d4 compiles a projection)" >&2; exit 2
+fi
+# The projection's exactness check runs kissat, whatever --solver says.
+if [[ "$PROJECT" -eq 1 ]]; then _fifo_require_solver kissat sat planner.sh >/dev/null || exit 2; fi
 FIFO="$FIFO_LISP/FiFO.lisp"
 PDDL2FIFO="$FIFO_LISP/pddl2fifo.lisp"
 PLANNER="$FIFO_LISP/planner.lisp"
@@ -222,6 +234,8 @@ COUNTER_KW=""
 [[ -n "$COUNTER" ]] && COUNTER_KW=":counter \"$COUNTER\""
 SPLIT_KW=""
 [[ "$SPLIT_EVIDENCE" -eq 1 ]] && SPLIT_KW=":split-evidence t"
+PROJECT_KW=""
+[[ "$PROJECT" -eq 1 ]] && PROJECT_KW=":project t"
 
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
@@ -232,7 +246,7 @@ EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
               $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
               $EVIDENCE_KW $EVFILE_KW $PDDL_EVIDENCE_KW $PDDL_EVFILE_KW
-              $MARGINALS_KW $COUNTER_KW $SPLIT_KW
+              $MARGINALS_KW $COUNTER_KW $SPLIT_KW $PROJECT_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))" )
 

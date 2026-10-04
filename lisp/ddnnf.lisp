@@ -61,7 +61,10 @@
   i2a                   ; vector index -> atom
   leaf-cost             ; hash signed-lit -> total cost-when-true (from wmc--literal-costs)
   scale                 ; weight scale; leaf weight of L = exp(-(cost(L)/scale))
-  clauses)              ; the normalized integer clauses (for recompiling with evidence)
+  clauses               ; the normalized integer clauses (for recompiling with evidence)
+  projected)            ; NIL, or a bit vector over 0..nvars: the variables a PROJECTED
+                        ; compile kept (see ddnnf-compile-d4 :project).  Only those
+                        ; appear in the circuit, so only those have marginals.
 
 ;;; ----------------------------------------------------------------------------
 ;;; Builder: interning nodes into the DAG
@@ -342,10 +345,14 @@ returned circuit across many queries with DDNNF-QUERY / DDNNF-MARGINALS-SETS."
 demo/compiler/build/compiler; bin/install-solvers.sh installs that as \"d4\".
 Optional -- only the d4 producer needs it.")
 
-(defun ddnnf--write-dimacs-file (int-clauses nvars path)
-  "Write hard INT-CLAUSES (over variables 1..NVARS) as DIMACS CNF to PATH."
+(defun ddnnf--write-dimacs-file (int-clauses nvars path &key show)
+  "Write hard INT-CLAUSES (over variables 1..NVARS) as DIMACS CNF to PATH.  SHOW,
+a bit vector, adds d4's projection line 'c p show <vars> 0'."
   (with-open-file (s path :direction :output :if-exists :supersede :if-does-not-exist :create)
     (format s "p cnf ~D ~D~%" nvars (length int-clauses))
+    (when show
+      (format s "c p show~{ ~D~} 0~%"
+              (loop for v from 1 to nvars when (= 1 (sbit show v)) collect v)))
     (dolist (cl int-clauses)
       (dolist (l cl) (format s "~D " l))
       (format s "0~%"))))
@@ -434,8 +441,18 @@ id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits)."
                      (push (bld-and b (nreverse akids)) kids)))
                  (bld-and b (nreverse kids))))))))
 
-(defun ddnnf--build-from-d4 (nnf-file nvars a2i cost scale int-clauses)
-  "Turn a d4 NNF dump into a (smooth) DDNNF struct over variables 1..NVARS."
+(defun ddnnf--var-atom (a2i v)
+  "The atom numbered V in A2I (a linear search -- for error messages only)."
+  (block find
+    (maphash (lambda (atom i) (when (= i v) (return-from find atom))) a2i)
+    v))
+
+(defun ddnnf--build-from-d4 (nnf-file nvars a2i cost scale int-clauses &key projected)
+  "Turn a d4 NNF dump into a (smooth) DDNNF struct over variables 1..NVARS -- or,
+for a PROJECTED dump (PROJECTED a bit vector of the kept variables), over those
+variables only.  Root smoothing then adds free(v) for the kept variables alone:
+smoothing over every variable would count each projected-away one as a free
+factor of 2, which is exactly the existential the projection removed."
   (multiple-value-bind (node-type arcs) (ddnnf--read-d4-nnf nnf-file)
     (let ((dsts (make-hash-table)) (root-id nil)
           (scopes (make-hash-table)) (build-cache (make-hash-table))
@@ -451,44 +468,273 @@ id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits)."
       (maphash (lambda (id ty) (declare (ignore ty))
                  (ddnnf--d4-scope id node-type arcs scopes))
                node-type)
+      (when projected
+        (let ((stray (find-if (lambda (v) (zerop (sbit projected v)))
+                              (gethash root-id scopes))))
+          (when stray
+            (error "d4's projected dump mentions variable ~D (~S), which is not in the ~
+projection -- d4 did not honour the 'c p show' line, so the circuit would not be ~
+the projected one"
+                   stray (ddnnf--var-atom a2i stray)))))
       (let* ((body (ddnnf--d4-build b root-id node-type arcs scopes build-cache))
-             (never (set-difference (loop for v from 1 to nvars collect v)
+             (never (set-difference (loop for v from 1 to nvars
+                                          when (or (null projected) (= 1 (sbit projected v)))
+                                            collect v)
                                     (gethash root-id scopes)))
              (root (bld-and b (append (mapcar (lambda (v) (bld-free b v)) never)
                                       (list body))))
              (i2a (make-array (1+ nvars))))
         (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
         (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
-                    :leaf-cost cost :scale scale :clauses int-clauses)))))
+                    :leaf-cost cost :scale scale :clauses int-clauses
+                    :projected projected)))))
 
-(defun ddnnf-compile-d4 (scnf-file &key scale (d4 *d4*) (verbose t))
+;;; ----------------------------------------------------------------------------
+;;; Projection: which atoms to keep, and the check that keeping only them is exact
+;;;
+;;; A projected compile counts the models of (exists Y. F(X,Y)) -- every X
+;;; assignment that EXTENDS to a model of F, counted once.  That equals F's own
+;;; weighted count, marginal for marginal, exactly when X DETERMINES Y: each X has
+;;; at most one Y.  For a SatPlan theory the plan (the actions) determines every
+;;; state atom, so X = actions suffices for the Boolean structure -- but every
+;;; WEIGHTED atom must be in X too, since the projection forgets the rest, weights
+;;; included; and so must every atom whose marginal is wanted.  The goal atoms are
+;;; kept because they are what plan recognition asks about.
+;;; ----------------------------------------------------------------------------
+
+(defun ddnnf--read-projection-header (scnf-file)
+  "The '; fifo-projection-...' comment lines the planner writes at the TOP of an
+scnf (see plan--write-projection-header in planner.lisp).  Only the leading
+block of comment and blank lines is read -- the first clause ends the search, so
+a large theory is not scanned to its end.  Returns (values horizon action-terms
+goal-terms actions-p goal-p): the -P values say whether each line was PRESENT,
+since an empty list and a missing line mean different things to the caller.  A
+malformed line (no colon, unreadable value) is skipped, not an error."
+  (let ((horizon nil) (actions nil) (goal nil) (actions-p nil) (goal-p nil)
+        (*read-eval* nil))
+    (with-open-file (in scnf-file :direction :input)
+      (loop for line = (read-line in nil :eof)
+            until (eq line :eof)
+            for trimmed = (string-left-trim '(#\Space #\Tab) line)
+            until (and (plusp (length trimmed)) (char/= (char trimmed 0) #\;))
+            when (and (> (length line) 19) (string= "; fifo-projection-" line :end2 18))
+              do (let ((colon (position #\: line)))
+                   (when colon
+                     (let ((key (subseq line 18 colon))
+                           (val (ignore-errors (read-from-string line t nil :start (1+ colon)))))
+                       (cond ((and (string= key "horizon") (null horizon) (integerp val))
+                              (setq horizon val))
+                             ((and (string= key "actions") (not actions-p) (listp val))
+                              (setq actions val actions-p t))
+                             ((and (string= key "goal") (not goal-p) (listp val))
+                              (setq goal val goal-p t))))))))
+    (values horizon actions goal actions-p goal-p)))
+
+(defun ddnnf--holds-slice (atom)
+  "The slice of a (HOLDS x s) atom with an integer s, else NIL."
+  (and (consp atom) (eq (car atom) 'holds) (integerp (third atom)) (third atom)))
+
+(defun ddnnf--structural-goal-atoms (clauses)
+  "Fallback when an scnf carries no goal header: the atoms of every all-positive
+clause made only of (HOLDS x N) atoms at the last slice N -- a conjunctive goal's
+units, a disjunctive goal's clause.  It misses negative goals and goals encoded
+with a TSEITIN selector, and can include a non-goal atom; none of that can make
+an answer wrong (the definability check guards exactness), only change which
+atoms can be asked about."
+  (let ((n 0) (acc '()))
+    (dolist (cl clauses)
+      (dolist (l (cdr cl))
+        (let ((s (ddnnf--holds-slice (rw--literal-atom-and-sign l))))
+          (when (and s (> s n)) (setq n s)))))
+    (dolist (cl clauses (remove-duplicates acc :test #'equal))
+      (when (and (cdr cl)
+                 (every (lambda (l) (eql (ddnnf--holds-slice l) n)) (cdr cl)))
+        (dolist (l (cdr cl)) (push l acc))))))
+
+(defun ddnnf--projection-vars (scnf-file clauses a2i nvars weight-atoms extra-atoms verbose)
+  "The bit vector of variables a projected compile keeps: the ACTIONS, the
+final-slice GOAL atoms, every WEIGHTED atom, and EXTRA-ATOMS.
+
+Actions and goal atoms come from the planner's header in SCNF-FILE (the declared
+ACTIONS domain at slices 1..N-1, and the parsed hard goal at N).  EACH falls back
+to inference on its own when its line is absent -- a .wff given to planner.sh has
+a horizon and actions but no parsed goal; a theory not made by planner.sh has no
+header at all: actions are then the atoms headed OCCURS (the SatPlan encoding's
+action predicate) and goal atoms come from the structural goal rule.  EXTRA-ATOMS
+must all be in the theory; each is an error otherwise."
+  (let ((keep (make-array (1+ nvars) :element-type 'bit :initial-element 0))
+        (n-actions 0) (n-goal 0) (sources '()))
+    (flet ((add (atom) (let ((v (gethash atom a2i)))
+                         (when (and v (zerop (sbit keep v)))
+                           (setf (sbit keep v) 1)
+                           t))))
+      (multiple-value-bind (horizon actions goal actions-p goal-p)
+          (ddnnf--read-projection-header scnf-file)
+        (cond
+          ((and horizon actions-p)
+           (push "actions from the header" sources)
+           (dolist (a actions)
+             (loop for s from 1 below horizon
+                   do (when (add (list 'occurs a s)) (incf n-actions)))))
+          (t
+           (push "actions inferred (OCCURS atoms)" sources)
+           (maphash (lambda (atom v)
+                      (declare (ignore v))
+                      (when (and (consp atom) (eq (car atom) 'occurs) (add atom))
+                        (incf n-actions)))
+                    a2i)))
+        (cond
+          ((and horizon goal-p)
+           (push "goal from the header" sources)
+           (dolist (g goal)
+             ;; A 0-ary goal predicate may be written (hyp0) or bare.
+             (when (or (add (list 'holds g horizon))
+                       (and (consp g) (null (cdr g)) (add (list 'holds (car g) horizon))))
+               (incf n-goal))))
+          (t
+           (push "goal inferred (final-slice goal clauses; no header goal line)" sources)
+           (dolist (g (ddnnf--structural-goal-atoms clauses))
+             (when (add g) (incf n-goal))))))
+      (dolist (w weight-atoms) (add w))
+      (dolist (x extra-atoms)
+        (unless (gethash x a2i)
+          (error "~S is not an atom of ~A, so it cannot be kept in the projection" x scnf-file))
+        (add x)))
+    (when verbose
+      (format t "; projection: ~{~A~^; ~} -- ~D action, ~D goal, ~D kept in all~%"
+              (reverse sources) n-actions n-goal (count 1 keep)))
+    keep))
+
+(defvar *ddnnf-definability-solver* "kissat"
+  "SAT solver for the projection exactness check (any DIMACS solver exiting 10/20).")
+
+(defun ddnnf--definability-witness (int-clauses nvars keep)
+  "NIL when the variables in the bit vector KEEP determine all the others under
+INT-CLAUSES; otherwise a variable they do not determine.  Padoa's method: with
+Y' a renamed copy of the non-kept variables, F(X,Y) & F(X,Y') & OR(y xor y') is
+UNSATISFIABLE exactly when X determines Y.  One SAT call, bounded by
+*solver-timeout*; anything but a definite verdict is an error, since an
+unchecked projection could silently be the wrong count."
+  (let ((ys (loop for v from 1 to nvars when (zerop (sbit keep v)) collect v)))
+    (when (null ys) (return-from ddnnf--definability-witness nil))
+    (let* ((ren (lambda (l) (let ((v (abs l)))
+                              (if (= 1 (sbit keep v)) l (* (signum l) (+ v nvars))))))
+           (dvar (lambda (y) (+ y (* 2 nvars))))
+           (base (make-scratch-file-root))
+           (cnf (format nil "~A-padoa.cnf" base))
+           (out (format nil "~A-padoa.out" base)))
+      (unwind-protect
+           (progn
+             (with-open-file (s cnf :direction :output :if-exists :supersede)
+               (format s "p cnf ~D ~D~%" (* 3 nvars)
+                       (+ (* 2 (length int-clauses)) (* 2 (length ys)) 1))
+               (dolist (cl int-clauses)
+                 (format s "~{~D ~}0~%" cl)
+                 (format s "~{~D ~}0~%" (mapcar ren cl)))
+               (dolist (y ys)
+                 (let ((y2 (+ y nvars)) (d (funcall dvar y)))
+                   (format s "~D ~D ~D 0~%" (- d) y y2)          ; d -> (y or y')
+                   (format s "~D ~D ~D 0~%" (- d) (- y) (- y2))))  ; d -> (~y or ~y')
+               (format s "~{~D ~}0~%" (mapcar dvar ys)))
+             (let ((code (run-program-to-file *ddnnf-definability-solver* (list cnf) out
+                                              :timeout *solver-timeout*)))
+               (case code
+                 (20 nil)
+                 (10 (let ((true (make-hash-table)))
+                       (with-open-file (in out)
+                         (loop for line = (read-line in nil) while line
+                               when (and (> (length line) 1) (char= (char line 0) #\v))
+                                 do (dolist (tok (cl-ppcre:split "\\s+" (subseq line 1)))
+                                      (let ((x (ignore-errors (parse-integer tok))))
+                                        (when (and x (plusp x)) (setf (gethash x true) t))))))
+                       ;; SAT means SOME y differs; name one the model shows.  A
+                       ;; model we could not read must not be guessed at: naming
+                       ;; an arbitrary atom would send the user chasing the wrong one.
+                       (or (find-if (lambda (y) (gethash (funcall dvar y) true)) ys)
+                           (error "the projection is not exact (~A found two models that ~
+differ off the projection), but its model could not be read to name an atom ~
+that differs -- does it print 'v' lines?"
+                                  *ddnnf-definability-solver*))))
+                 (t (error "the projection exactness check did not finish (~A exit ~A); ~
+refusing to compile a projection that might not be exact"
+                           *ddnnf-definability-solver* code)))))
+        (ignore-errors (delete-file cnf))
+        (ignore-errors (delete-file out))))))
+
+(defun ddnnf--compile-ints-d4 (int-clauses nvars a2i cost scale &key (d4 *d4*) verbose projected)
+  "Compile INT-CLAUSES with d4 and import the dump.  PROJECTED, when given, is the
+bit vector of variables to keep: the projection is verified exact, d4 is told it
+with a 'c p show' line, and the import smooths over those variables only."
+  (let* ((base (make-scratch-file-root))
+         (cnf (format nil "~A.cnf" base))
+         (nnf (format nil "~A.nnf" base)))
+    (when projected
+      (let ((y (ddnnf--definability-witness int-clauses nvars projected)))
+        (when y
+          (error "projection is not exact: ~S is not determined by the ~D projected atoms ~
+(two models agree on all of them and differ on it), so the projected count would ~
+not be the theory's.  Add it to the projection (marginals.sh --project-also), or ~
+compile without --project."
+                 (ddnnf--var-atom a2i y) (count 1 projected))))
+      (when verbose
+        (format t "; projecting onto ~D of ~D atoms (verified exact)~%"
+                (count 1 projected) nvars)))
+    (unwind-protect
+         (progn
+           (ddnnf--write-dimacs-file int-clauses nvars cnf :show projected)
+           (ddnnf--run-d4 cnf nnf :d4 d4)
+           (when verbose (format t "; compiled with d4: ~A~%" d4))
+           (ddnnf--build-from-d4 nnf nvars a2i cost scale int-clauses :projected projected))
+      (ignore-errors (delete-file cnf))
+      (ignore-errors (delete-file nnf)))))
+
+(defun ddnnf-compile-d4 (scnf-file &key scale (d4 *d4*) (verbose t)
+                                         project project-atoms evidence evidence-file)
   "Like DDNNF-COMPILE, but the Boolean structure is compiled by the external d4
 (d4v2) decision-DNNF compiler (via *d4* / D4) and smoothed on import, instead of
 the home-grown trace compiler.  Returns the same DDNNF struct, so DDNNF-QUERY,
 DDNNF-MARGINALS, evidence, and save/load all work identically.  Useful when an
-instance is too structured for the home-grown compiler (where d4's heuristics win)."
+instance is too structured for the home-grown compiler (where d4's heuristics win).
+
+With PROJECT, compile only the projection onto the actions, the final-slice goal
+atoms, every weighted atom, and PROJECT-ATOMS (atoms the caller will ask about
+or condition on) -- see DDNNF--PROJECTION-VARS.  The projection is checked to be
+EXACT first (DDNNF--DEFINABILITY-WITNESS): those atoms must determine every other
+one, or the error names an atom that is not determined.  The circuit then holds,
+and reports marginals for, the projected atoms only.
+
+EVIDENCE / EVIDENCE-FILE (ground FiFO forms, as for DDNNF-MARGINALS) are
+clausified against the theory and conjoined BEFORE compiling -- one compile of
+the conditioned theory, where compiling the theory and then conditioning would
+compile (and check) twice for non-unit evidence.  Every atom they name must be
+the theory's, or an auxiliary atom minted for the evidence itself."
   (multiple-value-bind (clauses probs opts weight-forms) (rw--read-scnf scnf-file)
     (declare (ignore probs opts))
+    (let ((evidence-clauses (wmc--evidence-clauses evidence evidence-file clauses)))
+     (when evidence-clauses
+      (let ((theory (make-hash-table :test #'equal)))
+        (dolist (a (wmc--clause-atoms clauses)) (setf (gethash a theory) t))
+        (dolist (w weight-forms) (setf (gethash (rw--literal-atom-and-sign (second w)) theory) t))
+        (dolist (a (wmc--clause-atoms evidence-clauses))
+          (unless (or (gethash a theory) (evidence-aux-atom-p a))
+            (error "evidence atom ~S is not in the theory; evidence must be ground over existing atoms"
+                   a))))
+      (setq clauses (append clauses evidence-clauses))))
     (let* ((scale (rw--resolve-scale scnf-file scale verbose))
            (weight-atoms (mapcar (lambda (w) (rw--literal-atom-and-sign (second w)))
                                  weight-forms)))
       (multiple-value-bind (a2i nvars) (mx--index-atoms clauses weight-atoms)
         (when (zerop nvars) (error "no atoms found in ~A" scnf-file))
-        (let* ((int-clauses (ddnnf--normalize-clauses
-                             (mapcar (lambda (cl) (coerce (mx--clause->ints cl a2i) 'list))
-                                     clauses)))
-               (cost (wmc--literal-costs weight-forms a2i))
-               (base (make-scratch-file-root))
-               (cnf (format nil "~A.cnf" base))
-               (nnf (format nil "~A.nnf" base)))
-          (unwind-protect
-               (progn
-                 (ddnnf--write-dimacs-file int-clauses nvars cnf)
-                 (ddnnf--run-d4 cnf nnf :d4 d4)
-                 (when verbose (format t "; compiled with d4: ~A~%" d4))
-                 (ddnnf--build-from-d4 nnf nvars a2i cost scale int-clauses))
-            (ignore-errors (delete-file cnf))
-            (ignore-errors (delete-file nnf))))))))
+        (let ((int-clauses (ddnnf--normalize-clauses
+                            (mapcar (lambda (cl) (coerce (mx--clause->ints cl a2i) 'list))
+                                    clauses)))
+              (cost (wmc--literal-costs weight-forms a2i)))
+          (ddnnf--compile-ints-d4
+           int-clauses nvars a2i cost scale
+           :d4 d4 :verbose verbose
+           :projected (when project
+                        (ddnnf--projection-vars scnf-file clauses a2i nvars weight-atoms
+                                                project-atoms verbose))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Persistence: save / load a compiled circuit
@@ -536,7 +782,13 @@ expensive Boolean structure is the node list.  Returns PATH."
                    :atoms (loop for v from 1 to (ddnnf-nvars circuit)
                                 collect (aref (ddnnf-i2a circuit) v))
                    :leaf-cost lc
-                   :clauses (ddnnf-clauses circuit))
+                   :clauses (ddnnf-clauses circuit)
+                   ;; the kept variables of a projected circuit (absent = not
+                   ;; projected); without it a reload would report the dropped
+                   ;; atoms as marginal 0
+                   :projected (let ((p (ddnnf-projected circuit)))
+                                (and p (loop for v from 1 to (ddnnf-nvars circuit)
+                                             when (= 1 (sbit p v)) collect v))))
              out)
       (terpri out)))
   path)
@@ -567,7 +819,12 @@ ready to query -- no recompilation."
         (make-ddnnf :nodes nodes :root (getf data :root) :nvars nvars
                     :a2i a2i :i2a i2a :leaf-cost cost
                     :scale (float (getf data :scale) 1.0d0)
-                    :clauses (getf data :clauses))))))
+                    :clauses (getf data :clauses)
+                    :projected (let ((kept (getf data :projected)))
+                                 (when kept
+                                   (let ((p (make-array (1+ nvars) :element-type 'bit
+                                                                   :initial-element 0)))
+                                     (dolist (v kept p) (setf (sbit p v) 1))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Evaluation: Z (up pass) and all marginals (down pass)
@@ -693,26 +950,49 @@ Returns (values circuit* clamp)."
                     (push l units)
                     (setf (gethash (abs l) clamp) (if (plusp l) 1 -1)))
                   (push ints nonunits))))
+          ;; A projected circuit has no leaf for an atom it projected away, so a
+          ;; CLAMP on one would be silently ignored -- the unconditioned answer.
+          ;; Such evidence takes the recompile path instead, which conjoins it.
+          (let* ((proj (ddnnf-projected circuit))
+                 (dropped-unit (and proj
+                                    (some (lambda (l) (and (<= (abs l) (ddnnf-nvars circuit))
+                                                           (zerop (sbit proj (abs l)))))
+                                          units))))
           (cond
-            ((or nonunits (> nvars (ddnnf-nvars circuit)))
-             (let ((newc (ddnnf--build
-                          (ddnnf--normalize-clauses
-                           (append (ddnnf-clauses circuit) nonunits (mapcar #'list units)))
-                          nvars a2i
-                          (ddnnf-leaf-cost circuit) (ddnnf-scale circuit))))
+            ((or nonunits dropped-unit (> nvars (ddnnf-nvars circuit)))
+             (let* ((clauses (ddnnf--normalize-clauses
+                              (append (ddnnf-clauses circuit) nonunits (mapcar #'list units))))
+                    (proj (ddnnf-projected circuit))
+                    (newc
+                      (if proj
+                          ;; Recompile PROJECTED (and re-checked: the evidence's own
+                          ;; auxiliary atoms join the non-kept side and must be
+                          ;; determined too).  FiFO's own compiler cannot project.
+                          (let ((keep (make-array (1+ nvars) :element-type 'bit
+                                                             :initial-element 0)))
+                            (replace keep proj)
+                            (ddnnf--compile-ints-d4 clauses nvars a2i
+                                                    (ddnnf-leaf-cost circuit) (ddnnf-scale circuit)
+                                                    :projected keep :verbose verbose))
+                          (ddnnf--build clauses nvars a2i
+                                        (ddnnf-leaf-cost circuit) (ddnnf-scale circuit)))))
                (when verbose
-                 (if nonunits
-                     (format t "; evidence has ~D non-unit clause~:P; recompiled (circuit not reused)~%"
-                             (length nonunits))
-                     (format t "; evidence introduces ~D auxiliary atom~:P the circuit lacks; ~
+                 (cond (nonunits
+                        (format t "; evidence has ~D non-unit clause~:P; recompiled (circuit not reused)~%"
+                                (length nonunits)))
+                       (dropped-unit
+                        (format t "; evidence names an atom this projected circuit dropped; ~
+recompiled with it conjoined (circuit not reused)~%"))
+                       (t
+                        (format t "; evidence introduces ~D auxiliary atom~:P the circuit lacks; ~
 recompiled (circuit not reused)~%"
-                             (- nvars (ddnnf-nvars circuit)))))
+                                (- nvars (ddnnf-nvars circuit))))))
                (values newc nil)))
             (t
              (when (and verbose units)
                (format t "; conditioning on ~D unit-evidence literal~:P (circuit reused)~%"
                        (length units)))
-             (values circuit clamp)))))))
+             (values circuit clamp))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Reporting / entry points
@@ -734,12 +1014,19 @@ recompiled (circuit not reused)~%"
     (multiple-value-bind (z ztrue) (ddnnf-query circuit :clamp clamp)
       (let* ((nvars (ddnnf-nvars circuit))
              (i2a (ddnnf-i2a circuit))
-             (targets (if weighted-only
-                          (loop for v from 1 to nvars when (gethash v wv) collect v)
-                          (loop for v from 1 to nvars collect v)))
+             (proj (ddnnf-projected circuit))
+             ;; A projected circuit has no leaves for the atoms it projected away:
+             ;; their "marginal" would read as 0.  Report the kept atoms only.
+             (targets (loop for v from 1 to nvars
+                            when (and (or (not weighted-only) (gethash v wv))
+                                      (or (null proj) (= 1 (sbit proj v))))
+                              collect v))
              (results (sort (loop for v in targets
                                   collect (cons (aref i2a v) (/ (aref ztrue v) z)))
                             #'string-lessp :key (lambda (p) (princ-to-string (car p))))))
+        (when (and proj verbose)
+          (format t "; projected circuit: marginals for the ~D kept atoms only~%"
+                  (count 1 proj)))
         ;; Suppress auxiliary atoms (reification, Tseitin) from the default
         ;; listing; reified ones still show under --weighted-only
         ;; (P(atom) = P(the reified formula)).
@@ -758,6 +1045,7 @@ recompiled (circuit not reused)~%"
 
 (defun ddnnf-marginals (scnf-file &key circuit save-circuit out-file weighted-only scale
                                        evidence evidence-file (compiler :home) (d4 *d4*)
+                                       project project-atoms
                                        (verbose t))
   "Exact marginal P(atom = true) of every atom via a compiled d-DNNF circuit.
 
@@ -774,19 +1062,47 @@ reports every atom's marginal -- or, with WEIGHTED-ONLY, only the weighted atoms
 SCALE divides the integer weights (NIL reads the 'scale: N' header when compiling;
 on a loaded CIRCUIT, a non-NIL SCALE overrides the stored one without recompiling,
 since the weights are kept separate from the Boolean structure).  Prints one
-(MARGINAL <atom> <p>) line per atom (and to OUT-FILE if given); returns an alist."
-  (let ((base (cond (circuit (if (stringp circuit) (ddnnf-load circuit) circuit))
-                    (scnf-file (if (eq compiler :d4)
-                                   (ddnnf-compile-d4 scnf-file :scale scale :d4 d4 :verbose verbose)
-                                   (ddnnf-compile scnf-file :scale scale :verbose verbose)))
-                    (t (error "ddnnf-marginals: provide an scnf file or :circuit")))))
+(MARGINAL <atom> <p>) line per atom (and to OUT-FILE if given); returns an alist.
+
+PROJECT (d4 only) compiles the projection onto the actions, the final-slice goal
+atoms, the weighted atoms and PROJECT-ATOMS, after checking that it is exact --
+see DDNNF-COMPILE-D4.  Only those atoms are reported.  Evidence is then CONJOINED
+into that one compile (a projected circuit could not clamp an atom it dropped,
+and compile-then-condition would compile twice for non-unit evidence) -- unless
+SAVE-CIRCUIT asks for the unconditioned circuit, in which case the evidence's
+atoms are kept in the projection and it is applied afterwards as usual."
+  (when (and project (not (eq compiler :d4)) (not circuit))
+    (error "projection needs the d4 compiler (FiFO's own compiler cannot project)"))
+  (let* ((conjoin (and project scnf-file (not circuit) (not save-circuit)
+                       (or evidence evidence-file)))
+         (base (cond (circuit (if (stringp circuit) (ddnnf-load circuit) circuit))
+                     (scnf-file
+                      (if (eq compiler :d4)
+                          (ddnnf-compile-d4
+                           scnf-file :scale scale :d4 d4 :verbose verbose
+                           :project project
+                           :evidence (and conjoin evidence)
+                           :evidence-file (and conjoin evidence-file)
+                           ;; A saved circuit is the UNconditioned one; keep the
+                           ;; evidence's atoms in it so conditioning stays a clamp.
+                           :project-atoms
+                           (if (and project save-circuit (or evidence evidence-file))
+                               (append project-atoms
+                                       (remove-if #'evidence-aux-atom-p
+                                                  (wmc--clause-atoms
+                                                   (wmc--evidence-clauses evidence evidence-file))))
+                               project-atoms))
+                          (ddnnf-compile scnf-file :scale scale :verbose verbose)))
+                     (t (error "ddnnf-marginals: provide an scnf file or :circuit")))))
     (when (and circuit scale)
       (setf (ddnnf-scale base) (float scale 1.0d0)))
     (when save-circuit
       (ddnnf-save base save-circuit)
       (when verbose (format t "; saved compiled circuit to ~A~%" save-circuit)))
     (multiple-value-bind (c clamp)
-        (ddnnf--apply-evidence base evidence evidence-file verbose)
+        (if conjoin
+            (values base nil)
+            (ddnnf--apply-evidence base evidence evidence-file verbose))
       (ddnnf--report c clamp :out-file out-file :weighted-only weighted-only
                              :verbose verbose))))
 

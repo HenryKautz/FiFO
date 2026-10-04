@@ -594,12 +594,16 @@ the callers deduplicate the resulting atom lists."
                                               object-pairs type-table collect-fn))
                 (reachability-param-objects type object-pairs type-table)))))
 
-(defun collect-goal-fluents (g bindings object-pairs type-table effect-preds)
+(defun collect-goal-fluents (g bindings object-pairs type-table effect-preds
+                             &optional include-derived)
   "All ground atomic fluents appearing anywhere in goal G (regardless of
 polarity), with quantified variables expanded over their types' objects.
 Atoms of static predicates are excluded: they are resolved at instantiation
-time, not compiled to Holds fluents."
-  (flet ((recurse (x b) (collect-goal-fluents x b object-pairs type-table effect-preds)))
+time, not compiled to Holds fluents.  A derived predicate counts as static here
+(no action sets it) and is excluded too -- unless INCLUDE-DERIVED, which asks
+for every atom the goal compiles to a (holds ...), derived ones included."
+  (flet ((recurse (x b) (collect-goal-fluents x b object-pairs type-table effect-preds
+                                              include-derived)))
     (cond ((null g) '())
           ((negation-p g) (recurse (second g) bindings))
           ((and (consp g) (or (sym-name= (first g) "AND")
@@ -616,7 +620,8 @@ time, not compiled to Holds fluents."
                (third g) bindings object-pairs type-table #'recurse)
              :test #'equal))
           ((consp g)
-           (if (static-predicate-p (first g) effect-preds)
+           (if (and (static-predicate-p (first g) effect-preds)
+                    (not (and include-derived (derived-predicate-p (first g)))))
                '()
                (list (reachability-ground-substitute g bindings))))
           (t '()))))
@@ -1734,9 +1739,11 @@ fluents they reference are registered (so they get Holds variables and frame
 axioms), and the translated FiFO formulas are returned for the planner to write
 to a separate evidence scnf.
 
-Returns (values WFF-PATHNAME MIN-SLICES EVIDENCE-FIFO-FORMS): the reachability
-lower bound on numslices, and the FiFO translation of PDDL-EVIDENCE (NIL when
-none)."
+Returns (values WFF-PATHNAME MIN-SLICES EVIDENCE-FIFO-FORMS GOAL-ATOMS): the
+reachability lower bound on numslices, the FiFO translation of PDDL-EVIDENCE (NIL
+when none), and every ground atom of the hard goal -- fluents AND derived
+predicates, either polarity, quantifiers expanded, static atoms excluded -- which
+the planner records in the scnf for projected knowledge compilation."
   (let* ((problem-path (pathname problem-file))
          (problem-def (find-define (read-pddl-file problem-path) "PROBLEM" problem-path)))
     (multiple-value-bind (domain-name object-pairs init goal+ goal- goal constraints
@@ -1821,6 +1828,12 @@ none)."
                (goal-fluents (when general-goal
                                (collect-goal-fluents goal '() all-object-pairs
                                                      type-table effect-preds)))
+               ;; Every ground atom of the HARD goal, derived ones included, for the
+               ;; caller -- the planner records them in the scnf so projected
+               ;; compilation keeps them (see plan--write-projection-header).
+               (goal-atoms (when goal
+                             (collect-goal-fluents goal '() all-object-pairs
+                                                   type-table effect-preds t)))
                ;; Fluents mentioned by trajectory constraints need Holds
                ;; variables and frame axioms even if no action/goal touches them.
                (constraint-fluents (remove-duplicates
@@ -2135,8 +2148,9 @@ none)."
           (format t "Wrote ~a~%" (namestring out-path))
           ;; Return the wff pathname, the reachability lower bound on numslices
           ;; (an integer, or :unreachable if the relaxed problem has no plan), and
-          ;; the FiFO translation of any PDDL evidence (for a separate evidence scnf).
-          (values out-path min-slices evidence-fifo))))))
+          ;; the FiFO translation of any PDDL evidence (for a separate evidence scnf),
+          ;; and the hard goal's ground atoms.
+          (values out-path min-slices evidence-fifo goal-atoms))))))
 
 ;;; Command-line entry point.  Under "sbcl --script pddl2fifo.lisp args..."
 ;;; the remaining argv entries are the program arguments; under "sbcl --load"

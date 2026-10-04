@@ -483,8 +483,12 @@ banner."
                 ((string= up "UNSAT")        (return 'UNSAT))
                 ((string= up "SAT")          (return 'SAT))))))))
 
-(defun instantiate (WFFFILE &key SCNFILE STATICFILE OBSFILE)
+(defun instantiate (WFFFILE &key SCNFILE STATICFILE OBSFILE PREAMBLE)
   ;; :obsfile is a deprecated synonym for :staticfile
+  ;; PREAMBLE, if given, is called with the output stream AFTER parsing (so the
+  ;; grounded domains are in Bind) and BEFORE any clause is written, to put
+  ;; ';' comment lines at the top of the scnf -- e.g. the planner's projection
+  ;; header, which a reader can then find without scanning the whole file.
   (setq STATICFILE (or STATICFILE OBSFILE))
   (if (null (cl-ppcre:scan "\\.." WFFFILE))
       (setq WFFFILE (concatenate 'string WFFFILE ".wff")))
@@ -508,6 +512,7 @@ banner."
             ;; Check EVERY clause before writing any, so a failure cannot leave a
             ;; truncated theory behind in the superseded file.
             (dolist (C CL) (scnf-check-no-gensyms C WFFFILE))
+            (when PREAMBLE (funcall PREAMBLE OUTS))
             (loop for C in CL do (format OUTS "~S~%" C))
             (loop for W in Weights do (format OUTS "~S~%" W))
             (loop for P in Probabilities do (format OUTS "~S~%" P))

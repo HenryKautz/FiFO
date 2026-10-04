@@ -452,11 +452,24 @@ The frame axioms, precondition/effect axioms, and initial/goal constraints are t
 
 This suggests a **projected inference** approach: sample over action variable assignments (using MC-SAT or random restarts), and derive state variable values deterministically via unit propagation after each action sample. Marginals of state variables are then computed as a function of action marginals rather than being sampled directly. This drastically reduces the effective dimension of the sampling problem.
 
-**Status: not implemented.** Nothing in the pipeline projects onto the action
-variables; every back end samples or counts over the full assignment. The idea is
-recorded here rather than in
+**Status: the exact COUNTING form is implemented for d4; the sampling form is
+not.** `marginals.sh --solver d4 --project` (and `planner.sh --marginals --counter
+d4 --project`) compiles the projection onto the actions, the final-slice goal
+atoms, every weighted atom and any requested atom. The action and goal atoms come
+from a header the planner writes into the `.scnf` from the PARSED goal (derived
+hypothesis predicates included). Projection counts ∃Y.F(X,Y), which equals F's
+count exactly when X determines Y, so before compiling one SAT call (Padoa's
+method: F(X,Y) ∧ F(X,Y′) ∧ ⋁(y ⊕ y′) is UNSAT iff X determines Y) checks it, and
+an undetermined atom is named and refused. It is therefore exact, never an
+approximation — but it is NOT reliably faster. Measured (d4 time): pb1 11× and pb3
+30× faster projected onto actions; a 5-slice ppgen preference problem 4.6×
+(end-to-end); the same problem at 7 slices *slower* (33 s against 20 s); and
+IntrusionDetection at 6 slices finished neither way in 20 minutes, while
+SharpSAT-TD counts it in 1.5 s. Treat it as an option to measure, not a default.
+
+The sampling form below remains a proposal; it is recorded here rather than in
 [probability-background.md](Probability/probability-background.md) because that
-document covers the machinery FiFO has, and this is a proposal.
+document covers the machinery FiFO has.
 
 Two things make it more than a speculation. `--unitprop` already measures the
 effect the projection would exploit: on SatPlan encodings it reports 85–90% of
