@@ -25,7 +25,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# FIFO_LISP by the rule every script shares: fifo-lisp.sh is beside an installed
+# copy, and in a checkout it is in ../bin (this script lives in SatPlan/).
+if [[ -f "$SCRIPT_DIR/fifo-lisp.sh" ]]; then source "$SCRIPT_DIR/fifo-lisp.sh"
+else source "$SCRIPT_DIR/../bin/fifo-lisp.sh"; fi
+# ppgen.lisp: beside this script in a checkout; `make install` puts the script in
+# BINDIR and the lisp in FIFO_LISP.  When FIFO_LISP points at a CHECKOUT's lisp/,
+# ppgen.lisp is in that checkout's SatPlan/ instead -- looked for last.
 PPGEN="$SCRIPT_DIR/ppgen.lisp"
+[[ -f "$PPGEN" ]] || PPGEN="$FIFO_LISP/ppgen.lisp"
+[[ -f "$PPGEN" ]] || PPGEN="$FIFO_LISP/../SatPlan/ppgen.lisp"
 
 print_usage() {
   cat <<'EOF'

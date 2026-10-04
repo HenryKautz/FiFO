@@ -1,3 +1,8 @@
+[The original specification, which tests/run-test-ppgen.sh checks against.
+ For the user reference -- every option with its default and constraints --
+ see software-components.md, section "ppgen.sh"; for the explanation, see
+ SatPlan/satplan.md, "Generating problems with ppgen".]
+
 arguments to ppgen.sh:
 --style <grid | clique>
 for clique style:

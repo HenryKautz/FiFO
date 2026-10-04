@@ -13,12 +13,12 @@
 # it is what distinguishes map.sh from solve.sh.  Everything else `solve`
 # accepts is exposed below.
 #
-# The lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).
+# The lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).
 
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$SELF_DIR/fifo-lisp.sh"   # sets FIFO_LISP
 
 SOLVER="tt-open-wbo-inc-Glucose4_1"
 FORMAT="WCNF"
@@ -69,7 +69,7 @@ The answer file carries (*OBJECTIVE* N), the solver's RAW cost.  map.sh also
 prints the true cost, correcting N by the weight scale and shift that the
 weighted formats require:  true cost = N / scale + offset.
 
-The lisp is located via FIFO_LISP (default: \$HOME/lib/fifo/lisp); run
+The lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 MaxSAT solvers are not installed by default; bin/install-solvers.sh builds

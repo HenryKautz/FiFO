@@ -12,12 +12,12 @@
 # is what distinguishes solve.sh from map.sh.  Everything else `solve` accepts
 # is exposed below.
 #
-# The lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).
+# The lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).
 
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$SELF_DIR/fifo-lisp.sh"   # sets FIFO_LISP
 
 SOLVER="kissat"
 TIMEOUT=""
@@ -49,7 +49,7 @@ model.  A weighted problem solved this way is NOT optimized: its weights are
 written as 'cw' comment lines that a SAT solver ignores, so you get some model
 rather than the cheapest one.  Use map.sh when the weights are meant to matter.
 
-The lisp is located via FIFO_LISP (default: \$HOME/lib/fifo/lisp); run
+The lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 EOF
 }

@@ -189,19 +189,18 @@ you meant to condition on produces a plausible WRONG answer, not an error."
                (sort (copy-list known-names) #'string<))))))
 
 (defun evgen--resolved-domain (problem-path)
-  "The domain file pddl2fifo resolves (:domain <name>) to: <name>.pddl beside the
-problem."
-  (let* ((forms (let ((*read-eval* nil))
-                  (with-open-file (in problem-path) (read in))))
-         (dom (second (find-if (lambda (f) (and (consp f) (symbolp (first f))
-                                                (string-equal (symbol-name (first f))
-                                                              ":DOMAIN")))
-                               forms))))
-    (if dom
-        (merge-pathnames (make-pathname :name (string-downcase (symbol-name dom))
-                                        :type "pddl")
-                         problem-path)
-        problem-path)))
+  "The domain file pddl2fifo resolves (:domain <name>) to, by the same
+RESOLVE-DOMAIN-FILE: beside the problem, the current directory, the domain
+library."
+  ;; pddl2fifo's own parser, as plearn uses.  This used to be a hand-rolled
+  ;; search comparing the keyword's symbol-name with ":DOMAIN" -- it is "DOMAIN"
+  ;; -- so it never matched: a run without --domain recorded the PROBLEM file as
+  ;; its domain, and the settings block it wrote could not be replayed.
+  (let ((dom (second (get-section (find-define (read-pddl-file problem-path)
+                                               "PROBLEM" problem-path)
+                                  :domain))))
+    ;; NIL without a (:domain ...) form: pddl2fifo then reports that itself.
+    (and dom (resolve-domain-file problem-path dom))))
 
 (defun evgen--verify-emitted (lines fluents actions horizon)
   "Every literal written must name a real ground atom at a real slice.  Downstream
@@ -247,11 +246,10 @@ the evidence quietly do nothing, so the check belongs here."
     (let ((args (list (cons "--problem" (namestring problem-path))
                       (cons "--evidence" (namestring evidence))
                       (cons "--solution" (namestring solution-path))
-                      ;; The domain as given, or the file pddl2fifo resolved
-                      ;; (:domain ...) to, so the block is a complete command line.
-                      (cons "--domain" (namestring
-                                        (or domain
-                                            (evgen--resolved-domain problem-path))))
+                      ;; The domain as given, or the file (:domain ...) resolved
+                      ;; to (the caller passes it), so the block is a complete
+                      ;; command line.
+                      (cons "--domain" (namestring domain))
                       (cons "--slices" slices)
                       (cons "--observe" (if (string= (string-trim " " observe) "")
                                             "\"\"" observe))
@@ -872,9 +870,12 @@ observations as a single occur-in-order constraint.  Returns their count."
         ;; supplies, since parse-include merges it against the wff's directory and
         ;; the default relative "satplan.wff" only resolves for a problem sitting
         ;; beside the axioms.
-        (let ((wff (pddl2fifo (namestring problem-path)
-                              :domain-file (and domain (namestring domain))
-                              :satplan-path satplan)))
+        ;; Resolve the domain ONCE (the lookup reports the file it chose), and
+        ;; hand the same file to pddl2fifo and to every writer below.
+        (let* ((domain (or domain (evgen--resolved-domain problem-path)))
+               (wff (pddl2fifo (namestring problem-path)
+                               :domain-file (and domain (namestring domain))
+                               :satplan-path satplan)))
           (multiple-value-bind (all-fluents all-actions)
               (evgen--ground-universe wff horizon)
             (let ((names (evgen--observe-names observe)))
@@ -907,7 +908,7 @@ observations as a single occur-in-order constraint.  Returns their count."
                       (setf written f n c)))
                   (when export-ordering
                     (let ((n (evgen--export-ordering export-ordering problem-path
-                               (or domain (evgen--resolved-domain problem-path))
+                               domain
                                solution-path requested horizon true actions
                                slices observe (= nonstrict-ordering 0))))
                       (format *error-output* "Wrote ~a (~d observation~:p, ~a order)~%"
@@ -915,14 +916,14 @@ observations as a single occur-in-order constraint.  Returns their count."
                               (if (= nonstrict-ordering 0) "strict" "non-strict"))))
                   (when export-constraints
                     (let ((n (evgen--export-constraints export-constraints problem-path
-                               (or domain (evgen--resolved-domain problem-path))
+                               domain
                                solution-path requested horizon true fluents actions
                                slices observe)))
                       (format *error-output* "Wrote ~a (~d constraint~:p)~%"
                               export-constraints n)))
                   (when export-dataset
                     (let ((obs (evgen--export-dataset export-dataset problem-path
-                                 (or domain (evgen--resolved-domain problem-path))
+                                 domain
                                  solution-path requested horizon true actions
                                  slices observe)))
                       (let ((h (length (evgen--hypothesis-names

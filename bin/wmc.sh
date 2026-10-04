@@ -13,12 +13,12 @@
 # brute-force enumeration in marginals.sh, this scales via algebraic decision
 # diagrams.
 #
-# The FiFO lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).  ADDMC
+# The FiFO lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).  ADDMC
 # is found on PATH as 'addmc', SharpSAT-TD as 'sharpSAT'.
 
 set -euo pipefail
 
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-lisp.sh"   # sets FIFO_LISP
 
 print_usage() {
   cat <<'EOF'
@@ -56,7 +56,7 @@ set of exp(-(sum of the weights of the true literals)).
                    has more than one line only the first is used)
   -h, --help       show this help
 
-The FiFO lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
+The FiFO lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 ADDMC is a separate executable (https://github.com/HenryKautz/ADDMC, a macOS

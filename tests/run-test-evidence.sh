@@ -406,7 +406,7 @@ echo "=== occur-in-order as a windowed trajectory constraint ==="
 if command -v "${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" >/dev/null 2>&1; then
   CDIR="$TMP/cio"; mkdir -p "$CDIR"; cd "$CDIR"
   sed 's/:disjunctive-preconditions/:constraints :disjunctive-preconditions/' \
-      "$REPO/SatPlan/clara-logistics.pddl" > dom.pddl
+      "$REPO/pddl/clara-logistics.pddl" > dom.pddl
   bash "$REPO/SatPlan/ppgen.sh" --style clique --clique-size 3 --number-cliques 2 \
        --packages 3 --trucks 2 --airplanes 1 --preferences 1 6 \
        --goals-per-package 2 1 --seed 23 -o base.pddl 2>/dev/null

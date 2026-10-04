@@ -35,6 +35,9 @@
 
 _FIFO_SOLVERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# FIFO_LISP, by the rule every script shares.
+source "$_FIFO_SOLVERS_DIR/fifo-lisp.sh"
+
 # Fallback classification for binaries the table does not name (a path, or a
 # local build).  Only used to give a better error; the table is authoritative.
 _FIFO_SAT_PATTERNS='kissat cadical minisat glucose lingeling cryptominisat picosat mallob painless march plingeling treengeling'
@@ -44,20 +47,13 @@ _fifo_lower() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 
 # --- the shared table -------------------------------------------------------
 
-# When FIFO_LISP is set it is AUTHORITATIVE: the table must come from the same
-# directory as the FiFO.lisp that will be loaded.  Falling back to another
-# directory's table would reintroduce exactly the drift this file exists to stop
-# -- the shell resolving names from one table while the Lisp reads another.
-# The search list applies only when FIFO_LISP is unset.
+# FIFO_LISP is AUTHORITATIVE: the table must come from the same directory as the
+# FiFO.lisp that will be loaded.  Falling back to another directory's table
+# would reintroduce exactly the drift this file exists to stop -- the shell
+# resolving names from one table while the Lisp reads another.  fifo-lisp.sh,
+# sourced above, has already set FIFO_LISP by the rule every script shares.
 _fifo_table_path() {
-  local d
-  if [[ -n "${FIFO_LISP:-}" ]]; then
-    [[ -f "$FIFO_LISP/solvers.dat" ]] && { printf '%s' "$FIFO_LISP/solvers.dat"; return 0; }
-    return 1
-  fi
-  for d in "$_FIFO_SOLVERS_DIR/../lisp" "$HOME/lib/fifo/lisp"; do
-    [[ -f "$d/solvers.dat" ]] && { printf '%s' "$d/solvers.dat"; return 0; }
-  done
+  [[ -f "$FIFO_LISP/solvers.dat" ]] && { printf '%s' "$FIFO_LISP/solvers.dat"; return 0; }
   return 1
 }
 
@@ -69,8 +65,7 @@ _fifo_load_solver_table() {
   [[ -n "${_FIFO_TABLE:-}" ]] && return 0
   local path
   if ! path="$(_fifo_table_path)"; then
-    if [[ -n "${FIFO_LISP:-}" ]]; then
-      cat >&2 <<EOF
+    cat >&2 <<EOF
 fifo: solvers.dat not found in \$FIFO_LISP ($FIFO_LISP).
 
   It is part of the FiFO library and lists the solvers and counters the scripts
@@ -80,18 +75,6 @@ fifo: solvers.dat not found in \$FIFO_LISP ($FIFO_LISP).
 
   Run 'make install', or point FIFO_LISP at a checkout's lisp/ directory.
 EOF
-    else
-      cat >&2 <<EOF
-fifo: solvers.dat not found.
-
-  It is part of the FiFO library and lists the solvers and counters the scripts
-  accept.  Looked in:
-      $_FIFO_SOLVERS_DIR/../lisp
-      $HOME/lib/fifo/lisp
-
-  Run 'make install', or set FIFO_LISP to a checkout's lisp/ directory.
-EOF
-    fi
     return 1
   fi
   _FIFO_TABLE_PATH="$path"

@@ -19,11 +19,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-EVGEN="$SCRIPT_DIR/evgen.lisp"
 
-# The lisp: the installed copy by default, overridden by FIFO_LISP -- the same
-# convention planner.sh uses.
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+# FIFO_LISP by the rule every script shares: fifo-lisp.sh is beside an installed
+# copy, and in a checkout it is in ../bin (this script lives in SatPlan/).
+if [[ -f "$SCRIPT_DIR/fifo-lisp.sh" ]]; then source "$SCRIPT_DIR/fifo-lisp.sh"
+else source "$SCRIPT_DIR/../bin/fifo-lisp.sh"; fi
+
+# evgen.lisp: beside this script in a checkout; `make install` puts the script in
+# BINDIR and the lisp in FIFO_LISP.  When FIFO_LISP points at a CHECKOUT's lisp/,
+# evgen.lisp is in that checkout's SatPlan/ instead -- looked for last.
+EVGEN="$SCRIPT_DIR/evgen.lisp"
+[[ -f "$EVGEN" ]] || EVGEN="$FIFO_LISP/evgen.lisp"
+[[ -f "$EVGEN" ]] || EVGEN="$FIFO_LISP/../SatPlan/evgen.lisp"
 
 print_usage() {
   cat <<'EOF'
@@ -37,8 +44,11 @@ usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options
                           Slices are numbered from 1.  Fluents run 1..N and
                           actions 1..N-1, so the last slice yields fluents only
   --solution <file>       the planner's answer file, default <problem>.answer
-  --domain <file>         the PDDL domain, default the (:domain ...) named in
-                          the problem, resolved as <name>.pddl beside it
+  --domain <file>         the PDDL domain; a bare name not in the current
+                          directory is looked for in the domain library
+                          ($FIFO_LISP/../pddl).  Default: the problem's
+                          (:domain <name>) as <name>.pddl beside the problem,
+                          else in the current directory, else in the library
   --observe "<names>"     restrict to these fluent and action names, comma
                           separated, e.g. "fly,in".  Default "" = no
                           restriction.  A name matching nothing is an error
@@ -167,7 +177,7 @@ if [[ "$RECOGNITION" == "1" && "$NEGATIVE" == "1" ]]; then
 fi
 [[ -f "$PROBLEM" ]] || die "problem file not found: $PROBLEM"
 if [[ -n "$SOLUTION" && ! -f "$SOLUTION" ]]; then die "solution file not found: $SOLUTION"; fi
-if [[ -n "$DOMAIN"   && ! -f "$DOMAIN"   ]]; then die "domain file not found: $DOMAIN"; fi
+if [[ -n "$DOMAIN" ]]; then DOMAIN="$(_fifo_find_domain "$DOMAIN")" || exit 2; fi
 
 command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
 [[ -f "$EVGEN" ]] || die "generator not found: $EVGEN"

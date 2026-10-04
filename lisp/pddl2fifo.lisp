@@ -85,6 +85,56 @@ facts, such a dummy fact generates no clauses.")
   "Chain index distinguishing the monitor fluents of multiple (occur-in-order
 ...) evidence forms in one translation; rebound to 0 per pddl2fifo call.")
 
+(defparameter *pddl-library-directory*
+  (let ((here (or *load-truename* *compile-file-truename*)))
+    (when here
+      (make-pathname :directory (append (butlast (pathname-directory here)) (list "pddl"))
+                     :name nil :type nil :version nil :defaults here)))
+  "The PDDL domain library: the pddl/ directory beside the lisp/ directory this
+file was loaded from -- a checkout's pddl/, or ~/lib/fifo/pddl where `make
+install` puts it.  Taken from the load location rather than from a variable, so
+the library always matches the lisp being run, as solvers.dat does.")
+
+(defun resolve-domain-file (problem-path domain-name)
+  "The domain file for a problem whose (:domain DOMAIN-NAME) is all it says:
+<domain-name>.pddl looked for, in order, beside the problem, in the current
+directory, and in the domain library *PDDL-LIBRARY-DIRECTORY*.
+
+Beside the problem comes first because a problem and its domain usually travel
+together, and when the current directory differs, a same-named file there is
+more likely an unrelated copy; picking it would plan against the wrong domain
+with no error.  For the same reason the file chosen is reported on
+*ERROR-OUTPUT*.  A miss is an error naming every place tried."
+  (let* ((file (make-pathname :name (string-downcase (symbol-name domain-name))
+                              :type "pddl"))
+         (places (remove nil
+                         (list (merge-pathnames file problem-path)
+                               ;; the process's directory, not *default-pathname-
+                               ;; defaults*, which a caller may have rebound --
+                               ;; parsed as a NATIVE name, so a directory called
+                               ;; [old] or exp*2 is not read as a wild pathname
+                               ;; (probe-file would then error, not fall through)
+                               (merge-pathnames file (sb-ext:parse-native-namestring
+                                                      (sb-unix:posix-getcwd) nil
+                                                      *default-pathname-defaults*
+                                                      :as-directory t))
+                               (when *pddl-library-directory*
+                                 (merge-pathnames file *pddl-library-directory*)))))
+         (found (find-if #'probe-file places)))
+    (unless found
+      (error "No domain file for (:domain ~(~a~)): looked for ~a~{~%  ~a~}"
+             domain-name (namestring file) (mapcar #'namestring places)))
+    (let ((path (truename found)))
+      (format *error-output* "; domain ~(~a~): ~a~%" domain-name (namestring path))
+      path)))
+
+(defun pddl-library-file-p (path)
+  "True when PATH is a file in the domain library, which callers must not write
+into (e.g. a learned copy of a library domain goes beside the problem)."
+  (let ((lib (and *pddl-library-directory* (probe-file *pddl-library-directory*))))
+    (and lib (probe-file path)
+         (equal (pathname-directory (truename path)) (pathname-directory lib)))))
+
 (defvar *derived-definitions* nil
   "Alist mapping each derived predicate NAME to (name param-pairs body), one
 entry per (:derived (P ?args) body) domain section; bound per pddl2fifo call.
@@ -1753,10 +1803,7 @@ the planner records in the scnf for projected knowledge compilation."
         (error "No domain file given and no (:domain ...) form in ~a" problem-path))
       (let* ((domain-path (if domain-file
                               (pathname domain-file)
-                              (merge-pathnames
-                                (make-pathname :name (string-downcase (symbol-name domain-name))
-                                               :type "pddl")
-                                problem-path)))
+                              (resolve-domain-file problem-path domain-name)))
              (domain-def (find-define (read-pddl-file domain-path) "DOMAIN" domain-path))
              (*derived-definitions* (collect-derived-definitions domain-def))
              (constant-pairs (parse-typed-list (rest (get-section domain-def :constants))

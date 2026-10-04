@@ -16,7 +16,7 @@
   - [The files](#the-files) · [Which script runs which part](#which-script-runs-which-part)
 - [Conventions shared by every script](#conventions-shared-by-every-script)
 - [The scripts](#the-scripts)
-  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [lisp/solvers.dat](#lispsolversdat) · [fifo-answer.sh](#fifo-answersh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
+  - [install-solvers.sh](#install-solverssh) · [solve.sh](#solvesh) · [map.sh](#mapsh) · [planner.sh](#plannersh) · [recognize.sh](#recognizesh) · [ppgen.sh](#ppgensh) · [evgen.sh](#evgensh) · [marginals.sh](#marginalssh) · [wmc.sh](#wmcsh) · [learn.sh](#learnsh) · [learn-pddl.sh](#learn-pddlsh) · [cleanupfifo.sh](#cleanupfifosh) · [run_regression_tests.sh](#run_regression_testssh) · [fifo-options.sh](#fifo-optionssh) · [fifo-solvers.sh](#fifo-solverssh) · [lisp/solvers.dat](#lispsolversdat) · [fifo-answer.sh](#fifo-answersh) · [fifo-lisp.sh](#fifo-lispsh) · [test runners](#the-test-runners-under-tests) · [make-recognition-instance.lisp](#make-recognition-instancelisp)
 - [The Lisp modules](#the-lisp-modules)
 - [Solvers and external tools](#solvers-and-external-tools)
   - [How FiFO finds a solver](#how-fifo-finds-a-solver)
@@ -114,6 +114,8 @@ numbers on the clauses, never the shape of the pipeline.
 | [`map.sh`](#mapsh) | instantiate → propositionalize (**WCNF**) → *[MaxPre preprocess]* → MaxSAT solver → *[reconstruct]* → interpret | `.answer` with `(*OBJECTIVE* N)` and the minimum-cost model; also prints the **true cost** `N / scale + offset` |
 | [`planner.sh`](#plannersh) | pddl2fifo → *(per horizon)* instantiate → propositionalize → SAT; then re-solve the smallest feasible horizon in WCNF if the domain has costs | the plan and its cost, plus `.wff`, `.scnf`, `.cnf`/`.wcnf`, `.map`, `.satout`, `.answer` beside the problem. With `--marginals`, marginals at the working horizon instead of a plan |
 | [`recognize.sh`](#recognizesh) | one instantiation, `2n` clamped MaxSAT solves (comply / not-comply per hypothesis); hypotheses parsed from the `:goal`; `--evidence-kind pddl\|fifo` | `summary.tsv` — costs, likelihood, prior, posterior per hypothesis — and the argmax on stdout |
+| [`ppgen.sh`](#ppgensh) | none — generates input: a random `clara-logistics` problem (clique or grid topology; hard goals, graded preferences, or truck goals) | a `.pddl` problem opening with the settings that regenerate it |
+| [`evgen.sh`](#evgensh) | reads a problem and its `.answer`; re-derives the ground universe to validate what it writes | FiFO evidence for `planner.sh --evidence-file` / `recognize.sh`, and/or exports: R&G dataset, slice-pinned `:constraints`, or one ordering constraint |
 | [`marginals.sh`](#marginalssh) | reads the `.scnf` **directly**; no DIMACS stage except inside `max-term`, which writes its own wcnf | `(MARGINAL <atom> <p>)` lines, or `(MAXTERM-MARGINAL ...)` for `--solver max-term`; `--out` also writes them to a file |
 | [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC (or SharpSAT-TD with `--counter sharpsat-td`) | `(WMC <Z>)`, the partition function |
 | [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
@@ -132,18 +134,36 @@ them.
 
 ## Conventions shared by every script
 
-**Locating the Lisp.** Every script finds `FiFO.lisp` and its siblings through the
-`FIFO_LISP` environment variable, which defaults to `~/lib/fifo/lisp` — the
-install location. `make install` copies `bin/` → `~/bin` and `lisp/` →
-`~/lib/fifo/lisp` (override with `make install BINDIR=... LISPDIR=...`). To run
-from a source checkout without installing:
+**Locating the Lisp.** Every script finds `FiFO.lisp` and its siblings in
+`FIFO_LISP`, which `bin/fifo-lisp.sh` (sourced by every script) sets and exports
+by one rule:
 
-```sh
-export FIFO_LISP=/path/to/FiFO/lisp
-```
+1. `FIFO_LISP`, if it is already set;
+2. otherwise `<script dir>/../lisp`, if it contains `FiFO.lisp` — so a script run
+   from a checkout uses that checkout's `lisp/`, with no setup;
+3. otherwise `~/lib/fifo/lisp`, the install location.
 
-The test runners under `tests/` default `FIFO_LISP` to the *checkout's* `lisp/`
-instead, so they always exercise the working copy.
+`make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override
+with `make install BINDIR=... LISPDIR=...`). It also installs `SatPlan/ppgen.sh`
+and `SatPlan/evgen.sh` into `BINDIR` and their `ppgen.lisp`/`evgen.lisp` into
+`LISPDIR`; those two scripts load their `.lisp` from beside themselves when it is
+there (the checkout) and from `FIFO_LISP` otherwise. If you install the lisp
+somewhere other than `~/lib/fifo/lisp`, set `FIFO_LISP` to it.
+
+The test runners under `tests/` default `FIFO_LISP` to the *checkout's* `lisp/`,
+so they always exercise the working copy.
+
+**Locating a PDDL domain.** Domains that ship with FiFO live in the *domain
+library*, `$FIFO_LISP/../pddl` — `pddl/` in a checkout, `~/lib/fifo/pddl` after
+`make install` (which copies `pddl/*.pddl` there). `clara-logistics.pddl`, the
+domain ppgen's problems name, is in it. With no `--domain`, a problem's
+`(:domain <name>)` names `<name>.pddl`, looked for beside the problem, then in
+the current directory, then in the library; the file chosen is printed on stderr
+(`; domain <name>: <path>`), and a miss lists every place tried. An explicit
+`--domain` is used as given, except that a bare name (no `/`) not in the current
+directory is looked up in the library. This applies to `planner.sh`,
+`learn-pddl.sh`, `evgen.sh` and `recognize.sh`. `learn-pddl.sh` writes the learned
+copy of a library domain beside the problem, never into the library.
 
 **`--options <file>`.** `planner.sh`, `marginals.sh`, `wmc.sh`, `learn.sh`,
 `learn-pddl.sh`, and `recognize.sh` all accept `--options FILE`, which splices the
@@ -321,7 +341,7 @@ feasible horizon is re-solved as weighted MaxSAT to minimize total cost.
 
 | Option | Meaning |
 |---|---|
-| `--domain <file>` | Domain file. Default: the `(:domain <name>)` named by the problem, `<name>.pddl` next to it. |
+| `--domain <file>` | Domain file; a bare name not in the current directory is looked up in the domain library. Default: the problem's `(:domain <name>)` as `<name>.pddl` — beside the problem, else in the current directory, else in the library. |
 | `--minslices <int>` | First horizon tried. Default: `pddl2fifo`'s relaxed-planning-graph reachability lower bound (2 for a `.wff`). |
 | `--maxslices <int>` | Last horizon tried. Default: `2 × minslices`. |
 | `--numslices <int>` | Shorthand setting both bounds — solve at exactly this horizon. |
@@ -453,6 +473,103 @@ restricted to action names are the portable choice.
 timeout). **Output.** A table on stdout, the argmax hypothesis, and
 `<out>/summary.tsv` with columns `hyp, c_O, c_notO, delta, likelihood, prior,
 posterior`. Per-hypothesis intermediates are deleted as their costs are read.
+
+------
+
+### `ppgen.sh`
+
+Generates a random planning problem for the `clara-logistics` domain (places,
+trucks, airplanes, packages; `drive` and `fly` priced by the problem file), in
+one of two topologies. The explanation — what each topology is for, how the goal
+options are encoded, worked examples — is in
+[satplan.md → Generating problems with ppgen](SatPlan/satplan.md#generating-problems-with-ppgen).
+
+```sh
+ppgen.sh --style <clique|grid> [options]
+```
+
+| Option | Meaning | Default | Rules |
+|---|---|---|---|
+| `--style clique\|grid` | The topology: fully connected groups of places with one airport each, or an M×N grid of adjacent places. | — | Required. |
+| `--clique-size <N>` | Places in each clique. | — | Clique style only, and required there. |
+| `--number-cliques <N>` | Number of cliques. | — | Clique style only, and required there. |
+| `--dimensions <M> <N>` | Grid size. | — | Grid style only, and required there. Both positive. |
+| `--airports <N>` | Airports on the grid, placed to maximize their minimum separation. | 2 | Grid style only (a clique has one airport each); no more than the grid's places. |
+| `--trucks <N>` | Number of trucks. | Clique: number of cliques. Grid: number of airports. | At least 1 with `--truck-goals`. |
+| `--airplanes <N>` | Number of airplanes, spread evenly over the airports. | Clique: number of cliques. Grid: number of airports. With `--truck-goals`: 0. | |
+| `--packages <N>` | Number of packages. | Clique: number of cliques. Grid: number of airports. With `--truck-goals`: 0. | At least 1, unless `--truck-goals`, which refuses any above 0. |
+| `--drive-cost <R>` | Cost of one drive, as `(= (drive-cost) R)` in `:init`. | 1 | A number. |
+| `--fly-cost <R>` | Cost of one flight, as `(= (fly-cost) R)`. | 3 | A number. |
+| `--preferences none` | Conjunctive goal: every package must reach its destination. | ✓ | |
+| `--preferences <L> <H>` | Disjunctive goal: at least one delivery is required, and each delivery is a preference whose weight is equally spaced from L to H, assigned in random order. | | Both bounds. |
+| `--goals-per-package <N> <M>` | N alternative destinations per package (any one delivers it); M = 1 also requires *every* package to reach one of its own. | `1 0` | N ≥ 1; M is 0 or 1. N > 1 or M = 1 needs `--preferences`. N at most the places a package can go: all but its start, or with `--truck-goals` in clique style, clique-size − 1. M = 1 conflicts with a `--maxgoals` below the number of goal objects. |
+| `--goals-per-object <N> <M>` | The same option under a neutral name, for `--truck-goals`. | | Recorded as `--goals-per-package`. |
+| `--maxgoals <N>` | At most N of the goals may hold in the goal state. | no cap | 1 ≤ N ≤ 3 (the encoding grows as goals^(N+1)). Needs `--preferences`. |
+| `--truck-goals` | No packages: the goal sends each truck to a destination other than its start — within its own clique in clique style. Every goal option above then applies per truck. | off | |
+| `--seed <N>` | Seed for the random draws. | from the clock | A non-negative integer. |
+| `--name <name>` | Problem name in `(define (problem …))`. | `<style>-problem` | |
+| `--domain <name>` | Domain *name* in `(:domain …)` — a name, not a file. | `clara-logistics` | |
+| `-o`, `--output <file>` | Write the problem here. | stdout | |
+| `-h`, `--help` | Usage. | | |
+
+**Output.** One PDDL problem. Every file opens with the settings that made it —
+defaults included, and the seed even when the clock chose it — as `;;` comment
+lines that regenerate the file byte for byte. `--maxgoals` is recorded only when
+given (its unset value, no cap, has no spelling), and `--truck-goals` as a bare
+flag alongside `--packages 0`.
+
+**Planning it.** The problem names `(:domain clara-logistics)`, which is in the
+domain library, so `planner.sh problem.pddl` finds the domain from any directory
+(see [Locating a PDDL domain](#conventions-shared-by-every-script)).
+
+**Files.** `SatPlan/ppgen.sh` and `SatPlan/ppgen.lisp` in the checkout; `make
+install` puts the script in `~/bin` and the Lisp beside the rest of the library.
+`SatPlan/ppgen-specs.txt` is the original specification. Tests:
+`tests/run-test-ppgen.sh`.
+
+------
+
+### `evgen.sh`
+
+Builds plan-recognition observations from a plan you already have: given a PDDL
+problem and the `.answer` `planner.sh` wrote for it, it writes the fluents and
+actions true at chosen slices — as FiFO evidence, or exported for other tools. The
+explanation — the observation model, choosing an output, each export's caveats —
+is in [satplan.md → Generating evidence with evgen](SatPlan/satplan.md#generating-evidence-with-evgen).
+
+```sh
+evgen.sh --problem <file.pddl> --slices <spec> <one or more outputs> [options]
+```
+
+| Option | Meaning | Default | Rules |
+|---|---|---|---|
+| `--problem <file>` | The PDDL problem. | — | Required. |
+| `--solution <file>` | The planner's answer for it. | `<problem>.answer` | Must be a `SAT` answer. |
+| `--domain <file>` | The PDDL domain. | The problem's `(:domain <name>)` as `<name>.pddl`: beside the problem, else in the current directory, else in the domain library | A bare name not in the current directory is looked up in the library. |
+| `--slices "<spec>"` | Which slices are observed: integers and `A-B` ranges, comma-separated, e.g. `"1-3,5"`. Fluents run 1…N, actions 1…N−1. | — | Required. Within the solution's horizon. |
+| `--observe "<names>"` | Restrict to these fluent and action names, comma-separated, e.g. `"fly,in"`. Restricts negatives too. | no restriction | Each name must match something in the problem. |
+| `--negative-evidence 0\|1` | 1 also records `(not …)` for everything false at those slices — complete observability. | 0 | Refused with `--recognition 1` and with every export. |
+| `--evidence <file>` | **Output:** FiFO evidence forms, one literal per line, for `planner.sh --evidence-file`. | | At least one output is required. |
+| `--recognition 0\|1` | 1 writes the evidence as a single `(and …)` form, which `recognize.sh --evidence-kind fifo` needs. | 0 | Refuses `--negative-evidence 1`. |
+| `--export-dataset <dir>` | **Output:** the instance in the Ramírez & Geffner dataset format — `domain.pddl`, `template.pddl`, `hyps.dat`, `obs.dat`, `real_hyp.dat`, a README. Actions in order, no times. | | Needs a recognition instance (a goal that is a disjunction of nullary derived predicates). Actions only: a fluent in `--observe` is an error. |
+| `--export-constraints <dir>` | **Output:** the problem with each observation pinned to its slice in `(:constraints …)` — `hold-during` for a fluent, the non-standard `occur-sometime` for an action. | | |
+| `--export-ordering-constraints <dir>` | **Output:** the problem with one `(occur-in-order M N …)` carrying the observed actions' order and span. | | Actions only. Two observed at the same slice are refused unless `--nonstrict-ordering 1`. |
+| `--nonstrict-ordering 0\|1` | With the ordering export, 1 emits `occur-in-nonstrict-order`, whose observations may share a slice. | 0 | |
+| `-h`, `--help` | Usage. | | |
+
+**Checked before writing.** Every literal emitted must name a real ground atom at
+a real slice of the problem; evgen refuses a slice beyond the solution's horizon,
+an `--observe` name that matches nothing, a solution that is not `SAT`, and an
+empty selection. Downstream, a literal naming an atom the problem lacks would
+constrain nothing, silently.
+
+**Output.** The evidence file opens with the settings that made it — the domain
+file it resolved included — so it can be regenerated exactly. The exports write
+the files listed above, each with a README.
+
+**Files.** `SatPlan/evgen.sh` and `SatPlan/evgen.lisp` in the checkout; `make
+install` puts the script in `~/bin` and the Lisp beside the rest of the library.
+Tests: `tests/run-test-evgen.sh`.
 
 ------
 
@@ -673,12 +790,12 @@ learn-pddl.sh <problem.pddl> [--domain <domain.pddl>] [options]
 
 | Option | Meaning |
 |---|---|
-| `--domain <file>` | Domain file. Default: `<name>.pddl` from the problem's `(:domain <name>)`, next to the problem. |
+| `--domain <file>` | Domain file; a bare name not in the current directory is looked up in the domain library. Default: the problem's `(:domain <name>)` as `<name>.pddl` — beside the problem, else in the current directory, else in the library. |
 | `--method log-odds\|maxent` | Estimator (default `log-odds`). |
 | `--maxent` | Shorthand for `--method maxent`. |
 | `--scale <int>` | Integer weight resolution; real weight = `w/scale` (default 100). |
 | `--numslices <int>` | Instantiation horizon used for learning (default 3). For `--maxent` the problem must be feasible at this horizon; `log-odds` is horizon-independent. |
-| `--domain-out <file>` | Learned domain path. Default `<domain-root>_learned.pddl`. |
+| `--domain-out <file>` | Learned domain path. Default `<domain-root>_learned.pddl` beside the domain — or beside the problem when the domain is from the library, which is never written into. |
 | `--problem-out <file>` | Learned problem path. Default `<problem-root>_learned.pddl`; written only if the instance has preference or `:fluent-cost` probabilities. |
 | `--options <file>` | Splice in the options from `<file>`. |
 | `-h`, `--help` | Usage. |
@@ -843,6 +960,17 @@ name and usage.
 
 ------
 
+### `fifo-lisp.sh`
+
+Not a command — a helper every script **sources** (directly, or through
+`fifo-solvers.sh`). Sourcing it sets and exports `FIFO_LISP` by the rule under
+*Locating the Lisp* above, resolving `../lisp` relative to its own location. It
+also defines `_fifo_find_domain <file>`, which prints the path of an explicitly
+named domain file: as given if it exists, else — for a bare name only — from the
+domain library `$FIFO_LISP/../pddl`; otherwise it fails naming where it looked.
+
+------
+
 ### The test runners under `tests/`
 
 All are behavioral or gold-diff suites, runnable from anywhere unless noted, and
@@ -870,6 +998,8 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-mcc-dialect.sh` | `wmc.lisp`'s two weighted-CNF dialects. The load-bearing cases are semantic, not syntactic: the 2020 and 2024 files must denote the **same Z**, each read under its own parser's default rule, checked by `tests/mcc-reference-count.py` — a brute-force counter sharing no code with FiFO, itself anchored to a Z computed by hand. Then the hazard, quantified: a faithful line-by-line translation of the 2020 file (what a naive converter emits) must come out **different** (1.367879 against the true 1.735759) and must be **refused** when a cost is negative. Without those two the suite would pass on a one-polarity emitter, which is the entire bug. Also the syntax each real parser demands (`c t wmc`, `p cnf`, exactly 6 tokens per weight line, both polarities of every variable), that the default dialect is still 2020 so existing callers are untouched, scale and evidence reaching both alike, and the real ADDMC and SharpSAT-TD binaries agreeing with the reference reader — those two skipping cleanly when absent. Mutation-checked: a one-polarity 2024 emitter reddens 10 of 20 cases. |
 | `tests/run-test-weight-formula.sh` | Formula-valued `weight`/`probability`: the reified biconditional appears, illegal nesting errors, and maxent learns a formula's weight so `P(φ)` hits its target. |
 | `tests/run-test-project.sh` | Projected d4 compilation: every kept atom's marginal equals the full compile's (Switch, a preference problem, evidence, hypotheses, no header, a reloaded circuit, planner.sh — never on all-0/1 marginals), Z equal, an inexact projection refused naming an atom, the derived `(HYPi)` goals recorded in the header, a clamp on a dropped atom refused, and the option refusals. Skips without d4 or kissat. |
+| `tests/run-test-docs.sh` | Every flag in `ppgen.sh`'s and `evgen.sh`'s argument parsers (read from the `case` arms, not the `--help` text) appears in that script's option table in this file. Needs nothing installed. |
+| `tests/run-test-paths.sh` | Where the scripts find the lisp and PDDL domains. Lisp: a checkout script with `FIFO_LISP` unset uses the checkout's lisp, `FIFO_LISP` wins and is exported, an installed copy (a real `make install` into a throwaway HOME) uses `~/lib/fifo/lisp`, a `../lisp` without `FiFO.lisp` is ignored, and the installed `recognize.sh` and `ppgen.sh` run with `FIFO_LISP` unset. Domains: the library when nothing is beside the problem or in the current directory, the current directory before the library, beside the problem before the current directory (the skipped copy is broken PDDL, so the wrong order fails), a miss listing all three places, the `--domain` bare-name fallback, a `/` path taken literally, learn-pddl's learned copy of a library domain written beside the problem, and evgen recording the library file. The domain cases skip without kissat and tt-open-wbo-inc. |
 | `tests/run-test-tseitin.sh` | The compact encoding's `(TSEITIN n)` auxiliaries: an UNSAT theory is UNSAT, a valid `prove` is PROVEN, marginals are exact (7/11, not 2/3) with the auxiliaries hidden, a randomized property test (`tests/tseitin-property.lisp`: compact = explicit = truth table, through the file round trip; refuses to pass if the encoding never fired), the two gold theories against hand-computed model counts, compound `--evidence` against the same evidence instantiated in, the evidence namespace, `parse-same-env` numbering, and every reader refusing an uninterned symbol. Fails 13 of 17 against the pre-fix code. |
 | `tests/run-test-odds.sh` | The `:odds` sugar at all four cost sites. Arithmetic alone would pass with every sign flipped, so the load-bearing cases are semantic: `:odds 2` must make a free atom twice as likely (exact marginal P = 2/3), and the *same* `:odds 2` on a PDDL preference must come out with the **opposite** sign and still mean "twice as likely". Also that `:odds r` is a factor on the theory's baseline rather than an absolute `r:1` (a conjunction at baseline 1:3 lands at P = 1/7), that it translates identically to writing the number out, the error paths at each site, and that `recognize.sh --priors-from-preferences` reads `:odds 2` as prior weight 2 exactly. Mutation-checked: flipping either sign conversion reddens the semantic cases. The recognize cases skip without python-sat. |
 

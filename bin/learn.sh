@@ -9,12 +9,11 @@
 # maximum entropy over the feasible set.  Optionally also writes the learned
 # weights back into a copy of the source .wff (--wff).
 #
-# The lisp is found in the installed lisp directory ($HOME/lib/fifo/lisp by
-# default; override with the FIFO_LISP environment variable).
+# The lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).
 
 set -euo pipefail
 
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-lisp.sh"   # sets FIFO_LISP
 
 print_usage() {
   cat <<'EOF'
@@ -56,7 +55,7 @@ Estimators:
   maxent    exact fit over the feasible set; matches each tie group's mean
             marginal to its target (small instances only -- it enumerates).
 
-The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
+The lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 EOF
 }

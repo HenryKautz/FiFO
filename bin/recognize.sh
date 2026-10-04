@@ -96,8 +96,10 @@
 set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-: "${FIFO_LISP:=$SELF/../lisp}"
-export FIFO_LISP
+# Sets and exports FIFO_LISP, so planner.sh and marginals.sh get the same lisp.
+# (This used to default to $SELF/../lisp, which for an installed copy in ~/bin
+# is ~/lisp: the installed recognize.sh failed unless FIFO_LISP was set.)
+source "$SELF/fifo-lisp.sh"
 PLANNER="$SELF/planner.sh"
 [[ -x "$PLANNER" || -f "$PLANNER" ]] || { echo "planner.sh not found at $PLANNER" >&2; exit 2; }
 command -v sbcl >/dev/null || { echo "sbcl not found on PATH" >&2; exit 2; }
@@ -155,7 +157,9 @@ case "$BASELINE" in
   per-hypothesis|best-rival) ;;
   *) echo "--baseline must be 'per-hypothesis' or 'best-rival', got: $BASELINE" >&2; exit 2;;
 esac
-for f in "$DOMAIN" "$PROBLEM" "$EVIDENCE"; do
+# The domain may be a bare name in the domain library ($FIFO_LISP/../pddl).
+DOMAIN="$(_fifo_find_domain "$DOMAIN")" || exit 2
+for f in "$PROBLEM" "$EVIDENCE"; do
   [[ -f "$f" ]] || { echo "no such file: $f" >&2; exit 2; }
 done
 DOMAIN="$(cd "$(dirname "$DOMAIN")" && pwd)/$(basename "$DOMAIN")"

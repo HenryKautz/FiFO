@@ -13,6 +13,11 @@
 # has action costs the smallest feasible horizon is re-solved in WCNF with a
 # weighted (MaxSAT) solver to minimize cost.  All intermediate files and the
 # .answer file are left next to the problem file; the answer is printed on stdout.
+#
+# The domain: --domain if given -- a bare name not in the current directory is
+# then looked for in the domain library ($FIFO_LISP/../pddl).  Without --domain,
+# the problem's (:domain <name>) names <name>.pddl, looked for beside the
+# problem, then in the current directory, then in the library.
 
 set -euo pipefail
 
@@ -29,6 +34,10 @@ usage() {
   echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>] [--stop-after <wff|scnf>]" >&2
   echo "                  [--evidence <formula>]... [--evidence-file <file>] [--marginals [--counter <name>]]" >&2
   echo "  A .pddl problem is translated with pddl2fifo; a .wff is used as-is." >&2
+  echo "  --domain <f>  the domain; a bare name not in the current directory is looked" >&2
+  echo "               for in the domain library (\$FIFO_LISP/../pddl).  Default: the" >&2
+  echo "               problem's (:domain <name>) as <name>.pddl beside the problem, else" >&2
+  echo "               in the current directory, else in the library." >&2
   echo "  Searches horizons for the smallest plan.  --minslices defaults to a reachability" >&2
   echo "  lower bound (2 for a .wff); --maxslices defaults to 2 * minslices." >&2
   echo "  --solver overrides the pure SAT (feasibility) solver; default: $SAT_SOLVER." >&2
@@ -154,7 +163,8 @@ fi
 PROBLEM="$(cd "$(dirname "$PROBLEM")" && pwd)/$(basename "$PROBLEM")"
 DIR="$(dirname "$PROBLEM")"
 if [[ -n "$DOMAIN" ]]; then
-  [[ -f "$DOMAIN" ]] || { echo "domain file not found: $DOMAIN" >&2; exit 2; }
+  # A bare name not in the current directory is looked for in the domain library.
+  DOMAIN="$(_fifo_find_domain "$DOMAIN")" || exit 2
   DOMAIN="$(cd "$(dirname "$DOMAIN")" && pwd)/$(basename "$DOMAIN")"
 fi
 if [[ -n "$EVFILE" ]]; then
@@ -164,10 +174,9 @@ if [[ -n "$PDDL_EVFILE" ]]; then
   PDDL_EVFILE="$(cd "$(dirname "$PDDL_EVFILE")" && pwd)/$(basename "$PDDL_EVFILE")"
 fi
 
-# Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.  They live in the
-# installed lisp directory ($HOME/lib/fifo/lisp by default; override with the
-# FIFO_LISP environment variable, e.g. to point at a source checkout's lisp/).
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+# Locate FiFO, pddl2fifo, planner.lisp, and the SatPlan axioms.  They live in
+# FIFO_LISP, set by fifo-lisp.sh (via fifo-solvers.sh above): the variable if
+# given, else this checkout's lisp/, else the installed ~/lib/fifo/lisp.
 [[ -d "$FIFO_LISP" ]] || { echo "FiFO lisp directory not found: $FIFO_LISP" >&2
   echo "  run 'make install', or set FIFO_LISP to your lisp/ directory." >&2; exit 2; }
 

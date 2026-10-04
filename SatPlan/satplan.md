@@ -405,20 +405,20 @@ Other example problems are provided. The untyped pair `SatPlan/Examples/Switch/s
 
 ### Generating problems with ppgen
 
-`SatPlan/ppgen.sh` generates random problems for the `clara-logistics` domain (`SatPlan/clara-logistics.pddl`) — a logistics domain over places, trucks, airplanes, and packages, in which `road` and `route` carry the topology, `load`/`unload`/`transfer` are free, and `drive` and `fly` cost `(drive-cost)` and `(fly-cost)`. Both cost functions take no arguments, so a generated problem prices all travel with two lines in `:init`; see [Costs set by the problem file](#costs-set-by-the-problem-file).
+`SatPlan/ppgen.sh` generates random problems for the `clara-logistics` domain (`pddl/clara-logistics.pddl`, in the domain library) — a logistics domain over places, trucks, airplanes, and packages, in which `road` and `route` carry the topology, `load`/`unload`/`transfer` are free, and `drive` and `fly` cost `(drive-cost)` and `(fly-cost)`. Both cost functions take no arguments, so a generated problem prices all travel with two lines in `:init`; see [Costs set by the problem file](#costs-set-by-the-problem-file).
 
-The generator writes to stdout, or to a file with `-o`:
+This section explains what the generator builds and why. Every option, with its default and its constraints, is listed in [software-components.md → ppgen.sh](../software-components.md#ppgensh).
 
 ```sh
-SatPlan/ppgen.sh --style clique --clique-size 4 --number-cliques 3 --seed 1
-SatPlan/ppgen.sh --style grid --dimensions 5 5 --airports 3 -o pb2.pddl
+ppgen.sh --style clique --clique-size 4 --number-cliques 3 --seed 1
+ppgen.sh --style grid --dimensions 5 5 --airports 3 -o pb2.pddl
 ```
 
 There are two topologies.
 
-**`--style clique`** builds `--number-cliques` groups of `--clique-size` places, each group fully connected by two-way roads, with exactly one airport per group. Packages, trucks, and airplanes are spread *evenly* over the groups — any two groups differ by at most one — at a random place within the group; airplanes go to the airports. `--trucks`, `--packages`, and `--airplanes` each default to the number of cliques. Since roads never cross between groups, a package whose goal lies in another group must fly, which is what makes this shape useful: it forces multi-modal plans.
+**`--style clique`** builds `--number-cliques` groups of `--clique-size` places, each group fully connected by two-way roads, with exactly one airport per group. Packages, trucks, and airplanes are spread *evenly* over the groups — any two groups differ by at most one — at a random place within the group; airplanes go to the airports. Since roads never cross between groups, a package whose goal lies in another group must fly, which is what makes this shape useful: it forces multi-modal plans.
 
-**`--style grid`** builds an `M × N` grid of places with two-way roads between orthogonally adjacent cells. `--airports` (default 2) are placed to maximize the minimum distance between them, so flights are worth taking; trucks and packages are placed uniformly at random, and airplanes are spread evenly over the airports. `--airplanes`, `--trucks`, and `--packages` default to the number of airports.
+**`--style grid`** builds an `M × N` grid of places with two-way roads between orthogonally adjacent cells. The `--airports` are placed to maximize the minimum distance between them, so flights are worth taking; trucks and packages are placed uniformly at random, and airplanes are spread evenly over the airports.
 
 In both styles every pair of airports is joined by a two-way route, and each package's goal is a place other than the one it starts at, so no package is already where it needs to be.
 
@@ -432,7 +432,7 @@ In both styles every pair of airports is joined by a two-way route, and each pac
       (preference deliver-pkg3 (at pkg3 c2-p2) 3)))
 ```
 
-The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, three get `L`, `(L+H)/2`, `H`, and so on — and which package gets which is random. A weight is charged when that delivery is *not* made, so the planner gives up the least-preferred deliveries first: on the problem above it drops only `deliver-pkg1`, the weight-1 goal. `--preferences none` is the default. See [Preferences Between Disjunctive Goals](#preferences-between-disjunctive-goals) for the underlying encoding.
+The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, three get `L`, `(L+H)/2`, `H`, and so on — and which package gets which is random. A weight is charged when that delivery is *not* made, so the planner gives up the least-preferred deliveries first: on the problem above it drops only `deliver-pkg1`, the weight-1 goal. See [Preferences Between Disjunctive Goals](#preferences-between-disjunctive-goals) for the underlying encoding.
 
 **Capping the deliveries.** `--maxgoals <N>` requires *at most* `N` of the deliveries to hold in the goal state, turning the problem into a bounded selection: with a disjunctive goal and graded weights, the planner must choose which `N` are worth making. It is encoded by forbidding every `N+1` of the goal atoms at once,
 
@@ -440,9 +440,9 @@ The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, th
 (not (and (at pkg1 p2-4) (at pkg2 p4-2) (at pkg3 p2-1)))    ; one per (N+1)-subset
 ```
 
-which is why `N` is **capped at 3** — the number of these grows as `packages^(N+1)`, and a larger `N` is rejected with an error. `--maxgoals` **requires `--preferences`**: the default goal demands that every package be delivered, so a cap on how many are delivered would either contradict it or say nothing at all. Left unset it defaults to the number of packages, which imposes no constraint.
+which is why `N` is **capped at 3** — the number of these grows as `packages^(N+1)`, and a larger `N` is rejected with an error. `--maxgoals` **requires `--preferences`**: the default goal demands that every package be delivered, so a cap on how many are delivered would either contradict it or say nothing at all.
 
-**Alternative destinations.** `--goals-per-package <N> <M>` gives each package `N` destinations instead of one (default `1`), any of which counts as delivering it. Only one can ever hold — a package is at exactly one place — so the `N` goals for a package are genuine alternatives, each with its own preference weight, and the planner picks whichever is cheapest to reach against what it is worth. Weights are still equally spaced over `L`..`H` across *all* `packages × N` goals in random order, and the preference names gain an index to tell them apart:
+**Alternative destinations.** `--goals-per-package <N> <M>` gives each package `N` destinations instead of one, any of which counts as delivering it. Only one can ever hold — a package is at exactly one place — so the `N` goals for a package are genuine alternatives, each with its own preference weight, and the planner picks whichever is cheapest to reach against what it is worth. Weights are still equally spaced over `L`..`H` across *all* `packages × N` goals in random order, and the preference names gain an index to tell them apart:
 
 ```lisp
 (:goal (and
@@ -454,7 +454,7 @@ which is why `N` is **capped at 3** — the number of these grows as `packages^(
       ...))
 ```
 
-`M` is the **minimum number of hard goals per package**, `0` or `1` (default `0`). With `M = 0` the goal keeps the single disjunction preferences normally impose — one delivery overall is required, and every package beyond that is optional. With `M = 1`, shown above, each package gets its own disjunction, so *every* package must reach one of its destinations regardless of cost; the global disjunction is implied by any one of them and so is not also emitted. Both `N > 1` and `M = 1` **require `--preferences`**: with a conjunctive goal, `N` destinations for one package would demand it be in `N` places at once, and a per-package requirement would say nothing that the conjunction does not already say. `N` may not exceed the number of places available once a package's own starting place is excluded, and `M = 1` is incompatible with a `--maxgoals` below the package count (each package contributes exactly one satisfied goal, so the total is pinned at the package count).
+`M` is the **minimum number of hard goals per package**, `0` or `1`. With `M = 0` the goal keeps the single disjunction preferences normally impose — one delivery overall is required, and every package beyond that is optional. With `M = 1`, shown above, each package gets its own disjunction, so *every* package must reach one of its destinations regardless of cost; the global disjunction is implied by any one of them and so is not also emitted. Both `N > 1` and `M = 1` **require `--preferences`**: with a conjunctive goal, `N` destinations for one package would demand it be in `N` places at once, and a per-package requirement would say nothing that the conjunction does not already say. `N` may not exceed the number of places available once a package's own starting place is excluded, and `M = 1` is incompatible with a `--maxgoals` below the package count (each package contributes exactly one satisfied goal, so the total is pinned at the package count).
 
 **Truck goals: the simpler problem.** `--truck-goals` drops the packages altogether: the goal sends each truck to a destination instead, a place other than the one it starts at.
 
@@ -464,14 +464,12 @@ which is why `N` is **capped at 3** — the number of these grows as `packages^(
       (at truck2 c2-p2)))
 ```
 
-In the clique style the destination is always in the truck's **own clique**: roads never leave one, so anywhere else would be unreachable and the problem unsolvable. On a grid any place will do. Airplanes default to `0`, since with nothing to carry they would only add idle actions to every slice; `--airplanes N` still adds them, for instance as distractors. An explicit `--packages` above `0` is refused. Every goal option above applies unchanged, **per truck** rather than per package: `--preferences` makes the goal a disjunction over the trucks' arrivals, with preferences named `reach-truck1`, `reach-truck2`, …; `--maxgoals` caps how many trucks arrive; and `--goals-per-package N M` — or its neutral alias `--goals-per-object N M`, which reads better here and is recorded under the original name — gives each truck `N` alternative destinations (all within its own clique), with `M = 1` requiring every truck to reach one of them. In the clique style `N` cannot exceed `clique-size − 1`.
+In the clique style the destination is always in the truck's **own clique**: roads never leave one, so anywhere else would be unreachable and the problem unsolvable. On a grid any place will do. Airplanes default to `0`, since with nothing to carry they would only add idle actions to every slice; `--airplanes N` still adds them, for instance as distractors. An explicit `--packages` above `0` is refused. Every goal option above applies unchanged, **per truck** rather than per package: `--preferences` makes the goal a disjunction over the trucks' arrivals, with preferences named `reach-truck1`, `reach-truck2`, …; `--maxgoals` caps how many trucks arrive; and `--goals-per-package N M` — or its alias `--goals-per-object N M`, which reads better here — gives each truck `N` alternative destinations (all within its own clique, so at most `clique-size − 1` of them), with `M = 1` requiring every truck to reach one of them.
 
 ```sh
-SatPlan/ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
-SatPlan/ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
+ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
+ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
 ```
-
-Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) set the two travel prices; `--name` and `--domain` set the problem and domain names; `-o`/`--output` names an output file. `--help` lists them all.
 
 **Reproducibility.** `--seed <N>` fixes the random draws. With no `--seed` the clock supplies one, but the value used is still *recorded*, so an interesting random instance is never lost. Every generated file opens with the complete settings it was made from, defaults included:
 
@@ -491,27 +489,28 @@ Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) 
 
 Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line. `--truck-goals` is recorded as a bare flag when set, alongside `--packages 0`.
 
-A generated problem feeds straight into the planner:
+A generated problem feeds straight into the planner, from any directory. The problem says `(:domain clara-logistics)`, and the planner finds `clara-logistics.pddl` in the domain library (see [Where the domain file is found](#where-the-domain-file-is-found)), so no `--domain` is needed:
 
 ```sh
-SatPlan/ppgen.sh --style grid --dimensions 4 4 --airports 2 --seed 7 -o pb.pddl
-bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl --maxslices 12
+ppgen.sh --style grid --dimensions 4 4 --airports 2 --seed 7 -o pb.pddl
+planner.sh pb.pddl --maxslices 12
 ```
 
-The generator is `SatPlan/ppgen.lisp`; the shell script is a thin argument-parsing wrapper around `(ppgen:ppgen ...)`, which takes the same settings as keyword arguments and writes to a stream. Both live under `SatPlan/` rather than `lisp/` and `bin/`, since they are specific to this domain rather than part of the installable library. `tests/run-test-ppgen.sh` is the regression suite.
+From Lisp, the generator is `(ppgen:ppgen ...)` in `SatPlan/ppgen.lisp`, which takes the same settings as keyword arguments and writes to a stream; the shell script is a thin wrapper around it.
 
 ### Generating evidence with evgen
 
 Plan recognition conditions a planning problem on *observations*. `SatPlan/evgen.sh` builds those observations from a plan you already have: give it a PDDL problem and the `.answer` file `planner.sh` wrote for it, name the time slices that were observed, and it writes the fluents and actions true at those slices as an evidence file.
 
+This section explains the observation model and how to choose between the outputs. Every option, with its default and the combinations it refuses, is listed in [software-components.md → evgen.sh](../software-components.md#evgensh).
+
 ```sh
-bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl --maxslices 12
-SatPlan/evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-3,5"
-bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl \
-               --numslices 6 --evidence-file ev.txt
+planner.sh pb.pddl --maxslices 12
+evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-3,5"
+planner.sh pb.pddl --numslices 6 --evidence-file ev.txt
 ```
 
-It can write that in three shapes, and which you want depends on who reads it:
+It can write that in four shapes, and which you want depends on who reads it:
 
 | output | flag | for |
 |---|---|---|
@@ -521,10 +520,7 @@ It can write that in three shapes, and which you want depends on who reads it:
 | **Ordering constraint** | `--export-ordering-constraints <dir>` | a planner, directly, when only the **order** is claimed. One `(occur-in-order M N …)` spanning the observed slices; actions only. Two observed in the same slice are refused unless `--nonstrict-ordering 1` |
 
 They share `--slices`, `--observe` and the validation below, and can be combined
-in one run. The rest of this section takes them in that order.
-
-
-`--slices` takes integers and `A-B` ranges separated by commas. `--solution` defaults to `<problem>.answer`, and `--domain` to the `(:domain …)` the problem names, resolved as `<name>.pddl` beside it — the same rule [pddl2fifo](#translating-pddl-to-fifo-with-pddl2fifo) uses.
+in one run. The rest of this section takes them in that order. Without `--domain`, evgen finds the domain the way the planner does (see [Where the domain file is found](#where-the-domain-file-is-found)).
 
 The output is FiFO evidence forms, which is the syntax the `.answer` file already uses:
 
@@ -540,7 +536,7 @@ The output is FiFO evidence forms, which is the syntax the `.answer` file alread
 **Restricting what is observed.** `--observe` takes a comma-separated list of fluent and action names — a partially observable world where only some predicates are visible:
 
 ```sh
-SatPlan/evgen.sh --problem pb.pddl --evidence ev.txt --slices "2-4" --observe "fly,in"
+evgen.sh --problem pb.pddl --evidence ev.txt --slices "2-4" --observe "fly,in"
 ```
 
 emits only `(occurs (fly …) s)` and `(holds (in …) s)`. A name matching no fluent or action in the problem is an **error**, not a silently smaller file — see below.
@@ -558,9 +554,9 @@ Two warnings. First, this is not a "more evidence" knob — it asserts **complet
 **Driving `recognize.sh`.** `--recognition 1` makes the file usable by `bin/recognize.sh` — it writes the literals as **one** `(and …)` form instead of one per line. That single-form shape is the whole requirement: `recognize.sh` builds the does-not-comply case by wrapping the file's contents in `(not …)`, and `(not A B)` is not a formula. Then:
 
 ```sh
-SatPlan/evgen.sh --problem sg.pddl --solution sg.answer --evidence ev.txt \
-                 --slices "1-2" --observe "recon,break-into" --recognition 1
-bin/recognize.sh domain.pddl problem.pddl ev.txt --evidence-kind fifo --horizon 6
+evgen.sh --problem sg.pddl --solution sg.answer --evidence ev.txt \
+         --slices "1-2" --observe "recon,break-into" --recognition 1
+recognize.sh domain.pddl problem.pddl ev.txt --evidence-kind fifo --horizon 6
 ```
 
 Three restrictions come with it, and they are about the observation model, not the syntax.
@@ -576,8 +572,8 @@ One thing you get for free: **evgen can never leak a hypothesis.** The `hypI` pr
 **Exporting the instance for other tool chains.** `--export-dataset <dir>` writes the problem in the **Ramírez & Geffner dataset format**, the shape every plan-recognition tool chain reads:
 
 ```sh
-SatPlan/evgen.sh --problem problem.pddl --solution sg.answer \
-                 --slices "1-3" --export-dataset out/
+evgen.sh --problem problem.pddl --solution sg.answer \
+         --slices "1-3" --export-dataset out/
 ```
 
 | file | contents |
@@ -650,7 +646,7 @@ Same three files as `--export-constraints`. `occur-in-order` is a FiFO extension
 
 The reason for that care is worth stating, because it used to be a live trap. A FiFO literal naming an atom the problem does not have is not an error — `parse` simply mints a fresh proposition. That proposition appears in no other clause, so evidence built on it constrains *nothing*, and the planner would return its **unconditioned** answer with no warning: a misspelled predicate and a slice past the horizon both read as "no evidence at all". `planner.sh` now catches this itself (see [Conditioning on evidence](#conditioning-on-evidence-and-marginal-inference)), so evgen's checks are a second line that fails earlier, at generation time, with a message about the *solution* rather than the horizon.
 
-Every generated file opens with the settings that made it, so it can be regenerated exactly:
+Every generated file opens with the settings that made it, so it can be regenerated exactly. Paths are recorded absolute, and `--domain` is the file the lookup actually chose — here the domain library's copy:
 
 ```
 ;; Generated by evgen.sh -- edit the generator, not this file.
@@ -658,16 +654,17 @@ Every generated file opens with the settings that made it, so it can be regenera
 ;;
 ;; Every setting used, defaults included; re-run with these to reproduce it:
 ;;
-;;   --problem pb.pddl
-;;   --evidence ev.txt
-;;   --solution pb.answer
-;;   --domain clara-logistics.pddl
+;;   --problem /home/me/work/pb.pddl
+;;   --evidence /home/me/work/ev.txt
+;;   --solution /home/me/work/pb.answer
+;;   --domain /home/me/lib/fifo/pddl/clara-logistics.pddl
 ;;   --slices 1-3,5
 ;;   --observe ""
 ;;   --negative-evidence 0
+;;   --recognition 0
 ```
 
-The generator is `SatPlan/evgen.lisp`; the shell script is a thin wrapper around `(evgen …)`, which takes the same settings as keyword arguments. `tests/run-test-evgen.sh` is the regression suite — behavioral, including the case that matters most: conditioning on the true observations reproduces the plan's cost, while shifting one observed action to a different slice costs more.
+From Lisp, the generator is `(evgen …)` in `SatPlan/evgen.lisp`, which takes the same settings as keyword arguments; the shell script is a thin wrapper around it. Its regression suite checks the property that matters most: conditioning on the true observations reproduces the plan's cost, while shifting one observed action to a different slice costs more.
 
 ### Learning and Inference
 
@@ -742,13 +739,39 @@ bin/planner.sh SatPlan/Examples/Switch/switchprob.pddl
 bin/planner.sh SatPlan/Examples/TruckLog/trucklogprob.pddl
 ```
 
-After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem>`). Running it from a source checkout without installing requires pointing it at the lisp: `FIFO_LISP=$PWD/lisp bin/planner.sh <problem>`.
+After `make install`, `planner.sh` is on your PATH (so just `planner.sh <problem>`). Run from a source checkout as `bin/planner.sh`, it uses that checkout's `lisp/` with no setup; `FIFO_LISP` overrides either choice (see [Where the lisp is found](#where-the-lisp-is-found)).
 
-`--minslices`/`--maxslices` bound the horizon search, `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly. When the bounds are omitted, `pddl2fifo` runs a relaxed planning-graph **reachability analysis** (ignoring delete effects and negative preconditions) to compute a lower bound on the horizon: `--minslices` defaults to that bound (2 for a `.wff`, which has no PDDL to analyze) and `--maxslices` defaults to twice `--minslices`. If the reachability analysis shows the goals are unreachable even in the relaxation, the problem is reported unsolvable without any search. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
+`--minslices`/`--maxslices` bound the horizon search, `--numslices N` fixes the horizon, and `--domain <file>` supplies a domain explicitly (see [Where the domain file is found](#where-the-domain-file-is-found)). When the bounds are omitted, `pddl2fifo` runs a relaxed planning-graph **reachability analysis** (ignoring delete effects and negative preconditions) to compute a lower bound on the horizon: `--minslices` defaults to that bound (2 for a `.wff`, which has no PDDL to analyze) and `--maxslices` defaults to twice `--minslices`. If the reachability analysis shows the goals are unreachable even in the relaxation, the problem is reported unsolvable without any search. All intermediate files and the `.answer` file are written next to the problem file; on success the answer is printed to stdout.
 
 `--stop-after <wff|scnf>` halts the pipeline early, for inspecting or editing the intermediate files: `--stop-after wff` writes the `.wff` translation and stops (no instantiation or solving), and `--stop-after scnf` additionally instantiates it once — at `--numslices`, or the smallest/reachability horizon otherwise — writing the `.scnf` without solving. With evidence (below) it also writes the separate `<root>-evidence.scnf`, leaving the two files for inspection.
 
 `--longer K` trades plan length for cost. By default the planner minimizes cost only at the smallest feasible horizon *s*; with `--longer K` it instead minimizes cost at each horizon *s* … *s+K* and returns the **cheapest** plan found across that range — useful because a longer horizon can admit a lower-cost plan (e.g. a cheap sequence of actions in place of one expensive parallel step). Costs at different horizons are compared as true plan costs (the MaxSAT objective, corrected by the weight scale/offset when weights were shifted, as with negative learned costs). `--longer` has no effect on a domain without action costs (every feasible plan then has cost 0). For example, `bin/planner.sh prob.pddl --longer 3` reports the cost at each of *s* … *s+3* slices and keeps the lowest.
+
+#### Where the lisp is found
+
+Every script finds the FiFO lisp library by one rule (`bin/fifo-lisp.sh`, which they all source):
+
+1. `FIFO_LISP`, if it is set;
+2. otherwise the `lisp/` directory next to the script's own directory, if it contains `FiFO.lisp` — so `bin/planner.sh` in a checkout uses that checkout's lisp;
+3. otherwise `~/lib/fifo/lisp`, where `make install` puts it.
+
+The script exports the result, so a script that calls another (`recognize.sh` runs `planner.sh` and `marginals.sh`) hands it the same library.
+
+#### Where the domain file is found
+
+PDDL domains that come with FiFO live in a **domain library**: `pddl/` in a checkout, and `~/lib/fifo/pddl` after `make install` — in both cases the directory beside the lisp, `$FIFO_LISP/../pddl`. `clara-logistics.pddl`, the domain `ppgen.sh` generates problems for, is there.
+
+With **no** `--domain`, the problem's `(:domain <name>)` names the file `<name>.pddl`, looked for in this order:
+
+1. beside the problem file;
+2. in the current directory;
+3. in the domain library.
+
+Beside the problem comes first because a problem and its domain usually belong together; when the current directory is somewhere else, a file of the same name there is more likely an unrelated copy, and planning against it would give a different answer with no error. For the same reason the file chosen is reported on stderr, as `; domain <name>: <path>`. If none of the three has it, the error lists every place tried.
+
+An explicit `--domain <file>` is used as given — a relative path means relative to the current directory. A **bare** name (no `/`) that is not in the current directory is then looked for in the domain library, so `--domain clara-logistics.pddl` works from anywhere. A name containing `/` is never searched for.
+
+The same rules apply wherever a domain is taken: `planner.sh`, `learn-pddl.sh`, `evgen.sh` and `recognize.sh`. `learn-pddl.sh` writes its learned copy of the domain beside the domain — but for a library domain it writes it beside the problem, never into the library.
 
 #### Conditioning on evidence and marginal inference
 
@@ -1140,13 +1163,13 @@ exhausts the control stack rather than stopping at `*ddnnf-node-limit*`.
 SatPlan/ppgen.sh --style clique --clique-size 3 --number-cliques 2 \
                  --packages 2 --seed 1 -o pb.pddl
 
-# solve it -- evgen reads the plan, so this must run first
-bin/planner.sh pb.pddl --domain SatPlan/clara-logistics.pddl
+# solve it -- evgen reads the plan, so this must run first.  The domain,
+# clara-logistics.pddl, is found in the domain library.
+bin/planner.sh pb.pddl
 
 # turn the plan back into an observation file
 SatPlan/evgen.sh --problem pb.pddl --evidence obs.txt --slices "1-3" \
-                 --observe "fly,in" --recognition 1 \
-                 --domain SatPlan/clara-logistics.pddl
+                 --observe "fly,in" --recognition 1
 ```
 
 `ppgen` generates logistics problems — `--clique-size` and `--number-cliques` are

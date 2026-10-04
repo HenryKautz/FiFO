@@ -10,12 +10,12 @@
 # enumeration, so it is for small instances; see --solver for the counters that
 # scale further and for mc-sat, which samples rather than counts.
 #
-# The lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).
+# The lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).
 
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$SELF_DIR/fifo-lisp.sh"   # sets FIFO_LISP
 
 print_usage() {
   cat <<'EOF'
@@ -220,7 +220,7 @@ mixes poorly on strongly coupled models (many large weights), where the chain
 freezes in one mode; a very low efficiency means the marginals are unreliable
 rather than merely noisy, and the run says so explicitly.
 
-The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
+The lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 
 Every external back end is found on PATH under its own name -- 'addmc', 'd4',

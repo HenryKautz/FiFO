@@ -118,7 +118,7 @@ grep -q '^(MARGINAL (HOLDS (ON S1) 4) ' proj.m \
 # and must be kept, or their costs would be silently dropped.
 bash "$REPO/SatPlan/ppgen.sh" --style clique --number-cliques 2 --clique-size 3 --packages 2 \
      --preferences 1 5 --goals-per-package 2 0 --seed 7 --output pp.pddl >/dev/null 2>&1
-bash "$P" pp.pddl --domain "$REPO/SatPlan/clara-logistics.pddl" --numslices 5 --stop-after scnf >/dev/null 2>&1
+bash "$P" pp.pddl --domain "$REPO/pddl/clara-logistics.pddl" --numslices 5 --stop-after scnf >/dev/null 2>&1
 bash "$M" pp.scnf --solver d4 > ppfull.m 2>&1
 bash "$M" pp.scnf --solver d4 --project > ppproj.m 2>&1
 if r="$(agree ppproj.m ppfull.m)" && grep -q '^(MARGINAL (PREF-VIOLATED' ppproj.m; then

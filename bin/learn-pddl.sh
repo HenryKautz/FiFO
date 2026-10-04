@@ -7,11 +7,11 @@
 # writes a copy of the domain with each :probability replaced by the learned
 # :cost.  Costs already in the domain are left untouched.
 #
-# The lisp is found via FIFO_LISP ($HOME/lib/fifo/lisp by default).
+# The lisp is found via FIFO_LISP (see fifo-lisp.sh: the checkout's lisp/, else ~/lib/fifo/lisp).
 
 set -euo pipefail
 
-FIFO_LISP="${FIFO_LISP:-$HOME/lib/fifo/lisp}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-lisp.sh"   # sets FIFO_LISP
 
 print_usage() {
   cat <<'EOF'
@@ -22,8 +22,12 @@ action specs, and write a copy of the domain with :probability replaced by the
 learned :cost.
 
 Options:
-  --domain <file>       domain file (default: <name>.pddl from the problem's
-                        (:domain <name>) form, next to the problem)
+  --domain <file>       domain file; a bare name not in the current directory
+                        is looked for in the domain library ($FIFO_LISP/../pddl).
+                        Default: the problem's (:domain <name>) as <name>.pddl
+                        beside the problem, else in the current directory, else
+                        in the library.  A learned copy of a LIBRARY domain is
+                        written beside the problem, never into the library
   --method <log-odds|maxent>  estimator (default: log-odds)
   --maxent              shorthand for --method maxent
   --scale <int>         integer weight resolution; real weight = w/scale (default: 100)
@@ -44,7 +48,7 @@ learnable alternative to :cost.  All ground instances of one action schema share
 one learned weight; the result is written as :cost <w> (which may be negative when
 the action is favored, p>0.5).
 
-The lisp is located via FIFO_LISP (default: $HOME/lib/fifo/lisp); run
+The lisp is located via FIFO_LISP (default: the checkout's lisp/, else ~/lib/fifo/lisp); run
 'make install' or set FIFO_LISP to a source checkout's lisp/ directory.
 EOF
 }
@@ -77,7 +81,7 @@ done
 
 [[ -n "$PROBLEM" ]] || die "no problem.pddl given"
 [[ -f "$PROBLEM" ]] || die "problem file not found: $PROBLEM"
-[[ -n "$DOMAIN" && ! -f "$DOMAIN" ]] && die "domain file not found: $DOMAIN"
+if [[ -n "$DOMAIN" ]]; then DOMAIN="$(_fifo_find_domain "$DOMAIN")" || exit 2; fi
 case "$METHOD" in log-odds) M=":log-odds" ;; maxent) M=":maxent" ;; *) die "--method must be log-odds or maxent, got: $METHOD" ;; esac
 [[ "$SCALE" =~ ^[0-9]+$ && "$SCALE" -gt 0 ]] || die "--scale must be a positive integer, got: $SCALE"
 [[ "$NUMSLICES" =~ ^[0-9]+$ && "$NUMSLICES" -ge 2 ]] || die "--numslices must be an integer >= 2, got: $NUMSLICES"

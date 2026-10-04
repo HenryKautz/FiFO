@@ -25,7 +25,7 @@ EVGEN="$REPO/SatPlan/evgen.sh"
 PPGEN="$REPO/SatPlan/ppgen.sh"
 export REPO
 PLANNER="$REPO/bin/planner.sh"
-DOMAIN="$REPO/SatPlan/clara-logistics.pddl"
+DOMAIN="$REPO/pddl/clara-logistics.pddl"
 SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
@@ -233,6 +233,13 @@ cp "$DOMAIN" "$TMP/clara-logistics.pddl"
 if bash "$EVGEN" --problem "$PROB" --evidence "$TMP/dd.txt" --slices "2" 2>/dev/null \
    && grep -q '^(holds' "$TMP/dd.txt"
 then pass; else fail "did not resolve the domain beside the problem"; fi
+
+# The settings block must record the DOMAIN file it resolved to, or it cannot
+# be replayed.  It used to record the problem file: the (:domain ...) lookup
+# compared a keyword's symbol-name with ":DOMAIN" and never matched.
+name "--domain's default is recorded as the domain file, not the problem"
+if grep -qx ";;   --domain $(cd "$TMP" && pwd -P)/clara-logistics.pddl" "$TMP/dd.txt"
+then pass; else fail "recorded: $(grep -- '--domain' "$TMP/dd.txt")"; fi
 
 # -------------------------------------------------------------- binding ----
 

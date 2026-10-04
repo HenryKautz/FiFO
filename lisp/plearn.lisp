@@ -96,14 +96,23 @@ comments and original spacing are not preserved)."
                           (concatenate 'string suffix ".pddl")))
 
 (defun pl--domain-path (problem-path domain-file)
-  "Resolve the domain file: DOMAIN-FILE if given, else <domain-name>.pddl next to
-the problem (from its (:domain ...) form)."
+  "Resolve the domain file: DOMAIN-FILE if given, else the problem's (:domain
+<name>) by RESOLVE-DOMAIN-FILE (beside the problem, the current directory, the
+domain library)."
   (if domain-file
       (pathname domain-file)
       (let* ((pdef (find-define (read-pddl-file problem-path) "PROBLEM" problem-path))
              (dname (second (get-section pdef :domain))))
-        (merge-pathnames (make-pathname :name (string-downcase (symbol-name dname)) :type "pddl")
-                         problem-path))))
+        (resolve-domain-file problem-path dname))))
+
+(defun pl--learned-domain-out (dom-path problem-path)
+  "Where a learned copy of the domain goes by default: <domain-root>_learned.pddl
+beside the domain -- unless the domain is in the domain library, which is never
+written into; then beside the problem."
+  (let ((default (pl--default-out dom-path "_learned")))
+    (if (pddl-library-file-p dom-path)
+        (merge-pathnames (file-namestring default) problem-path)
+        default)))
 
 ;;; ---- driver ----------------------------------------------------------------
 
@@ -131,7 +140,9 @@ problem-out) for the files written (NIL where nothing was)."
       (return-from learn-pddl (values nil nil)))
     ;; 1. PDDL -> wff
     (let ((wff (apply #'pddl2fifo (namestring problem-path)
-                      (append (when domain-file (list :domain-file domain-file))
+                      ;; the domain resolved above, so it is looked up (and
+                      ;; reported) once
+                      (append (list :domain-file (namestring dom-path))
                               (when satplan-path (list :satplan-path satplan-path))))))
       ;; 2. instantiate at the (small) learning horizon
       (setq *satplan-numslices* numslices)
@@ -144,7 +155,7 @@ problem-out) for the files written (NIL where nothing was)."
                                         :scale scale :verbose verbose)))
         (declare (ignore out))
         ;; 4. write the learned copies of whichever files had probabilities
-        (let ((dout (when has-action (or domain-out (pl--default-out dom-path "_learned"))))
+        (let ((dout (when has-action (or domain-out (pl--learned-domain-out dom-path problem-path))))
               (pout (when has-instance (or problem-out (pl--default-out problem-path "_learned")))))
           (when has-action
             (pl--write-pddl (pl--rewrite-domain-define ddef gid->spec scale) dout)

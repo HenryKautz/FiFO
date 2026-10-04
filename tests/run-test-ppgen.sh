@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 export FIFO_LISP="${FIFO_LISP:-$REPO/lisp}"
 PPGEN="$REPO/SatPlan/ppgen.sh"; export PPGEN   # the python checks below shell out to it
-DOMAIN="$REPO/SatPlan/clara-logistics.pddl"
+DOMAIN="$REPO/pddl/clara-logistics.pddl"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
