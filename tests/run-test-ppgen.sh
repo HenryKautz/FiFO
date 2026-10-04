@@ -471,6 +471,93 @@ name "--truck-goals is recorded, and --packages 0 replays"
 if grep -qx ';;   --truck-goals' "$TMP/tg.pddl" && grep -qx ';;   --packages 0' "$TMP/tg.pddl"
 then pass; else fail "$(grep '^;;   --' "$TMP/tg.pddl" | tr '\n' ' ')"; fi
 
+# ---------------------------------------------------------------- knockout ---
+#
+# ko_check <knocked.pddl> <full.pddl> <N> : the knocked-out file against the SAME
+# seed generated without --knockout.  Per road network (each clique, or the whole
+# grid): the kept two-way roads are a subset of the full ones, exactly
+# floor(E*(100-N)/100) of them, every one present in both directions, and the
+# network still connected.  And nothing but the roads differs: every non-road,
+# non-comment line is identical, since the knockout draws from its own stream.
+cat > "$TMP/ko_check.py" <<'EOF'
+import sys,re
+ko,full,n=open(sys.argv[1]).read(),open(sys.argv[2]).read(),int(sys.argv[3])
+def roads(t): return set(re.findall(r'^\s+\(road ([\w-]+) ([\w-]+)\)$',t,re.M))
+def body(t): return [l for l in t.splitlines()
+                     if not l.startswith(';;') and not re.match(r'^\s+\(road ',l)]
+R,F=roads(ko),roads(full)
+assert R<=F, R-F
+assert all((b,a) in R for a,b in R), 'a road kept in one direction only'
+assert body(ko)==body(full), 'something besides the roads changed'
+und=lambda s:{frozenset(e) for e in s}
+# networks: the connected components of the FULL road graph
+adj={}
+for a,b in F: adj.setdefault(a,set()).add(b)
+seen,nets=set(),[]
+for s in adj:
+    if s in seen: continue
+    comp,stack={s},[s]
+    while stack:
+        for y in adj[stack.pop()]:
+            if y not in comp: comp.add(y); stack.append(y)
+    seen|=comp; nets.append(comp)
+for net in nets:
+    fe=[e for e in und(F) if e<=net]; ke=[e for e in und(R) if e<=net]
+    want=len(fe)*(100-n)//100
+    assert len(ke)==want, (sorted(net)[0],len(ke),want,len(fe))
+    reach,stack={min(net)},[min(net)]
+    while stack:
+        x=stack.pop()
+        for e in ke:
+            if x in e:
+                (y,)=e-{x}
+                if y not in reach: reach.add(y); stack.append(y)
+    assert reach==net, ('disconnected',sorted(net-reach))
+EOF
+ko_check() { python3 "$TMP/ko_check.py" "$@"; }
+
+name "--knockout (grid): exact count, two-way, connected, over seeds"
+KO_BAD=""
+for n in 10 25 37; do for s in 1 2 3 4 5 6; do
+  gen --style grid --dimensions 5 5 --seed "$s" > "$TMP/kf.pddl"
+  gen --style grid --dimensions 5 5 --seed "$s" --knockout "$n" > "$TMP/kk.pddl"
+  ko_check "$TMP/kk.pddl" "$TMP/kf.pddl" "$n" 2>"$TMP/ko.err" || { KO_BAD="N=$n seed=$s: $(tail -1 "$TMP/ko.err")"; break 2; }
+done; done
+[ -z "$KO_BAD" ] && pass || fail "$KO_BAD"
+
+name "--knockout (clique): each clique loses N%, stays connected"
+KO_BAD=""
+for n in 20 50 60; do for s in 1 2 3 4 5 6; do
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" > "$TMP/kf.pddl"
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --knockout "$n" > "$TMP/kk.pddl"
+  ko_check "$TMP/kk.pddl" "$TMP/kf.pddl" "$n" 2>"$TMP/ko.err" || { KO_BAD="N=$n seed=$s: $(tail -1 "$TMP/ko.err")"; break 2; }
+done; done
+[ -z "$KO_BAD" ] && pass || fail "$KO_BAD"
+
+name "--knockout 0 is byte-identical to omitting it"
+gen --style clique --clique-size 4 --number-cliques 2 --seed 11 > "$TMP/k0a.pddl"
+gen --style clique --clique-size 4 --number-cliques 2 --seed 11 --knockout 0 > "$TMP/k0b.pddl"
+cmp -s "$TMP/k0a.pddl" "$TMP/k0b.pddl" && pass || fail "--knockout 0 changed the file"
+
+name "--knockout: different seeds knock out different roads"
+for s in 1 2 3 4 5; do
+  # one line per seed: its sorted road set, flattened
+  gen --style grid --dimensions 4 4 --seed "$s" --knockout 30 | grep '(road ' | sort | tr -d '\n'
+  echo
+done | sort -u > "$TMP/ko.sets"
+[ "$(wc -l < "$TMP/ko.sets" | tr -d ' ')" -ge 3 ] && pass \
+  || fail "only $(wc -l < "$TMP/ko.sets" | tr -d ' ') distinct road sets over 5 seeds"
+
+name "--knockout at exactly the spanning-tree bound is accepted"
+# clique of 4: 6 roads, tree of 3 = 50%, so 50 keeps exactly the tree
+gen --style clique --clique-size 4 --number-cliques 2 --seed 3 > "$TMP/kf.pddl"
+gen --style clique --clique-size 4 --number-cliques 2 --seed 3 --knockout 50 > "$TMP/kk.pddl"
+ko_check "$TMP/kk.pddl" "$TMP/kf.pddl" 50 2>"$TMP/ko.err" && pass || fail "$(tail -1 "$TMP/ko.err")"
+
+name "--knockout is recorded when set"
+grep -qx ';;   --knockout 50' "$TMP/kk.pddl" && ! grep -q -- '--knockout' "$TMP/kf.pddl" && pass \
+  || fail "$(grep -- '--knockout' "$TMP/kk.pddl" "$TMP/kf.pddl")"
+
 # ------------------------------------------------- recorded settings / seed ---
 
 name "the file records every setting, defaults included"
@@ -515,7 +602,9 @@ for spec in "--style clique --clique-size 4 --number-cliques 3 --seed 1" \
             "--style grid --dimensions 5 5 --airports 3 --packages 4 --preferences 1 7 --maxgoals 2 --seed 42" \
             "--style clique --clique-size 4 --number-cliques 2 --packages 3 --preferences 1 9 --goals-per-package 3 1 --seed 5" \
             "--style clique --clique-size 4 --number-cliques 2 --trucks 3 --truck-goals --preferences 1 5 --goals-per-package 2 0 --seed 6" \
-            "--style grid --dimensions 4 4 --trucks 4 --truck-goals --airplanes 1 --preferences 1 5 --maxgoals 2 --seed 7"
+            "--style grid --dimensions 4 4 --trucks 4 --truck-goals --airplanes 1 --preferences 1 5 --maxgoals 2 --seed 7" \
+            "--style clique --clique-size 5 --number-cliques 2 --knockout 40 --seed 8" \
+            "--style grid --dimensions 5 5 --knockout 25 --seed 9"
 do
   gen $spec > "$TMP/rt1.pddl"
   # feed the file's own settings block back in as the command line
@@ -557,6 +646,12 @@ err "--truck-goals with packages is rejected" "contradicts it"   --style clique 
 err "--truck-goals with no trucks is rejected" "at least one truck" --style grid --dimensions 3 3 --truck-goals --trucks 0
 err "a cap below the truck count contradicts M=1" "3 trucks"      --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5 --goals-per-package 2 1 --maxgoals 2
 err "more truck destinations than its clique holds is rejected" "per truck" --style clique --clique-size 3 --number-cliques 2 --truck-goals --preferences 1 5 --goals-per-package 3 0
+# The exact wording asked for, with M = spanning-tree size / roads as a percent:
+# a 4x4 grid has 24 roads and a 15-road tree (62.5%); a clique of 4 has 6 and 3.
+err "--knockout above the tree bound (grid) names M" "Knockout value set too high, 62.5% required to maintain connectivity" --style grid --dimensions 4 4 --knockout 50
+err "--knockout above the tree bound (clique) names M" "Knockout value set too high, 50% required to maintain connectivity" --style clique --clique-size 4 --number-cliques 2 --knockout 51
+err "--knockout above 100 is rejected"     "0 to 100"             --style grid --dimensions 4 4 --knockout 101
+err "a negative --knockout is rejected"    "non-negative"         --style grid --dimensions 4 4 --knockout -5
 
 # ------------------------------------------------------------ solvability ---
 
@@ -617,6 +712,15 @@ for tr,places in want.items():
     assert any((tr,p) in held for p in places), (tr,places)
 EOF
   then pass; else fail "a truck missed all its destinations; see $TMP/tsg.log"; fi
+
+  # Connectivity is what keeps a knocked-out problem solvable: with roads gone
+  # the routes get longer, but every delivery is still reachable.
+  name "grid --knockout: a generated problem still solves"
+  gen --style grid --dimensions 4 4 --airports 2 --packages 2 --knockout 30 --seed 12 > "$TMP/ks.pddl"
+  if WEIGHTED_SOLVER="$SOLVER" bash "$REPO/bin/planner.sh" "$TMP/ks.pddl" \
+       --domain "$DOMAIN" --maxslices 16 >"$TMP/ks.log" 2>&1 &&
+     grep -q 'SOLVED' "$TMP/ks.log"
+  then pass; else fail "knocked-out problem did not solve; see $TMP/ks.log"; fi
 else
   echo "  (skipping solvability: no MaxSAT solver '$SOLVER' on PATH)"
 fi

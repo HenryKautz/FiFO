@@ -31,6 +31,11 @@
 ;;;; clique style, since roads never leave one.  Airplanes default to none there.
 ;;;; Every goal option above applies unchanged, per truck rather than per package.
 ;;;;
+;;;; :knockout N deletes N percent of the roads of each road network -- each
+;;;; clique, or the whole grid -- while keeping it connected: a random spanning
+;;;; tree is kept and random other roads are added back.  If the tree alone is
+;;;; more than (100-N)% of the roads, N is refused.
+;;;;
 ;;;; Entry point: (ppgen &key style ... ) writes one problem to a stream.
 ;;;; bin/../SatPlan/ppgen.sh is the command line wrapper.
 
@@ -157,6 +162,86 @@ pattern."
                                 (push (list here south) out)
                                 (push (list south here) out)))
                             out))))
+
+;;; ---------------------------------------------------------------- knockout
+;;;
+;;; :knockout N deletes N percent of the roads while keeping every road network
+;;; (each clique, or the whole grid) connected.  It works the other way round:
+;;; keep a random SPANNING TREE of each network, then add random other roads back
+;;; until floor(E * (100-N) / 100) of the network's E roads remain.  A road here
+;;; is the two-way pair, so knocking one out removes both (road a b) and
+;;; (road b a).
+;;;
+;;; The draws come from their OWN random state, derived from the seed, so the
+;;; rest of the instance -- airports, starts, goals, weights -- is identical with
+;;; and without --knockout: only the road lines differ.
+
+(defun road-edges (roads)
+  "The two-way edges of ROADS, one (a b) per unordered pair, in first-seen order."
+  (let ((seen (make-hash-table :test #'equal)) (out '()))
+    (dolist (r roads (nreverse out))
+      (let ((key (if (string< (symbol-name (first r)) (symbol-name (second r)))
+                     r (reverse r))))
+        (unless (gethash key seen)
+          (setf (gethash key seen) t)
+          (push key out))))))
+
+(defun spanning-tree (nodes edges)
+  "A random spanning tree of (NODES, EDGES): Kruskal over the edges in shuffled
+order.  Draws from *RNG*.  Errors if the network is not connected, which no
+style generates."
+  (let ((parent (make-hash-table)))
+    (dolist (n nodes) (setf (gethash n parent) n))
+    (labels ((root (n) (let ((p (gethash n parent)))
+                         (if (eq p n) n (setf (gethash n parent) (root p))))))
+      (let ((tree (loop for e in (shuffled edges)
+                        for ra = (root (first e)) for rb = (root (second e))
+                        unless (eq ra rb)
+                          do (setf (gethash ra parent) rb)
+                          and collect e)))
+        (unless (= (length tree) (max 0 (1- (length nodes))))
+          (error "internal: a road network is not connected"))
+        tree))))
+
+(defun knockout-roads (roads networks percent seed)
+  "ROADS with PERCENT of each network's two-way roads removed, every network still
+connected.  NETWORKS is a list of place lists (one per clique, or the grid's
+places).  Returns (values kept-roads kept-edges total-edges)."
+  (let* ((*rng* (sb-ext:seed-random-state
+                 (make-array 3 :element-type '(unsigned-byte 32)
+                               :initial-contents (list (ldb (byte 32 0) seed)
+                                                       (ldb (byte 32 32) seed)
+                                                       #x4b4f))))
+         (edges (road-edges roads))
+         (per-net (mapcar (lambda (places)
+                            (cons places
+                                  (remove-if-not (lambda (e) (and (member (first e) places)
+                                                                  (member (second e) places)))
+                                                 edges)))
+                          networks))
+         (tree-size (loop for (places) in per-net sum (max 0 (1- (length places)))))
+         (total (length edges)))
+    ;; The spanning trees are the floor: fewer roads than that cannot keep every
+    ;; network connected.
+    (when (> (* 100 tree-size) (* (- 100 percent) total))
+      (let ((m (/ (* 100 tree-size) total)))
+        (error "Knockout value set too high, ~a% required to maintain connectivity"
+               (if (integerp m) m (format nil "~,1f" (float m))))))
+    (let ((kept (make-hash-table :test #'equal)) (n-kept 0))
+      (loop for (places . net-edges) in per-net
+            for keep = (floor (* (length net-edges) (- 100 percent)) 100)
+            for tree = (spanning-tree places net-edges)
+            ;; remove-if, not set-difference: its order is unspecified, and the
+            ;; order feeds the shuffle, so it must be fixed for a seed to replay
+            for others = (shuffled (remove-if (lambda (e) (member e tree :test #'equal))
+                                              net-edges))
+            do (dolist (e (append tree (subseq others 0 (- keep (length tree)))))
+                 (setf (gethash e kept) t)
+                 (incf n-kept)))
+      ;; the original road order, so only the knocked-out lines differ
+      (values (remove-if-not (lambda (r) (or (gethash r kept) (gethash (reverse r) kept)))
+                             roads)
+              n-kept total))))
 
 ;;; ------------------------------------------------------------------ shared
 
@@ -349,14 +434,17 @@ in the generated file and can be reproduced exactly."
                    trucks airplanes packages (drive-cost 1) (fly-cost 3)
                    pref-low pref-high maxgoals
                    (goals-per-package 1) (min-hard-goals 0)
-                   truck-goals
+                   truck-goals (knockout 0)
                    seed (domain "clara-logistics") name
                    (stream *standard-output*))
   "Generate one clara-logistics problem.  See the file header for the two styles.
 With TRUCK-GOALS the goals send TRUCKS to destinations instead of delivering
 packages: there are no packages, airplanes default to none (they would only add
 idle actions, though AIRPLANES may still ask for some), and every goal option --
-preferences, maxgoals, goals-per-package -- applies per truck."
+preferences, maxgoals, goals-per-package -- applies per truck.  KNOCKOUT (0-100)
+deletes that percent of each road network's roads, keeping it connected."
+  (unless (and (integerp knockout) (<= 0 knockout 100))
+    (error "--knockout must be an integer from 0 to 100, got ~a" knockout))
   (cond
     (truck-goals
      (when (and packages (> packages 0))
@@ -409,7 +497,9 @@ preferences, maxgoals, goals-per-package -- applies per truck."
   (let (place-names airport-names roads header
         truck-at airplane-at package-at
         ;; the places a TRUCK can be sent to: its own road network (set per style)
-        truck-places-fn)
+        truck-places-fn
+        ;; the road networks, as place lists: one per clique, or the whole grid
+        networks)
     (ecase style
       (:clique
        (unless (and clique-size number-cliques)
@@ -423,8 +513,10 @@ preferences, maxgoals, goals-per-package -- applies per truck."
            (clique-places number-cliques clique-size)
          (setf place-names all airport-names airs
                roads (clique-roads by-clique)
-               header (list (format nil "~d clique~:p of ~d place~:p, fully connected by roads;"
-                                    number-cliques clique-size)
+               networks by-clique
+               header (list (format nil "~d clique~:p of ~d place~:p, ~
+                                         ~:[fully connected by roads~;connected by roads~];"
+                                    number-cliques clique-size (plusp knockout))
                             (format nil "one airport per clique, all airports joined by routes.")
                             (format nil "~d truck~:p, ~d airplane~:p, ~d package~:p, spread evenly over the cliques."
                                     trucks airplanes packages)))
@@ -461,6 +553,7 @@ preferences, maxgoals, goals-per-package -- applies per truck."
          (setf place-names (mapcar #'cell-name cells)
                airport-names (mapcar #'cell-name air-cells)
                roads (grid-roads rows cols)
+               networks (list place-names)
                header (list (format nil "~d x ~d grid of places, roads between adjacent cells;"
                                     rows cols)
                             (format nil "~d airport~:p placed to maximize their minimum separation~@[ (~d)~];"
@@ -478,6 +571,19 @@ preferences, maxgoals, goals-per-package -- applies per truck."
            (let ((all place-names))
              (setf truck-places-fn (lambda (truck) (declare (ignore truck)) all)))
            (setf trucks truck-names airplanes plane-names packages pkg-names)))))
+    ;; After everything else is drawn, and from its own random state, so the
+    ;; instance is otherwise the same as without --knockout.  0 does nothing at
+    ;; all, keeping recorded seeds byte-identical.
+    (when (plusp knockout)
+      (multiple-value-bind (kept n-kept total)
+          (knockout-roads roads networks knockout seed)
+        (setf roads kept
+              header (append header
+                             (list (format nil "Knockout ~d%: ~d of ~d roads kept -- a random spanning ~
+                                                tree~:[~;s~] plus random others, so every place ~
+                                                stays reachable by road~:[~; within its clique~]."
+                                           knockout n-kept total
+                                           (eq style :clique) (eq style :clique)))))))
     (when truck-goals
       (setf header
             (append header
@@ -547,6 +653,9 @@ preferences, maxgoals, goals-per-package -- applies per truck."
                      ;; --preferences, so writing the default back out would
                      ;; produce a settings block that will not replay.
                      (when maxgoals (list (cons "--maxgoals" cap)))
+                     ;; recorded only when set, so a file made without it is
+                     ;; byte-identical to one from before the option existed
+                     (when (plusp knockout) (list (cons "--knockout" knockout)))
                      (list (cons "--seed" seed)))))
       (write-problem stream
                    :name (or name (format nil "~(~a~)-problem" style))

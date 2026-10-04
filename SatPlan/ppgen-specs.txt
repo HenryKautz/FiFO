@@ -74,3 +74,14 @@ options generalize to trucks: --preferences, --maxgoals, and
 --goals-per-package (N destinations per truck, M the minimum number of
 hard goals per truck) behave as they do for packages.  The flag is
 recorded in the generated file's settings block.
+
+--knockout N   N an integer 0 to 100, default 0
+If set, N percent of the roads are deleted from the problem instance in a
+way that preserves connectivity.  For clique style, each clique loses N
+percent of its roads.  To preserve connectivity, the generator first
+creates a spanning tree for the grid or each clique, and then adds roads
+back in until N percent of the roads that would normally be there are
+missing.  If the spanning tree already has more than (100 - N) percent of
+the roads, it prints the error "Knockout value set too high, <M>% required
+to maintain connectivity", where M is the size of the spanning tree(s)
+divided by the total number of possible roads, as a percentage.

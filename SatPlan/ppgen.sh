@@ -18,7 +18,8 @@
 #
 # Every pair of airports is joined by a two-way route in both styles.  Goals
 # place each package somewhere other than where it started -- or, with
-# --truck-goals, send each truck somewhere (no packages at all).
+# --truck-goals, send each truck somewhere (no packages at all).  --knockout N
+# deletes N percent of each road network's roads, keeping it connected.
 #
 # The problem is written to stdout unless --output names a file.
 #
@@ -89,7 +90,12 @@ both styles:
                             option above applies per TRUCK: --preferences,
                             --maxgoals, and --goals-per-package (destinations
                             per truck)
-  --seed <N>                seed the generator, so a run is reproducible.  With
+  --knockout <N>            delete N percent (0-100) of the roads of each road
+                            network -- each clique, or the whole grid -- keeping
+                            it connected: a random spanning tree is kept and
+                            random other roads added back.  Refused when the
+                            tree alone exceeds (100-N)% of the roads.  Default 0
+  --seed <N>               seed the generator, so a run is reproducible.  With
                             no --seed the clock supplies one, and the value used
                             is recorded in the generated file
   --name <name>             problem name, default <style>-problem
@@ -106,6 +112,7 @@ examples:
            --goals-per-package 3 1
   ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
   ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
+  ppgen.sh --style grid --dimensions 6 6 --knockout 25
 
 Every generated file records the settings it was made with -- defaults and the
 seed included -- as comment lines, so it can be regenerated exactly.
@@ -115,7 +122,7 @@ EOF
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
 TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
 SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H="" MAXGOALS=""
-GOALS_PER_PACKAGE="" MIN_HARD_GOALS="" TRUCK_GOALS=0
+GOALS_PER_PACKAGE="" MIN_HARD_GOALS="" TRUCK_GOALS=0 KNOCKOUT=""
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -158,6 +165,7 @@ while [[ $# -gt 0 ]]; do
       GOALS_PER_PACKAGE="$2"; MIN_HARD_GOALS="$3"; shift 3 ;;
     --maxgoals)       need "$@"; want_int "$1" "$2"; MAXGOALS="$2"; shift 2 ;;
     --truck-goals)    TRUCK_GOALS=1; shift ;;
+    --knockout)       need "$@"; want_int "$1" "$2"; KNOCKOUT="$2"; shift 2 ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
     --name)           need "$@"; NAME="$2"; shift 2 ;;
     --domain)         need "$@"; DOMAIN="$2"; shift 2 ;;
@@ -167,6 +175,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$KNOCKOUT" && "$KNOCKOUT" -gt 100 ]]; then
+  die "--knockout is a percentage, 0 to 100, got $KNOCKOUT"
+fi
 if [[ -n "$MAXGOALS" && "$MAXGOALS" -gt 3 ]]; then
   die "--maxgoals is capped at 3, got $MAXGOALS"
 fi
@@ -227,6 +238,7 @@ ARGS+="$(kw :goals-per-package "$GOALS_PER_PACKAGE")"
 ARGS+="$(kw :min-hard-goals "$MIN_HARD_GOALS")"
 ARGS+="$(kw :pref-low "$PREF_L")"
 ARGS+="$(kw :pref-high "$PREF_H")"
+ARGS+="$(kw :knockout "$KNOCKOUT")"
 ARGS+="$(kw :seed "$SEED")"
 if [[ "$TRUCK_GOALS" -eq 1 ]]; then ARGS+=" :truck-goals t"; fi
 if [[ -n "$NAME" ]]; then ARGS+=" :name \"$NAME\""; fi

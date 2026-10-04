@@ -471,6 +471,23 @@ ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
 ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
 ```
 
+**Knocking out roads.** `--knockout <N>` deletes `N` percent of the roads, so trucks must take longer routes and the planner has real choices to make about which way to go. It acts on each **road network** separately — every clique loses `N` percent of its own roads; the grid, being one network, loses `N` percent overall — and never disconnects one, so every delivery stays reachable. It works the other way round from deletion: it keeps a random **spanning tree** of each network, then adds random other roads back until `⌊E·(100−N)/100⌋` of the network's `E` roads remain. A road here is the two-way pair, so a knocked-out road is gone in both directions.
+
+```sh
+ppgen.sh --style grid --dimensions 6 6 --knockout 25 --seed 4
+ppgen.sh --style clique --clique-size 5 --number-cliques 3 --knockout 40
+```
+
+The spanning tree sets the limit. A network of `p` places needs `p − 1` roads to stay connected, so if that is already more than `(100−N)` percent of its roads, `N` is refused:
+
+```
+ppgen.sh: Knockout value set too high, 62.5% required to maintain connectivity
+```
+
+That is a 4 × 4 grid: 24 roads, a tree of 15, so at most 37% can go. A clique of `k` places has `k(k−1)/2` roads and a tree of `k − 1`, which is `2/k` of them — half for a clique of 4, so `--knockout 50` keeps exactly the tree and `--knockout 51` is refused.
+
+The knockout draws from its own random stream, derived from the seed. So the same `--seed` with and without `--knockout` gives the same instance — airports, starting places, goals, preference weights — except for the missing roads, which makes the effect of the knockout directly comparable. `--knockout 0` (the default) does nothing at all, and the option is recorded in the settings block only when it is above 0, so files made without it are unchanged.
+
 **Reproducibility.** `--seed <N>` fixes the random draws. With no `--seed` the clock supplies one, but the value used is still *recorded*, so an interesting random instance is never lost. Every generated file opens with the complete settings it was made from, defaults included:
 
 ```
@@ -487,7 +504,7 @@ ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 
 ;;   --seed 1003680683
 ```
 
-Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line. `--truck-goals` is recorded as a bare flag when set, alongside `--packages 0`.
+Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line. `--truck-goals` is recorded as a bare flag when set, alongside `--packages 0`, and `--knockout` only when it is above 0.
 
 A generated problem feeds straight into the planner, from any directory. The problem says `(:domain clara-logistics)`, and the planner finds `clara-logistics.pddl` in the domain library (see [Where the domain file is found](#where-the-domain-file-is-found)), so no `--domain` is needed:
 
