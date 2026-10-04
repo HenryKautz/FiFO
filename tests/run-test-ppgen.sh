@@ -554,6 +554,31 @@ gen --style clique --clique-size 4 --number-cliques 2 --seed 3 > "$TMP/kf.pddl"
 gen --style clique --clique-size 4 --number-cliques 2 --seed 3 --knockout 50 > "$TMP/kk.pddl"
 ko_check "$TMP/kk.pddl" "$TMP/kf.pddl" 50 2>"$TMP/ko.err" && pass || fail "$(tail -1 "$TMP/ko.err")"
 
+# The bound is PER NETWORK.  Cliques are all one size today, so a global check
+# happened to agree; with networks of different sizes a small tight one could
+# borrow slack from a big one.  No style builds that, so call knockout-roads
+# directly: a 3-place clique (3 roads, tree 2: 66.7%) and a 6-place one (15 roads,
+# tree 5: 33.3%).  At 40% the global ratio (7/18 = 38.9%) would pass, but the
+# small clique cannot keep 60% -- refused, naming the binding 66.7%.
+name "--knockout: the tree bound is checked per network"
+OUT="$(sbcl --noinform --non-interactive --eval "(load \"$REPO/SatPlan/ppgen.lisp\")" --eval '
+  (let* ((small (list (quote a1) (quote a2) (quote a3)))
+         (big (list (quote b1) (quote b2) (quote b3) (quote b4) (quote b5) (quote b6)))
+         (roads (ppgen::clique-roads (list small big))))
+    (handler-case (progn (ppgen::knockout-roads roads (list small big) 40 1)
+                         (format t "~&ACCEPTED~%"))
+      (error (e) (format t "~&ERROR ~a~%" e))))' 2>&1)"
+grep -q 'ERROR Knockout value set too high, 66.7% required' <<<"$OUT" && pass \
+  || fail "$(grep 'ACCEPTED\|ERROR' <<<"$OUT")"
+
+# All of the seed feeds the knockout's random state: seeds that differ only
+# above bit 64 used to knock out identical roads.  Grid place names do not
+# depend on the seed, so the road sets compare directly.
+name "--knockout: seeds differing above bit 64 knock out different roads"
+R1="$(gen --style grid --dimensions 5 5 --knockout 30 --seed 1 | grep '(road ' | sort)"
+R2="$(gen --style grid --dimensions 5 5 --knockout 30 --seed 18446744073709551617 | grep '(road ' | sort)"
+[[ -n "$R1" && "$R1" != "$R2" ]] && pass || fail "identical road sets"
+
 name "--knockout is recorded when set"
 grep -qx ';;   --knockout 50' "$TMP/kk.pddl" && ! grep -q -- '--knockout' "$TMP/kf.pddl" && pass \
   || fail "$(grep -- '--knockout' "$TMP/kk.pddl" "$TMP/kf.pddl")"

@@ -77,7 +77,7 @@ both styles:
                             the same option under a neutral name, which reads
                             better with --truck-goals; the file records it as
                             --goals-per-package
-  --maxgoals <N>           require at most N deliveries in the goal state.
+  --maxgoals <N>            require at most N deliveries in the goal state.
                             At most 3.  REQUIRES --preferences: the default goal
                             demands every delivery, so a cap on the number
                             delivered would be contradictory or vacuous.
@@ -95,7 +95,7 @@ both styles:
                             it connected: a random spanning tree is kept and
                             random other roads added back.  Refused when the
                             tree alone exceeds (100-N)% of the roads.  Default 0
-  --seed <N>               seed the generator, so a run is reproducible.  With
+  --seed <N>                seed the generator, so a run is reproducible.  With
                             no --seed the clock supplies one, and the value used
                             is recorded in the generated file
   --name <name>             problem name, default <style>-problem

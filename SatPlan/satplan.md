@@ -478,7 +478,7 @@ ppgen.sh --style grid --dimensions 6 6 --knockout 25 --seed 4
 ppgen.sh --style clique --clique-size 5 --number-cliques 3 --knockout 40
 ```
 
-The spanning tree sets the limit. A network of `p` places needs `p − 1` roads to stay connected, so if that is already more than `(100−N)` percent of its roads, `N` is refused:
+The spanning tree sets the limit. A network of `p` places needs `p − 1` roads to stay connected, so if that is already more than `(100−N)` percent of its roads, `N` is refused. The check is made for each network, and `M` is the ratio of the one that binds (every clique is the same size, so for cliques it is also the overall ratio):
 
 ```
 ppgen.sh: Knockout value set too high, 62.5% required to maintain connectivity

@@ -203,38 +203,58 @@ style generates."
           (error "internal: a road network is not connected"))
         tree))))
 
+(defun knockout-random-state (seed)
+  "The knockout's own random state.  A VECTOR seed, so it never coincides with the
+main stream's integer seeding: SEED's low two 32-bit words, a marker word, then
+any higher words -- all of SEED counts, so seeds differing above bit 64 still
+knock out different roads, while a seed below 2^64 gets the same state it always
+did (knockout files made before this replay byte for byte)."
+  (let ((high (loop for s = (ash seed -64) then (ash s -32)
+                    while (plusp s) collect (ldb (byte 32 0) s))))
+    (sb-ext:seed-random-state
+     (coerce (list* (ldb (byte 32 0) seed) (ldb (byte 32 32) seed) #x4b4f high)
+             '(vector (unsigned-byte 32))))))
+
 (defun knockout-roads (roads networks percent seed)
   "ROADS with PERCENT of each network's two-way roads removed, every network still
 connected.  NETWORKS is a list of place lists (one per clique, or the grid's
 places).  Returns (values kept-roads kept-edges total-edges)."
-  (let* ((*rng* (sb-ext:seed-random-state
-                 (make-array 3 :element-type '(unsigned-byte 32)
-                               :initial-contents (list (ldb (byte 32 0) seed)
-                                                       (ldb (byte 32 32) seed)
-                                                       #x4b4f))))
+  (let* ((*rng* (knockout-random-state seed))
          (edges (road-edges roads))
-         (per-net (mapcar (lambda (places)
-                            (cons places
-                                  (remove-if-not (lambda (e) (and (member (first e) places)
-                                                                  (member (second e) places)))
-                                                 edges)))
-                          networks))
-         (tree-size (loop for (places) in per-net sum (max 0 (1- (length places)))))
+         ;; each place's network, so splitting the edges is one linear pass (a
+         ;; MEMBER per endpoint was quadratic: ~10^8 comparisons on a 100x100 grid)
+         (net-of (let ((h (make-hash-table)))
+                   (loop for places in networks for i from 0
+                         do (dolist (p places) (setf (gethash p h) i)))
+                   h))
+         (net-edges (let ((v (make-array (length networks) :initial-element '())))
+                      (dolist (e edges)
+                        (let ((i (gethash (first e) net-of)))
+                          (when (and i (eql i (gethash (second e) net-of)))
+                            (push e (aref v i)))))
+                      (map 'list #'nreverse v)))
+         (per-net (mapcar #'cons networks net-edges))
          (total (length edges)))
-    ;; The spanning trees are the floor: fewer roads than that cannot keep every
-    ;; network connected.
-    (when (> (* 100 tree-size) (* (- 100 percent) total))
-      (let ((m (/ (* 100 tree-size) total)))
+    ;; The spanning tree is each network's floor: fewer roads cannot keep it
+    ;; connected.  Checked PER NETWORK -- a global check would let a small,
+    ;; tight network borrow slack from a large one, and its keep would then fall
+    ;; below its own tree.  M is the binding network's tree/E (with equal
+    ;; cliques, the same as the overall ratio).
+    (let ((m (loop for (places . es) in per-net
+                   for tree = (max 0 (1- (length places)))
+                   when es maximize (/ (* 100 tree) (length es)))))
+      (when (and m (> m (- 100 percent)))
         (error "Knockout value set too high, ~a% required to maintain connectivity"
                (if (integerp m) m (format nil "~,1f" (float m))))))
     (let ((kept (make-hash-table :test #'equal)) (n-kept 0))
-      (loop for (places . net-edges) in per-net
-            for keep = (floor (* (length net-edges) (- 100 percent)) 100)
-            for tree = (spanning-tree places net-edges)
-            ;; remove-if, not set-difference: its order is unspecified, and the
-            ;; order feeds the shuffle, so it must be fixed for a seed to replay
-            for others = (shuffled (remove-if (lambda (e) (member e tree :test #'equal))
-                                              net-edges))
+      (loop for (places . es) in per-net
+            for keep = (floor (* (length es) (- 100 percent)) 100)
+            for tree = (spanning-tree places es)
+            for in-tree = (let ((h (make-hash-table :test #'equal)))
+                            (dolist (e tree h) (setf (gethash e h) t)))
+            ;; filtered in the edges' own order, which feeds the shuffle and so
+            ;; must be fixed for a seed to replay
+            for others = (shuffled (remove-if (lambda (e) (gethash e in-tree)) es))
             do (dolist (e (append tree (subseq others 0 (- keep (length tree)))))
                  (setf (gethash e kept) t)
                  (incf n-kept)))
