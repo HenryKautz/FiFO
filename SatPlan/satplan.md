@@ -456,6 +456,21 @@ which is why `N` is **capped at 3** — the number of these grows as `packages^(
 
 `M` is the **minimum number of hard goals per package**, `0` or `1` (default `0`). With `M = 0` the goal keeps the single disjunction preferences normally impose — one delivery overall is required, and every package beyond that is optional. With `M = 1`, shown above, each package gets its own disjunction, so *every* package must reach one of its destinations regardless of cost; the global disjunction is implied by any one of them and so is not also emitted. Both `N > 1` and `M = 1` **require `--preferences`**: with a conjunctive goal, `N` destinations for one package would demand it be in `N` places at once, and a per-package requirement would say nothing that the conjunction does not already say. `N` may not exceed the number of places available once a package's own starting place is excluded, and `M = 1` is incompatible with a `--maxgoals` below the package count (each package contributes exactly one satisfied goal, so the total is pinned at the package count).
 
+**Truck goals: the simpler problem.** `--truck-goals` drops the packages altogether: the goal sends each truck to a destination instead, a place other than the one it starts at.
+
+```lisp
+(:goal (and
+      (at truck1 c1-air)
+      (at truck2 c2-p2)))
+```
+
+In the clique style the destination is always in the truck's **own clique**: roads never leave one, so anywhere else would be unreachable and the problem unsolvable. On a grid any place will do. Airplanes default to `0`, since with nothing to carry they would only add idle actions to every slice; `--airplanes N` still adds them, for instance as distractors. An explicit `--packages` above `0` is refused. Every goal option above applies unchanged, **per truck** rather than per package: `--preferences` makes the goal a disjunction over the trucks' arrivals, with preferences named `reach-truck1`, `reach-truck2`, …; `--maxgoals` caps how many trucks arrive; and `--goals-per-package N M` — or its neutral alias `--goals-per-object N M`, which reads better here and is recorded under the original name — gives each truck `N` alternative destinations (all within its own clique), with `M = 1` requiring every truck to reach one of them. In the clique style `N` cannot exceed `clique-size − 1`.
+
+```sh
+SatPlan/ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
+SatPlan/ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
+```
+
 Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) set the two travel prices; `--name` and `--domain` set the problem and domain names; `-o`/`--output` names an output file. `--help` lists them all.
 
 **Reproducibility.** `--seed <N>` fixes the random draws. With no `--seed` the clock supplies one, but the value used is still *recorded*, so an interesting random instance is never lost. Every generated file opens with the complete settings it was made from, defaults included:
@@ -474,7 +489,7 @@ Common options: `--drive-cost <R>` (default 1) and `--fly-cost <R>` (default 3) 
 ;;   --seed 1003680683
 ```
 
-Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line.
+Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line. `--truck-goals` is recorded as a bare flag when set, alongside `--packages 0`.
 
 A generated problem feeds straight into the planner:
 

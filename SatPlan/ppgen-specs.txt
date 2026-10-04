@@ -56,3 +56,16 @@ takes the value 0 or 1.  If 0, then the final state has a disjunction
 over all packages and goals as is normal for preferences. If M=1, then
 there is also a hard constraint that each package must satisfy one of
 the goals regardless of cost.
+
+--truck-goals
+Generate a simpler problem with no packages, where the goals are to get
+the trucks to their destinations.  --goals-per-object N M is an alias
+for --goals-per-package N M (recorded under the original name).  Each truck gets a destination other
+than its starting place; in clique style the destination is in the
+truck's own clique, since roads do not connect cliques.  The number of
+packages is 0, and --packages greater than 0 is an error.  The number
+of airplanes defaults to 0 but may be set with --airplanes.  The goal
+options generalize to trucks: --preferences, --maxgoals, and
+--goals-per-package (N destinations per truck, M the minimum number of
+hard goals per truck) behave as they do for packages.  The flag is
+recorded in the generated file's settings block.

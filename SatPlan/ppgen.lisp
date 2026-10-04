@@ -26,6 +26,11 @@
 ;;;; destinations a hard requirement for every package, rather than leaving the
 ;;;; single global disjunction preferences normally impose.
 ;;;;
+;;;; :truck-goals generates the simpler problem with NO packages, whose goals
+;;;; send each truck to a destination instead -- within its own clique in the
+;;;; clique style, since roads never leave one.  Airplanes default to none there.
+;;;; Every goal option above applies unchanged, per truck rather than per package.
+;;;;
 ;;;; Entry point: (ppgen &key style ... ) writes one problem to a stream.
 ;;;; bin/../SatPlan/ppgen.sh is the command line wrapper.
 
@@ -172,27 +177,32 @@ the actual place.  Returns an alist of (item . place)."
                (push (cons (pop rest) (funcall place-fn gi)) out)))
     (nreverse out)))
 
-(defun goal-places (packages starts places &optional (per-package 1))
-  "PER-PACKAGE goal places for each package, random but never the package's own
-start (unless there is only one place, when no other choice exists), and all
-distinct within a package.  Returns (package . place) pairs in package order,
-each package's destinations consecutive."
-  (loop for pkg in packages
-        nconc (let* ((start (cdr (assoc pkg starts)))
+(defun goal-places (objects starts places-fn &optional (per-object 1) (kind "package"))
+  "PER-OBJECT goal places for each of OBJECTS (the packages, or with --truck-goals
+the trucks), random but never the object's own start (unless only one place is
+available, when no other choice exists), and all distinct within an object.
+PLACES-FN maps an object to the places it could be sent to: every place for a
+package, but only its own road network for a truck, which cannot leave it.
+KIND names the objects in messages.  Returns (object . place) pairs in object
+order, each object's destinations consecutive."
+  (loop for obj in objects
+        nconc (let* ((start (cdr (assoc obj starts)))
+                     (places (funcall places-fn obj))
                      (choices (if (< (length places) 2)
                                   places
                                   (remove start places))))
-                (when (> per-package (length choices))
+                (when (> per-object (length choices))
                   (error "--goals-per-package ~d needs ~d distinct destination~:p per ~
-                          package, but only ~d place~:p ~:[are~;is~] available once a ~
-                          package's own starting place is excluded"
-                         per-package per-package (length choices) (= 1 (length choices))))
+                          ~a, but only ~d place~:p ~:[are~;is~] available once a ~
+                          ~a's own starting place is excluded"
+                         per-object per-object kind (length choices)
+                         (= 1 (length choices)) kind))
                 ;; The one-destination case draws exactly as it always did, so a
                 ;; recorded seed still reproduces its file byte for byte.
-                (if (= per-package 1)
-                    (list (cons pkg (pick choices)))
-                    (mapcar (lambda (p) (cons pkg p))
-                            (subseq (shuffled choices) 0 per-package))))))
+                (if (= per-object 1)
+                    (list (cons obj (pick choices)))
+                    (mapcar (lambda (p) (cons obj p))
+                            (subseq (shuffled choices) 0 per-object))))))
 
 ;;; ------------------------------------------------------------ preferences
 
@@ -210,12 +220,13 @@ generated file reads cleanly."
                                  (if (= f (fround f)) (round f) f))
                                v))))))
 
-(defun preference-name (package &optional index)
-  "Names the preference for one delivery.  A package with several destinations
-needs them told apart: deliver-pkg1-1, deliver-pkg1-2, ..."
+(defun preference-name (object &optional index (verb "deliver"))
+  "Names the preference for one goal: deliver-pkg1 for a package, reach-truck1
+for a truck (VERB).  An object with several destinations needs them told apart:
+deliver-pkg1-1, deliver-pkg1-2, ..."
   (if index
-      (intern-name "deliver-~a-~d" package index)
-      (intern-name "deliver-~a" package)))
+      (intern-name "~a-~a-~d" verb object index)
+      (intern-name "~a-~a" verb object)))
 
 ;;; ---------------------------------------------------------- goal cardinality
 
@@ -260,28 +271,28 @@ case every weight is NIL."
                                   trucks airplanes packages
                                   truck-at airplane-at package-at goals
                                   drive-cost fly-cost header parameters pref-weights
-                                  maxgoals hard-per-package)
+                                  maxgoals hard-per-package (goal-verb "deliver"))
   (let ((*print-case* :downcase))
     (format stream ";; ~a~%" name)
     (dolist (line header) (format stream ";; ~a~%" line))
     (format stream ";;~%;; Generated by ppgen.sh -- edit the generator, not this file.~%")
     (format stream ";; Every setting used, defaults included; re-run with these to reproduce it:~%;;~%")
+    ;; a NIL value is a bare flag (--truck-goals)
     (loop for (flag . value) in parameters
-          do (format stream ";;   ~a ~a~%" flag value))
+          do (format stream ";;   ~a~@[ ~a~]~%" flag value))
     (terpri stream)
     (format stream "(define (problem ~(~a~))~%  (:domain ~(~a~))~%~%" name domain)
-    ;; objects: plain places, airports, then the movers
-    (format stream "  (:objects~%")
+    ;; objects: plain places, airports, then the movers.  Each line is emitted
+    ;; only when non-empty -- with --truck-goals there are no packages, and an
+    ;; empty "- package" line is not PDDL -- and the list closes after the last.
+    (format stream "  (:objects")
     (let ((plain (remove-if (lambda (p) (member p airport-names)) place-names)))
-      (when plain
-        (format stream "        ~{~(~a~)~^ ~} - place~%" plain))
-      (when airport-names
-        (format stream "        ~{~(~a~)~^ ~} - airport~%" airport-names))
-    (when trucks
-      (format stream "        ~{~(~a~)~^ ~} - truck~%" trucks))
-    (when airplanes
-      (format stream "        ~{~(~a~)~^ ~} - airplane~%" airplanes))
-    (format stream "        ~{~(~a~)~^ ~} - package)~%~%" packages))
+      (loop for (names type) in (list (list plain "place") (list airport-names "airport")
+                                      (list trucks "truck") (list airplanes "airplane")
+                                      (list packages "package"))
+            when names
+              do (format stream "~%        ~{~(~a~)~^ ~} - ~a" names type)))
+    (format stream ")~%~%")
     ;; init
     (format stream "  (:init~%        ;; where everything starts~%")
     (dolist (pa package-at)  (format stream "        (at ~(~a~) ~(~a~))~%" (car pa) (cdr pa)))
@@ -319,7 +330,8 @@ case every weight is NIL."
                                                      (first grp)
                                                      ;; index only when there is
                                                      ;; more than one to tell apart
-                                                     (when (rest (rest grp)) i))
+                                                     (when (rest (rest grp)) i)
+                                                     goal-verb)
                                                     a w)))
                   cap)
           (format stream "  (:goal (and~{~%        ~a~}~{~%        ~a~}))~%~%" atoms cap)))
@@ -337,11 +349,24 @@ in the generated file and can be reproduced exactly."
                    trucks airplanes packages (drive-cost 1) (fly-cost 3)
                    pref-low pref-high maxgoals
                    (goals-per-package 1) (min-hard-goals 0)
+                   truck-goals
                    seed (domain "clara-logistics") name
                    (stream *standard-output*))
-  "Generate one clara-logistics problem.  See the file header for the two styles."
-  (when (and packages (< packages 1))
-    (error "--packages must be at least 1: a problem with no packages has an empty goal"))
+  "Generate one clara-logistics problem.  See the file header for the two styles.
+With TRUCK-GOALS the goals send TRUCKS to destinations instead of delivering
+packages: there are no packages, airplanes default to none (they would only add
+idle actions, though AIRPLANES may still ask for some), and every goal option --
+preferences, maxgoals, goals-per-package -- applies per truck."
+  (cond
+    (truck-goals
+     (when (and packages (> packages 0))
+       (error "--truck-goals generates a problem with NO packages (the goals move ~
+               trucks), so --packages ~d contradicts it; drop --packages" packages))
+     (when (and trucks (< trucks 1))
+       (error "--truck-goals needs at least one truck: with none the goal is empty")))
+    ((and packages (< packages 1))
+     (error "--packages must be at least 1: a problem with no packages has an empty goal ~
+             (use --truck-goals for goals that move trucks instead)")))
   (when (and (or pref-low pref-high) (not (and pref-low pref-high)))
     (error "--preferences needs both bounds: 'none', or a low and a high value"))
   ;; The cap is encoded as one (not (and ...)) per (N+1)-subset of the goals, so
@@ -369,10 +394,11 @@ in the generated file and can be reproduced exactly."
   ;; a conjunctive goal would demand the package be in N places at once.
   (when (and (> goals-per-package 1) (not pref-low))
     (error "--goals-per-package ~d needs --preferences.~%  ~
-            The default goal is a conjunction of every delivery, so ~d destinations ~
-            for one package would require it to be in ~d places at once.~%  ~
+            The default goal is a conjunction of every goal, so ~d destinations ~
+            for one ~a would require it to be in ~d places at once.~%  ~
             Use --preferences <L> <H> to make the goal a disjunction first."
-           goals-per-package goals-per-package goals-per-package))
+           goals-per-package goals-per-package (if truck-goals "truck" "package")
+           goals-per-package))
   (when (and (= min-hard-goals 1) (not pref-low))
     (error "--goals-per-package's hard-goal minimum needs --preferences.~%  ~
             Without preferences every delivery is already required, so demanding ~
@@ -381,7 +407,9 @@ in the generated file and can be reproduced exactly."
   (setf seed (or seed (clock-seed)))
   (setf *rng* (sb-ext:seed-random-state seed))
   (let (place-names airport-names roads header
-        truck-at airplane-at package-at)
+        truck-at airplane-at package-at
+        ;; the places a TRUCK can be sent to: its own road network (set per style)
+        truck-places-fn)
     (ecase style
       (:clique
        (unless (and clique-size number-cliques)
@@ -389,8 +417,8 @@ in the generated file and can be reproduced exactly."
        (when (< number-cliques 1)
          (error "--number-cliques must be at least 1, got ~d" number-cliques))
        (setf trucks    (or trucks number-cliques)
-             airplanes (or airplanes number-cliques)
-             packages  (or packages number-cliques))
+             airplanes (or airplanes (if truck-goals 0 number-cliques))
+             packages  (or packages (if truck-goals 0 number-cliques)))
        (multiple-value-bind (all airs by-clique)
            (clique-places number-cliques clique-size)
          (setf place-names all airport-names airs
@@ -411,6 +439,12 @@ in the generated file and can be reproduced exactly."
            ;; airplanes: even over the airports (one per clique)
            (setf airplane-at (spread-over plane-names airport-names
                                           (lambda (gi) (nth gi airport-names))))
+           ;; Roads never leave a clique, so a truck can only be sent somewhere
+           ;; in the clique it starts in -- anywhere else is unreachable.
+           (setf truck-places-fn
+                 (lambda (truck)
+                   (let ((start (cdr (assoc truck truck-at))))
+                     (find-if (lambda (c) (member start c)) by-clique))))
            (setf trucks truck-names airplanes plane-names packages pkg-names))))
       (:grid
        (unless (and rows cols)
@@ -419,8 +453,8 @@ in the generated file and can be reproduced exactly."
          (error "--dimensions must be positive, got ~d x ~d" rows cols))
        (setf airports  (or airports 2)
              trucks    (or trucks airports)
-             airplanes (or airplanes airports)
-             packages  (or packages airports))
+             airplanes (or airplanes (if truck-goals 0 airports))
+             packages  (or packages (if truck-goals 0 airports)))
        (let* ((cells (grid-cells rows cols))
               (air-cells (disperse cells airports))
               (spread (min-pairwise-distance air-cells)))
@@ -440,24 +474,43 @@ in the generated file and can be reproduced exactly."
                  package-at (mapcar (lambda (p) (cons p (pick place-names))) pkg-names)
                  airplane-at (spread-over plane-names airport-names
                                           (lambda (gi) (nth gi airport-names))))
+           ;; The grid is one connected road network: a truck can reach any place.
+           (let ((all place-names))
+             (setf truck-places-fn (lambda (truck) (declare (ignore truck)) all)))
            (setf trucks truck-names airplanes plane-names packages pkg-names)))))
+    (when truck-goals
+      (setf header
+            (append header
+                    (list (format nil "No packages: the goal sends each truck to a destination~
+                                       ~:[~; within its own clique~]."
+                                  (eq style :clique))))))
+    ;; What the goals move: the packages, or with --truck-goals the trucks.
+    ;; Everything below -- destinations, preferences, the cap, the hard-goal
+    ;; minimum -- is the same for either kind of goal object.
+    (let ((kind (if truck-goals "truck" "package"))
+          (goal-objects (if truck-goals trucks packages))
+          (goal-starts (if truck-goals truck-at package-at))
+          (goal-places-fn (if truck-goals
+                              truck-places-fn
+                              (let ((all place-names)) (lambda (p) (declare (ignore p)) all)))))
     (when (> goals-per-package 1)
       (setf header
             (append header
                     (list (if (= min-hard-goals 1)
-                              (format nil "~d destinations per package, one of which each must reach."
-                                      goals-per-package)
-                              (format nil "~d destinations per package, any one of which delivers it."
-                                      goals-per-package))))))
-    ;; A package is at exactly one place, so at most one of its destinations can
-    ;; hold; requiring one per package therefore pins the total at exactly the
-    ;; package count, and any cap below that is unsatisfiable by construction.
-    (when (and maxgoals (= min-hard-goals 1) (< maxgoals (length packages)))
-      (error "--maxgoals ~d contradicts the hard-goal minimum: each of the ~d packages ~
+                              (format nil "~d destinations per ~a, one of which each must reach."
+                                      goals-per-package kind)
+                              (format nil "~d destinations per ~a, any one of which ~
+                                           ~:[delivers it~;it may reach~]."
+                                      goals-per-package kind truck-goals))))))
+    ;; An object is at exactly one place, so at most one of its destinations can
+    ;; hold; requiring one per object therefore pins the total at exactly the
+    ;; object count, and any cap below that is unsatisfiable by construction.
+    (when (and maxgoals (= min-hard-goals 1) (< maxgoals (length goal-objects)))
+      (error "--maxgoals ~d contradicts the hard-goal minimum: each of the ~d ~as ~
               must reach one of its destinations and can satisfy at most one goal, so ~
               exactly ~d goals hold."
-             maxgoals (length packages) (length packages)))
-    (let* ((goals (goal-places packages package-at place-names goals-per-package))
+             maxgoals (length goal-objects) kind (length goal-objects)))
+    (let* ((goals (goal-places goal-objects goal-starts goal-places-fn goals-per-package kind))
            ;; Default: as many goals as there are, i.e. no constraint at all.
            ;; A cap below that is only meaningful once the goal is a disjunction:
            ;; a conjunctive goal demands every delivery, so "at most N" with
@@ -485,6 +538,9 @@ in the generated file and can be reproduced exactly."
                                      "none"))
                            (cons "--goals-per-package"
                                  (format nil "~d ~d" goals-per-package min-hard-goals)))
+                     ;; a bare flag, recorded only when set: its absence is the
+                     ;; default (package goals), which replays as-is
+                     (when truck-goals (list (cons "--truck-goals" nil)))
                      ;; Only recorded when it was actually given: its "unset"
                      ;; value is "no cap", which has no spelling on the command
                      ;; line -- --maxgoals is capped at 3 and demands
@@ -503,5 +559,6 @@ in the generated file and can be reproduced exactly."
                    :drive-cost drive-cost :fly-cost fly-cost
                    :header header :parameters parameters
                    :pref-weights weights :maxgoals effective-cap
-                   :hard-per-package (= min-hard-goals 1)))
+                   :hard-per-package (= min-hard-goals 1)
+                   :goal-verb (if truck-goals "reach" "deliver"))))
     (values)))

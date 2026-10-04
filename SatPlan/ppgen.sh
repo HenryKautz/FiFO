@@ -17,7 +17,8 @@
 #                    evenly over the airports.
 #
 # Every pair of airports is joined by a two-way route in both styles.  Goals
-# place each package somewhere other than where it started.
+# place each package somewhere other than where it started -- or, with
+# --truck-goals, send each truck somewhere (no packages at all).
 #
 # The problem is written to stdout unless --output names a file.
 #
@@ -62,11 +63,23 @@ both styles:
                             each package to reach one of its own destinations
                             regardless of cost.  N > 1 or M = 1 REQUIRES
                             --preferences
-  --maxgoals <N>            require at most N deliveries in the goal state.
+  --goals-per-object <N> <M>
+                            the same option under a neutral name, which reads
+                            better with --truck-goals; the file records it as
+                            --goals-per-package
+  --maxgoals <N>           require at most N deliveries in the goal state.
                             At most 3.  REQUIRES --preferences: the default goal
                             demands every delivery, so a cap on the number
                             delivered would be contradictory or vacuous.
                             Default: the number of packages, i.e. no limit
+  --truck-goals             the simpler problem: NO packages, and the goals send
+                            each truck to a destination instead (within its own
+                            clique in clique style -- roads never leave one).
+                            Airplanes default to 0 (--airplanes N still adds
+                            some); --packages above 0 is refused.  Every goal
+                            option above applies per TRUCK: --preferences,
+                            --maxgoals, and --goals-per-package (destinations
+                            per truck)
   --seed <N>                seed the generator, so a run is reproducible.  With
                             no --seed the clock supplies one, and the value used
                             is recorded in the generated file
@@ -82,6 +95,8 @@ examples:
   ppgen.sh --style grid --dimensions 5 5 --packages 6 --preferences 1 9 --maxgoals 2
   ppgen.sh --style grid --dimensions 5 5 --packages 3 --preferences 1 9 \
            --goals-per-package 3 1
+  ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
+  ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
 
 Every generated file records the settings it was made with -- defaults and the
 seed included -- as comment lines, so it can be regenerated exactly.
@@ -91,7 +106,7 @@ EOF
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
 TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
 SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H="" MAXGOALS=""
-GOALS_PER_PACKAGE="" MIN_HARD_GOALS=""
+GOALS_PER_PACKAGE="" MIN_HARD_GOALS="" TRUCK_GOALS=0
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -128,11 +143,12 @@ while [[ $# -gt 0 ]]; do
         want_num "$1" "$2"; want_num "$1" "$3"
         PREF_L="$2"; PREF_H="$3"; shift 3
       fi ;;
-    --goals-per-package)
-      [[ $# -ge 3 ]] || die "--goals-per-package needs two values, e.g. --goals-per-package 3 1"
+    --goals-per-package|--goals-per-object)
+      [[ $# -ge 3 ]] || die "$1 needs two values, e.g. $1 3 1"
       want_int "$1" "$2"; want_int "$1" "$3"
       GOALS_PER_PACKAGE="$2"; MIN_HARD_GOALS="$3"; shift 3 ;;
     --maxgoals)       need "$@"; want_int "$1" "$2"; MAXGOALS="$2"; shift 2 ;;
+    --truck-goals)    TRUCK_GOALS=1; shift ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
     --name)           need "$@"; NAME="$2"; shift 2 ;;
     --domain)         need "$@"; DOMAIN="$2"; shift 2 ;;
@@ -203,6 +219,7 @@ ARGS+="$(kw :min-hard-goals "$MIN_HARD_GOALS")"
 ARGS+="$(kw :pref-low "$PREF_L")"
 ARGS+="$(kw :pref-high "$PREF_H")"
 ARGS+="$(kw :seed "$SEED")"
+if [[ "$TRUCK_GOALS" -eq 1 ]]; then ARGS+=" :truck-goals t"; fi
 if [[ -n "$NAME" ]]; then ARGS+=" :name \"$NAME\""; fi
 ARGS+=" :domain \"$DOMAIN\""
 

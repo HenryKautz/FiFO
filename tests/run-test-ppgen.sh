@@ -384,6 +384,93 @@ EOF
   then pass; else fail "a package missed all its destinations; see $TMP/gp3.log"; fi
 else echo "SKIP (no MaxSAT solver)"; fi
 
+# ------------------------------------------------------------- truck goals ---
+
+name "--truck-goals: no packages, no airplanes, one goal per truck"
+gen --style clique --clique-size 4 --number-cliques 3 --trucks 5 --truck-goals --seed 21 > "$TMP/tg.pddl"
+if pycheck "$TMP/tg.pddl" <<'EOF'
+import sys,re
+t=open(sys.argv[1]).read()
+objs=t.split('(:objects')[1].split('(:init')[0]
+assert '- package' not in objs and '- airplane' not in objs, objs
+trucks=re.search(r'^\s+(.*) - truck\)?$',objs,re.M).group(1).split()
+assert len(trucks)==5, trucks
+goal=t.split('(:goal')[1]
+atoms=re.findall(r'\(at (\w+) ([\w-]+)\)',goal)
+assert sorted(a for a,_ in atoms)==sorted(trucks), atoms      # each truck exactly once
+assert 'pkg' not in t.split('(:init')[1]
+EOF
+then pass; else fail "truck-goal problem malformed"; fi
+
+name "--truck-goals (clique): destination in the truck's own clique, not its start"
+# Roads never leave a clique, so a destination in another clique is unreachable.
+# Checked over several seeds: one draw could land in the right clique by luck.
+TG_BAD=""
+for s in 1 2 3 4 5 6 7 8; do
+  gen --style clique --clique-size 3 --number-cliques 3 --trucks 6 --truck-goals --seed $s > "$TMP/tgc.pddl"
+  pycheck "$TMP/tgc.pddl" <<'EOF' || { TG_BAD=$s; break; }
+import sys,re
+t=open(sys.argv[1]).read()
+init=t.split('(:init')[1].split('(:goal')[0]
+start=dict(re.findall(r'\(at (truck\d+) ([\w-]+)\)',init))
+goal=dict(re.findall(r'\(at (truck\d+) ([\w-]+)\)',t.split('(:goal')[1]))
+for tr,dest in goal.items():
+    assert dest!=start[tr], (tr,dest)
+    assert dest.split('-')[0]==start[tr].split('-')[0], (tr,start[tr],dest)
+EOF
+done
+if [ -z "$TG_BAD" ]; then pass; else fail "a truck sent out of its clique or to its start (seed $TG_BAD)"; fi
+
+name "--truck-goals (grid): destinations differ from starts"
+gen --style grid --dimensions 3 3 --trucks 4 --truck-goals --seed 22 > "$TMP/tgg.pddl"
+if pycheck "$TMP/tgg.pddl" <<'EOF'
+import sys,re
+t=open(sys.argv[1]).read()
+start=dict(re.findall(r'\(at (truck\d+) ([\w-]+)\)',t.split('(:init')[1].split('(:goal')[0]))
+goal=dict(re.findall(r'\(at (truck\d+) ([\w-]+)\)',t.split('(:goal')[1]))
+assert len(goal)==4 and all(goal[k]!=start[k] for k in goal), (start,goal)
+EOF
+then pass; else fail "grid truck goals wrong"; fi
+
+name "--truck-goals still takes --airplanes N"
+# (the airplane line is the last object line here, so it carries the close paren)
+if gen --style grid --dimensions 3 3 --truck-goals --airplanes 2 --seed 23 | grep -q ' - airplane)\{0,1\}$'
+then pass; else fail "no airplanes emitted"; fi
+
+name "--truck-goals: every goal option applies per truck"
+gen --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5 \
+    --goals-per-package 2 1 --seed 24 > "$TMP/tgp.pddl"
+if pycheck "$TMP/tgp.pddl" <<'EOF'
+import sys,re,collections
+t=open(sys.argv[1]).read()
+goal=t.split('(:goal')[1]
+prefs=re.findall(r'\(preference ([\w-]+) \(at (truck\d+) ([\w-]+)\) [\d.]+\)',goal)
+assert len(prefs)==6, prefs                                  # 3 trucks x 2 destinations
+assert all(n==f'reach-{tr}-{i}' for (n,tr,_),i in zip(prefs,[1,2]*3)), prefs
+per=collections.Counter(tr for _,tr,_ in prefs)
+assert all(v==2 for v in per.values()), per
+ors=re.findall(r'^\s+\(or \(at (truck\d+) [\w-]+\) \(at (truck\d+) [\w-]+\)\)$',goal,re.M)
+assert len(ors)==3 and all(a==b for a,b in ors), ors           # M=1: one hard OR per truck
+EOF
+then pass; else fail "goal options not applied per truck"; fi
+
+name "--goals-per-object is an exact alias of --goals-per-package"
+gen --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5 \
+    --goals-per-object 2 1 --seed 24 > "$TMP/tgo.pddl"
+if cmp -s "$TMP/tgp.pddl" "$TMP/tgo.pddl"; then pass
+else fail "alias output differs: $(diff "$TMP/tgp.pddl" "$TMP/tgo.pddl" | head -5)"; fi
+
+name "--truck-goals: the cap counts truck goals"
+gen --style grid --dimensions 4 4 --trucks 4 --truck-goals --preferences 1 5 --maxgoals 2 \
+    --seed 25 > "$TMP/tgm.pddl"
+# 4 goals, at most 2: one (not (and ...)) per 3-subset, C(4,3) = 4
+if [ "$(grep -c '(not (and (at truck' "$TMP/tgm.pddl")" -eq 4 ]; then pass
+else fail "expected 4 cap forms, got $(grep -c '(not (and' "$TMP/tgm.pddl")"; fi
+
+name "--truck-goals is recorded, and --packages 0 replays"
+if grep -qx ';;   --truck-goals' "$TMP/tg.pddl" && grep -qx ';;   --packages 0' "$TMP/tg.pddl"
+then pass; else fail "$(grep '^;;   --' "$TMP/tg.pddl" | tr '\n' ' ')"; fi
+
 # ------------------------------------------------- recorded settings / seed ---
 
 name "the file records every setting, defaults included"
@@ -426,7 +513,9 @@ name "the recorded settings block replays byte for byte"
 RT_BAD=""
 for spec in "--style clique --clique-size 4 --number-cliques 3 --seed 1" \
             "--style grid --dimensions 5 5 --airports 3 --packages 4 --preferences 1 7 --maxgoals 2 --seed 42" \
-            "--style clique --clique-size 4 --number-cliques 2 --packages 3 --preferences 1 9 --goals-per-package 3 1 --seed 5"
+            "--style clique --clique-size 4 --number-cliques 2 --packages 3 --preferences 1 9 --goals-per-package 3 1 --seed 5" \
+            "--style clique --clique-size 4 --number-cliques 2 --trucks 3 --truck-goals --preferences 1 5 --goals-per-package 2 0 --seed 6" \
+            "--style grid --dimensions 4 4 --trucks 4 --truck-goals --airplanes 1 --preferences 1 5 --maxgoals 2 --seed 7"
 do
   gen $spec > "$TMP/rt1.pddl"
   # feed the file's own settings block back in as the command line
@@ -463,6 +552,11 @@ err "--goals-per-package 0 is rejected"    "at least 1"           --style grid -
 err "--goals-per-package with one value is rejected" "needs two values" --style grid --dimensions 4 4 --preferences 1 5 --goals-per-package 2
 err "more destinations than places is rejected" "distinct destination" --style grid --dimensions 1 3 --packages 2 --preferences 1 5 --goals-per-package 3 0
 err "a cap below the package count contradicts M=1" "contradicts the hard-goal minimum" --style grid --dimensions 4 4 --packages 4 --preferences 1 5 --goals-per-package 2 1 --maxgoals 3
+err "zero packages points at --truck-goals" "use --truck-goals" --style clique --clique-size 3 --number-cliques 2 --packages 0
+err "--truck-goals with packages is rejected" "contradicts it"   --style clique --clique-size 3 --number-cliques 2 --truck-goals --packages 2
+err "--truck-goals with no trucks is rejected" "at least one truck" --style grid --dimensions 3 3 --truck-goals --trucks 0
+err "a cap below the truck count contradicts M=1" "3 trucks"      --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5 --goals-per-package 2 1 --maxgoals 2
+err "more truck destinations than its clique holds is rejected" "per truck" --style clique --clique-size 3 --number-cliques 2 --truck-goals --preferences 1 5 --goals-per-package 3 0
 
 # ------------------------------------------------------------ solvability ---
 
@@ -489,6 +583,40 @@ if command -v "$SOLVER" >/dev/null 2>&1; then
        grep -q '(\*OBJECTIVE\*' "$TMP/s.answer"
     then pass; else fail "did not solve; see $TMP/s.log"; fi
   done
+
+  # Solving is the real test of the own-clique rule: a destination in another
+  # clique would make the problem UNSAT at every horizon.
+  name "clique --truck-goals solves, every truck at its destination"
+  gen --style clique --clique-size 3 --number-cliques 2 --trucks 3 --truck-goals --seed 9 > "$TMP/ts.pddl"
+  if WEIGHTED_SOLVER="$SOLVER" bash "$REPO/bin/planner.sh" "$TMP/ts.pddl" \
+       --domain "$DOMAIN" --maxslices 6 >"$TMP/ts.log" 2>&1 &&
+     pycheck "$TMP/ts.pddl" "$TMP/ts.answer" <<'EOF'
+import sys,re
+prob=open(sys.argv[1]).read(); ans=open(sys.argv[2]).read()
+goal=re.findall(r'\(at (truck\d+) ([\w-]+)\)',prob.split('(:goal')[1])
+last=max(int(m) for m in re.findall(r'\(HOLDS \(AT \w+ [\w-]+\) (\d+)\)',ans))
+for tr,dest in goal:
+    assert f'(HOLDS (AT {tr.upper()} {dest.upper()}) {last})' in ans, (tr,dest)
+EOF
+  then pass; else fail "truck-goal problem did not solve; see $TMP/ts.log"; fi
+
+  name "grid --truck-goals with M=1: each truck reaches one of its own"
+  gen --style grid --dimensions 3 3 --trucks 3 --truck-goals --preferences 1 5 \
+      --goals-per-package 2 1 --seed 10 > "$TMP/tsg.pddl"
+  if WEIGHTED_SOLVER="$SOLVER" bash "$REPO/bin/planner.sh" "$TMP/tsg.pddl" \
+       --domain "$DOMAIN" --maxslices 8 >"$TMP/tsg.log" 2>&1 &&
+     pycheck "$TMP/tsg.pddl" "$TMP/tsg.answer" <<'EOF'
+import sys,re,collections
+prob=open(sys.argv[1]).read(); ans=open(sys.argv[2]).read()
+want=collections.defaultdict(set)
+for tr,place in re.findall(r'\(preference [\w-]+ \(at (truck\d+) ([\w-]+)\)',prob.split('(:goal')[1]):
+    want[tr].add(place)
+last=max(int(m) for m in re.findall(r'\(HOLDS \(AT \w+ [\w-]+\) (\d+)\)',ans))
+held={(t.lower(),l.lower()) for t,l in re.findall(rf'\(HOLDS \(AT (\w+) ([\w-]+)\) {last}\)',ans)}
+for tr,places in want.items():
+    assert any((tr,p) in held for p in places), (tr,places)
+EOF
+  then pass; else fail "a truck missed all its destinations; see $TMP/tsg.log"; fi
 else
   echo "  (skipping solvability: no MaxSAT solver '$SOLVER' on PATH)"
 fi
