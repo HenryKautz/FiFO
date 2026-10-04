@@ -187,6 +187,29 @@ else
   OUT="$(translate "$TMP/empty" --domain nosuch.pddl)"
   grep -q "looked in the current directory and in the domain library $LIB" <<<"$OUT" \
     && pass || fail "$(tail -2 <<<"$OUT")"
+
+  # A SYMLINKED lisp directory with a stale pddl/ beside the link.  The shell's
+  # -f test follows the link (kernel) while a logical `cd` applied `..` to the
+  # text, so the test passed on the real library and the printed path named the
+  # stale one.  The stale copy here is broken PDDL, so using it FAILS.
+  name "--domain bare name through a symlinked lisp: the real library"
+  mkdir -p "$TMP/real/pddl" "$TMP/link/lib/fifo/pddl"
+  cp -R "$LISP" "$TMP/real/lisp"
+  cp "$LIB/clara-logistics.pddl" "$TMP/real/pddl/"
+  ln -s "$TMP/real/lisp" "$TMP/link/lib/fifo/lisp"
+  printf '%s\n' "$BROKEN" > "$TMP/link/lib/fifo/pddl/clara-logistics.pddl"
+  OUT="$(cd "$TMP/empty" && env FIFO_LISP="$TMP/link/lib/fifo/lisp" "$BIN/planner.sh" \
+          "$TMP/prob/p.pddl" --stop-after wff --domain clara-logistics.pddl 2>&1)"
+  # (not a bare "error" grep: SBCL's style warnings echo a planner docstring
+  # that begins "Errors on an atom ...")
+  grep -q "^Wrote .*p\.wff" <<<"$OUT" && ! grep -qi "end of file\|not found" <<<"$OUT" && pass \
+    || fail "$(grep -m1 -i 'not found\|end of file\|FAILED' <<<"$OUT")"
+
+  name "the same layout without --domain: the real library too"
+  OUT="$(cd "$TMP/empty" && env FIFO_LISP="$TMP/link/lib/fifo/lisp" "$BIN/planner.sh" \
+          "$TMP/prob/p.pddl" --stop-after wff 2>&1)"
+  [[ "$(used "$OUT")" == "$TMP/real/pddl/clara-logistics.pddl" ]] && pass \
+    || fail "used '$(used "$OUT")'"
 fi
 
 # learn-pddl writes <domain>_learned.pddl beside the domain -- but a LIBRARY

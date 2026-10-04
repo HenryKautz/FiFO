@@ -44,15 +44,24 @@ export FIFO_LISP
 # $FIFO_LISP/../pddl, so `--domain clara-logistics.pddl` works from anywhere.  A
 # name with a "/" is a path the caller meant literally and is never searched for.
 # Fails (status 1, message on stderr) naming every place it looked.
+#
+# The library path is resolved PHYSICALLY, with `cd -P` (pwd -P alone is not
+# enough: a plain cd has already applied `..` to the text).  The `-f` test goes
+# through the kernel, which follows a symlinked $FIFO_LISP before applying `..`,
+# while a logical `cd` applies `..` to the TEXT.  With ~/lib/fifo/lisp a symlink
+# and a stale ~/lib/fifo/pddl beside it, the two named different directories:
+# the test passed on the real library and the path printed was the stale one --
+# a missing file, or worse an old copy.  `cd -P` prints what was tested, and
+# matches the Lisp, which takes the library from the truename.
 _fifo_find_domain() {
   local f="$1" lib="$FIFO_LISP/../pddl"
   if [[ -f "$f" ]]; then printf '%s' "$f"; return 0; fi
   if [[ "$f" != */* && -f "$lib/$f" ]]; then
-    printf '%s' "$(cd "$lib" && pwd)/$f"; return 0
+    printf '%s' "$(cd -P "$lib" && pwd -P)/$f"; return 0
   fi
   echo "domain file not found: $f" >&2
   if [[ "$f" != */* ]]; then
-    [[ -d "$lib" ]] && lib="$(cd "$lib" && pwd)"
+    [[ -d "$lib" ]] && lib="$(cd -P "$lib" && pwd -P)"
     echo "  looked in the current directory and in the domain library $lib" >&2
   fi
   return 1
