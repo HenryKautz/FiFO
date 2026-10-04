@@ -591,7 +591,7 @@ The MaxSAT solvers FiFO can drive — TT-Open-WBO-Inc (the default), NuWLS-c, RC
 (solve "problem.wff" :solver "nuwls" :cnf-format 'WCNF :timeout 120)
 ```
 
-The keywords are `:solver`, `:cnf-format`, `:preprocessor`, `:preprocessor-techniques`, and `:timeout`. An `(option ...)` form inside the `.wff` is executed while the file is parsed, so it still has the last word — exactly as it does over a prior `setq`.
+The keywords are `:solver`, `:cnf-format`, `:preprocessor`, `:preprocessor-techniques`, and `:timeout`. A `.wff` cannot set any of these — they are solving policy, which belongs to the caller (see [Options set only in Lisp](#options-set-only-in-lisp)) — so a keyword is never overridden by the file it solves.
 
 ### Solver time limits
 
@@ -688,6 +688,8 @@ Every option is a Lisp global variable whose name is the same in both forms. The
 
 - **In a `.wff` file**, with an `(option <name> <value>)` form placed before any formulas.
 - **On the command line**, with an `--eval '(setq <name> <value>)'` form (or `(set ...)` for an unbound variable) given to `sbcl` after `--load FiFO.lisp`. A command-line setting persists for the whole Lisp session; an `(option ...)` form in a file overrides it when that file is processed.
+
+An `(option ...)` form lasts only as long as the call that reads its file — `instantiate`, `solve` or `parse` — and the session's own setting is back in force afterwards. So instantiating several files in one Lisp session works as expected: a file that turns the compact encoding off does not turn it off for the next file. (A `solve` with a `prove` form parses its query after the theory, still within the same call, so the query uses the file's setting too.) `parse-same-env`, which adds formulas to the theory just parsed, runs under the option values that theory was built with — including any you bound around the original call — and a second theory parsed in the same call starts from your values, not the first theory's.
 
 The two forms differ only in how some values are written: booleans use `1`/`0` in a file but `t`/`nil` on the command line, and list-valued options are written unquoted in a file but must be quoted (`(quote ...)`) for `setq`.
 

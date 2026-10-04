@@ -136,6 +136,82 @@ exactly where it was."
 ;; but intentionally left unbound: when unbound the generated alias falls back to
 ;; 2; (option *satplan-numslices* N) or (setq *satplan-numslices* N) sets it.
 (defvar *satplan-numslices*)
+
+;;; ------------------------------------------------- scoping (option ...) forms
+;;;
+;;; The options a .wff may set (see PARSE-OPTION; the solving-policy ones are
+;;; refused there).  An (option ...) form used to SETQ the global, so it outlived
+;;; the file: after a wff with (option *compact-encoding* 0), every later
+;;; instantiation in the same Lisp ran with the compact encoding off, and a
+;;; wff's *satplan-numslices* overrode the planner's at the next horizon.  Now
+;;; every option lives in a scope that BINDS these, so a wff's option lasts
+;;; exactly as long as the call that read it.  A caller's own setq or LET still
+;;; provides the starting value.
+;;;
+;;; Two kinds of scope (WITH-WFF-OPTION-SCOPE's :FROM):
+;;;
+;;;   :OUTER     an entry point -- INSTANTIATE, SOLVE-SCHEMAS, PARSE, a direct
+;;;              PARSE-SCHEMA-LIST.  Opens a scope from the caller's values, or
+;;;              joins the one already open.
+;;;   :CONTINUE  PARSE-SAME-ENV (which every parse goes through) and SOLVE's
+;;;              prove query.  ALWAYS rebinds: from the values the current theory
+;;;              was BUILT under -- every option, not only the ones its file set,
+;;;              so a caller's LET around the original parse carries over though
+;;;              the continuation runs after it -- or, for a new theory, from the
+;;;              caller's values.  It records them again when it ends.
+;;;
+;;; Because a theory's (option ...) forms are parsed inside that :CONTINUE
+;;; binding, they never reach an enclosing scope: a second theory parsed in the
+;;; same INSTANTIATE or SOLVE starts from the caller's values, not the first's.
+(defparameter *wff-settable-options* '(*compact-encoding* *tracing* *satplan-numslices*))
+
+;; Marks an option that was unbound, in a recorded set of values.
+(defvar +wff-option-unbound+ '%wff-option-unbound)
+
+;; True inside any scope.
+(defvar *wff-option-scope* nil)
+
+;; The caller's values, (variable . value) for every option, captured when the
+;; outermost scope opened: what a new theory starts from.
+(defvar *wff-option-base* nil)
+
+;; The values the CURRENT theory was built under, every option, recorded when a
+;; :CONTINUE scope (PARSE-SAME-ENV, which every parse goes through) ends.  Reset
+;; by SETUP-GLOBAL-ENV with the rest of the theory's state.
+(defvar *wff-option-snapshot* nil)
+
+(defun current-wff-options ()
+  (mapcar (lambda (v) (cons v (if (boundp v) (symbol-value v) +wff-option-unbound+)))
+          *wff-settable-options*))
+
+(defun call-with-wff-options (values thunk)
+  "Call THUNK with every wff-settable option bound from VALUES.  An option marked
+unbound is unbound inside (PROGV's rule for symbols beyond the value list)."
+  (let* ((valued (remove +wff-option-unbound+ values :key #'cdr))
+         (unbound (mapcar #'car (remove +wff-option-unbound+ values
+                                        :key #'cdr :test-not #'eq)))
+         (*wff-option-scope* t))
+    (progv (append (mapcar #'car valued) unbound) (mapcar #'cdr valued)
+      (funcall thunk))))
+
+(defun call-with-wff-option-scope (thunk &key (from :outer))
+  "Call THUNK in an option scope of kind FROM (:OUTER or :CONTINUE; see above)."
+  (let ((outermost (not *wff-option-scope*)))
+    (if (and (eq from :outer) (not outermost))
+        (funcall thunk)
+        (let* ((*wff-option-base* (if outermost (current-wff-options) *wff-option-base*))
+               (start (if (eq from :continue)
+                          (or *wff-option-snapshot* *wff-option-base*)
+                          *wff-option-base*)))
+          (call-with-wff-options
+           start
+           (lambda ()
+             (multiple-value-prog1 (funcall thunk)
+               (when (eq from :continue)
+                 (setf *wff-option-snapshot* (current-wff-options))))))))))
+
+(defmacro with-wff-option-scope ((&key (from :outer)) &body body)
+  `(call-with-wff-option-scope (lambda () ,@body) :from ,from))
 (defvar Weights nil)
 ;; Target marginal probabilities, the input twin of Weights: a (PROBABILITY
 ;; <literal> <p> <gid>) carries a target marginal p in [0,1] and a tie-group id
@@ -496,7 +572,10 @@ banner."
       (setq STATICFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".obs")))
   (if (not SCNFILE)
       (setq SCNFILE (replace-suffix-with-regex WFFFILE "\\..*?$" ".scnf")))
-  (with-clean-errors ("instantiating" WFFFILE)
+  ;; The wff's (option ...) forms hold for this whole call -- the PREAMBLE and
+  ;; the writing included -- and no longer.
+  (with-wff-option-scope ()
+   (with-clean-errors ("instantiating" WFFFILE)
     (with-open-file (INS WFFFILE :direction :input)
       (with-open-stream (OBS (if STATICFILE (open STATICFILE :direction :input) (make-concatenated-stream)))
         (with-open-file (OUTS SCNFILE :direction :output :if-exists :supersede)
@@ -518,7 +597,7 @@ banner."
             (loop for P in Probabilities do (format OUTS "~S~%" P))
             (when (and Weights (not (eql *cnf-format* 'CNF)))
               (format OUTS "(OPTION WEIGHTS ~S)~%" *cnf-format*))))))
-    t))
+    t)))
 
 (defun propositionalize (SCNFFILE &key CNFFILE MAPFILE (CNF-FORMAT nil cnf-format-p))
   "Write the ground clauses in SCNFFILE out as DIMACS, with a MAPFILE giving the
@@ -711,6 +790,8 @@ argument beats a prior setq and neither outlives SOLVE."
                                        *preprocessor-techniques*))
         (*solver-timeout*          (if timeout-p (solver-time-limit TIMEOUT)
                                        *solver-timeout*)))
+    ;; The wff's (option ...) forms are scoped by SOLVE-SCHEMAS, which parses
+    ;; both the theory and the prove query; nothing else here reads an option.
     (solve--1 WFFFILE SOLNFILE STATICFILE)))
 
 (defun solve--1 (WFFFILE SOLNFILE STATICFILE)
@@ -977,6 +1058,7 @@ argument beats a prior setq and neither outlives SOLVE."
 (defun solve-schemas (schemas &key static-facts observations)
   ;; :observations is a deprecated synonym for :static-facts
   (setq static-facts (or static-facts observations))
+  (with-wff-option-scope ()
   (multiple-value-bind (prove-form rest-of-wff) (pull-out-prove schemas)
     (cond ((null prove-form)
             (test-scnf (parse schemas :static-list static-facts)))
@@ -990,6 +1072,11 @@ argument beats a prior setq and neither outlives SOLVE."
               ;; conclusion is satisfiable.  If SAT, that model is a counterexample.
               ;; If UNSAT, the theory entails the conclusion and we attempt answer
               ;; extraction.
+              ;;
+              ;; The query is parsed AFTER the theory's PARSE has returned, so it
+              ;; continues that theory: the file's options (say, the compact
+              ;; encoding off) must hold for it too.
+              (with-wff-option-scope (:from :continue)
               (multiple-value-bind (sat-result model)
                   (test-scnf (append (mapcar (lambda (c) (cons 'or c))
                                              (clauses-with-definitions
@@ -1001,7 +1088,7 @@ argument beats a prior setq and neither outlives SOLVE."
                       (t
                         (let* ((bindings (term-search nil notfound test qbody assumptions)))
                           (cond ((null bindings) (values 'NOANSWER nil))
-                                (t (values 'PROVEN (cdr bindings)))))))))))))
+                                (t (values 'PROVEN (cdr bindings)))))))))))))))
 
 ;;;
 ;;; Parsing 
@@ -1033,6 +1120,7 @@ argument beats a prior setq and neither outlives SOLVE."
   (clrhash *probability-gids*)
   (setq *reified-formula-counter* 0)
   (setq *tseitin-counter* 0)
+  (setq *wff-option-snapshot* nil)
   (setf (gethash 'TRUE StaticPredicates) 1)
   (setf (gethash 'TRUE StaticLiterals) 1)
   (setf (gethash 'FALSE StaticPredicates) 1)
@@ -1040,15 +1128,21 @@ argument beats a prior setq and neither outlives SOLVE."
 
 (defun parse (SCHEMA-LIST &key STATIC-LIST OBSERVATION-LIST)
   ;; :observation-list is a deprecated synonym for :static-list
-  (setup-global-env)
-  (parse-same-env SCHEMA-LIST :static-list (or STATIC-LIST OBSERVATION-LIST)))
+  ;; A new theory: SETUP-GLOBAL-ENV clears the option snapshot, so the
+  ;; PARSE-SAME-ENV below starts from the caller's values.
+  (with-wff-option-scope ()
+    (setup-global-env)
+    (parse-same-env SCHEMA-LIST :static-list (or STATIC-LIST OBSERVATION-LIST))))
 
 (defun parse-same-env (SCHEMA-LIST &key STATIC-LIST OBSERVATION-LIST)
-  (parse-statics (or STATIC-LIST OBSERVATION-LIST))
-  (assign-probability-gids SCHEMA-LIST)
-  (mapcar #'(lambda (c) (cons 'or c))
-    (remove-valid-clauses
-     (clauses-with-definitions (lambda () (parse-schema-list SCHEMA-LIST))))))
+  ;; Continues the current theory, under the option values it was built with,
+  ;; and records them (with any it sets now) for the next continuation.
+  (with-wff-option-scope (:from :continue)
+    (parse-statics (or STATIC-LIST OBSERVATION-LIST))
+    (assign-probability-gids SCHEMA-LIST)
+    (mapcar #'(lambda (c) (cons 'or c))
+      (remove-valid-clauses
+       (clauses-with-definitions (lambda () (parse-schema-list SCHEMA-LIST)))))))
 
 ;; Global variables used by parse statics
 (defvar new-static)
@@ -1134,9 +1228,12 @@ argument beats a prior setq and neither outlives SOLVE."
         (t (list 'not L))))
 
 (defun parse-schema-list (SCHEMA-LIST)
-  (cond ((null SCHEMA-LIST) nil)
-        (t (append (parse-schema (car SCHEMA-LIST))
-             (parse-schema-list (cdr SCHEMA-LIST))))))
+  ;; Called directly as well as by PARSE-SAME-ENV and PARSE-INCLUDE, so it opens
+  ;; an option scope itself when none is open: an (option ...) form among these
+  ;; schemas then takes effect for them and does not leak.  (A loop, not the
+  ;; former recursion, so the scope check runs once per call, not once per form.)
+  (with-wff-option-scope ()
+    (loop for schema in SCHEMA-LIST append (parse-schema schema))))
 
 (defun parse-schema (SCHEMA)
   (cond ((atom SCHEMA)
@@ -1328,16 +1425,22 @@ solve.sh / map.sh flag."
   (let ((opt (car ARGS))
         (val (parse-expression (cadr ARGS))))
     (if (eql val 0) (setq val nil))
-    (cond ((eql opt '*compact-encoding*)
-            (set opt val))
-          ((eql opt '*tracing*)
-            (setq *tracing* val)
-            (trace-message "[TRACE] Tracing enabled~%"))
-          ((eql opt '*satplan-numslices*)
-            (unless (integerp val)
-              (error "*satplan-numslices* must be an integer, not ~S" val))
-            (set '*satplan-numslices* val))
-          (t (error "Unknown option ~S" opt)))
+    (unless (member opt *wff-settable-options*)
+      (error "Unknown option ~S" opt))
+    (when (and (eql opt '*satplan-numslices*) (not (integerp val)))
+      (error "*satplan-numslices* must be an integer, not ~S" val))
+    ;; Every way of parsing a list of schemas -- INSTANTIATE, SOLVE, PARSE,
+    ;; PARSE-SAME-ENV, PARSE-SCHEMA-LIST -- opens an option scope, so this SET
+    ;; reaches only that scope's binding, never the global.  Only PARSE-SCHEMA
+    ;; called on a single (option ...) form gets here without one, and there the
+    ;; option would govern nothing after it, so say what to call instead.
+    (unless *wff-option-scope*
+      (error "(option ~(~S~) ...) only takes effect within instantiate, solve, ~
+              parse, parse-same-env or parse-schema-list -- it applies to the ~
+              forms parsed with it, so parse it together with them" opt))
+    (set opt val)
+    (when (eql opt '*tracing*)
+      (trace-message "[TRACE] Tracing enabled~%"))
     nil))
 
 (defun parse-include (FILENAME)

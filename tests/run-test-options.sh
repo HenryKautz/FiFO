@@ -101,6 +101,143 @@ else
 fi
 
 echo
+echo "=== a wff's options last only as long as the call that read it ==="
+
+# An (option ...) form used to SETQ the global, so it outlived its file: after
+# one wff turned the compact encoding off, every later instantiation in that
+# Lisp ran with it off.  Each case runs two theories in ONE process, which is the
+# situation that leaked.  (or (and a b c d) (and e f g)) is big enough that the
+# compact encoding introduces a (TSEITIN n) selector: 4 x 3 = 12 > 4 + 3 + 1.
+printf '(option *compact-encoding* 0)\n(or (and a b c d) (and e f g))\n' > off.wff
+printf '(or (and a b c d) (and e f g))\n' > plain.wff
+
+OUT="$(lisp '(progn (instantiate "off.wff" :scnfile "off.scnf")
+                    (instantiate "plain.wff" :scnfile "plain.scnf")
+                    (format t "~&GLOBAL ~S~%" *compact-encoding*))')"
+if ! grep -q TSEITIN off.scnf && grep -q TSEITIN plain.scnf && grep -q '^GLOBAL T$' <<<"$OUT"; then
+  ok "(option *compact-encoding* 0) does not outlive its file"
+else
+  bad "(option *compact-encoding* 0) does not outlive its file" \
+      "off has TSEITIN: $(grep -c TSEITIN off.scnf), plain: $(grep -c TSEITIN plain.scnf); $(grep GLOBAL <<<"$OUT")"
+fi
+
+# The caller's own binding is still the starting value.
+lisp '(let ((*compact-encoding* nil)) (instantiate "plain.wff" :scnfile "let.scnf"))' >/dev/null
+if ! grep -q TSEITIN let.scnf; then ok "a caller's LET of *compact-encoding* still applies"
+else bad "a caller's LET of *compact-encoding* still applies" "compact encoding used"; fi
+
+# *satplan-numslices*: the wff's value applies inside, the caller's survives it,
+# and an unbound variable is unbound again afterwards (the generated alias reads
+# "unbound" as its default of 2, so leaving it bound changes later problems).
+printf '(option *satplan-numslices* 3)\n(domain s (range 1 (lisp *satplan-numslices*)))\n(all x s true (q x))\n' > ns.wff
+OUT="$(lisp '(progn (setq *satplan-numslices* 7)
+                    (instantiate "ns.wff" :scnfile "ns.scnf")
+                    (format t "~&AFTER ~S~%" *satplan-numslices*)
+                    (makunbound (quote *satplan-numslices*))
+                    (instantiate "ns.wff" :scnfile "ns2.scnf")
+                    (format t "~&BOUND ~S~%" (boundp (quote *satplan-numslices*))))')"
+if [[ "$(grep -c '(Q ' ns.scnf)" -eq 3 ]] && grep -q '^AFTER 7$' <<<"$OUT" \
+   && grep -q '^BOUND NIL$' <<<"$OUT"; then
+  ok "(option *satplan-numslices* N) is scoped to its file"
+else
+  bad "(option *satplan-numslices* N) is scoped to its file" \
+      "Q atoms: $(grep -c '(Q ' ns.scnf); $(grep 'AFTER\|BOUND' <<<"$OUT" | tr '\n' ' ')"
+fi
+
+printf '(option *tracing* 1)\n(or (p a))\n' > tr.wff
+OUT="$(lisp '(progn (instantiate "tr.wff" :scnfile "tr.scnf")
+                    (format t "~&TRACING ~S~%" *tracing*))')"
+if grep -q '\[TRACE\] Tracing enabled' <<<"$OUT" && grep -q '^TRACING NIL$' <<<"$OUT"; then
+  ok "(option *tracing* 1) traces its file, then stops"
+else
+  bad "(option *tracing* 1) traces its file, then stops" "$(grep 'TRAC' <<<"$OUT" | tr '\n' ' ')"
+fi
+
+# parse-same-env CONTINUES a theory (planner evidence, the split monitor axioms),
+# so it must run under that theory's options even though the call that parsed
+# the theory has returned -- and must not inherit them from a different theory.
+OUT="$(lisp '(progn
+  (parse (quote ((option *compact-encoding* 0) (or (p x)))))
+  (format t "~&OFF ~S~%" (search "TSEITIN" (format nil "~S" (parse-same-env (quote ((or (and a b c d) (and e f g))))))))
+  (parse (quote ((or (p x)))))
+  (format t "~&ON ~A~%" (if (search "TSEITIN" (format nil "~S" (parse-same-env (quote ((or (and a b c d) (and e f g))))))) "YES" "NO"))
+  (format t "~&GLOBAL ~S~%" *compact-encoding*))')"
+if grep -q '^OFF NIL$' <<<"$OUT" && grep -q '^ON YES$' <<<"$OUT" && grep -q '^GLOBAL T$' <<<"$OUT"; then
+  ok "parse-same-env continues its theory's options, not another's"
+else
+  bad "parse-same-env continues its theory's options, not another's" \
+      "$(grep 'OFF\|ON \|GLOBAL' <<<"$OUT" | tr '\n' ' ')"
+fi
+
+# solve with a prove form parses the QUERY after the theory's PARSE has returned;
+# the wff's option must still hold there.  The query has to be one the compact
+# encoding would split -- its negation is (or (and ~a ~b ~c ~d) (and ~e ~f ~g)) --
+# or the case cannot tell (an earlier version used a one-literal query and passed
+# with the query-time scope removed).  The theory itself has no such OR, so
+# *tseitin-counter* (reset per parse, never bound) counts the QUERY's selectors.
+printf '(option *compact-encoding* 0)\na\ne\n(prove () true (and (or a b c d) (or e f g)))\n' > pv.wff
+printf 'a\ne\n(prove () true (and (or a b c d) (or e f g)))\n' > pv-on.wff
+OUT="$(lisp '(progn (solve "pv.wff" :solnfile "pv.answer")
+                    (format t "~&OFF ~S~%" *tseitin-counter*)
+                    (solve "pv-on.wff" :solnfile "pv-on.answer")
+                    (format t "~&ON ~S~%" *tseitin-counter*)
+                    (format t "~&GLOBAL ~S~%" *compact-encoding*))')"
+if grep -q PROVEN pv.answer && grep -q PROVEN pv-on.answer && grep -q '^OFF 0$' <<<"$OUT" \
+   && grep -qE '^ON [1-9]' <<<"$OUT" && grep -q '^GLOBAL T$' <<<"$OUT"; then
+  ok "solve: the prove query uses the file's encoding"
+else
+  bad "solve: the prove query uses the file's encoding" \
+      "$(head -1 pv.answer 2>/dev/null); $(grep 'OFF\|ON \|GLOBAL' <<<"$OUT" | tr '\n' ' ')"
+fi
+
+# A continuation runs under the values the theory was BUILT with -- including a
+# caller's LET around the original parse, though the continuation runs after
+# it (as planner.lisp's evidence does).  Recording only what the FILE set would
+# miss this: the file here sets nothing.
+OUT="$(lisp '(progn
+  (let ((*compact-encoding* nil) (*satplan-numslices* 5)) (parse (quote ((or (p x))))))
+  (let ((c (parse-same-env (quote ((or (and a b c d) (and e f g))
+                                   (domain s2 (range 1 (lisp *satplan-numslices*)))
+                                   (all x s2 true (r x)))))))
+    (format t "~&TSEITIN ~A~%" (if (search "TSEITIN" (format nil "~S" c)) "YES" "NO"))
+    (format t "~&R ~D~%" (count-if (lambda (cl) (search "(R " (format nil "~S" cl))) c))))')"
+if grep -q '^TSEITIN NO$' <<<"$OUT" && grep -q '^R 5$' <<<"$OUT"; then
+  ok "parse-same-env continues a caller's LET around the parse"
+else
+  bad "parse-same-env continues a caller's LET around the parse" \
+      "$(grep 'TSEITIN\|^R \|rror' <<<"$OUT" | head -3 | tr '\n' ' ')"
+fi
+
+# A FRESH theory parsed inside a scope where an earlier theory set an option
+# starts from the caller's values, not that theory's.
+OUT="$(lisp '(with-wff-option-scope ()
+  (parse (quote ((option *compact-encoding* 0) (or (p x)))))
+  (format t "~&SECOND ~A~%"
+          (if (search "TSEITIN" (format nil "~S" (parse (quote ((or (and a b c d) (and e f g)))))))
+              "COMPACT" "OFF")))')"
+if grep -q '^SECOND COMPACT$' <<<"$OUT"; then
+  ok "a fresh parse does not inherit an earlier theory's option"
+else
+  bad "a fresh parse does not inherit an earlier theory's option" "$(grep 'SECOND\|rror' <<<"$OUT" | head -2)"
+fi
+
+# parse-schema-list called directly (as REPL code and helpers do) takes an
+# (option ...) for its own forms, without an error and without leaking.
+OUT="$(lisp '(progn
+  (setup-global-env)
+  (format t "~&CLAUSES ~A~%"
+          (if (search "TSEITIN" (format nil "~S" (clauses-with-definitions
+             (lambda () (parse-schema-list (quote ((option *compact-encoding* 0)
+                                                    (or (and a b c d) (and e f g)))))))))
+              "COMPACT" "OFF"))
+  (format t "~&GLOBAL ~S~%" *compact-encoding*))')"
+if grep -q '^CLAUSES OFF$' <<<"$OUT" && grep -q '^GLOBAL T$' <<<"$OUT"; then
+  ok "a direct parse-schema-list scopes its own option"
+else
+  bad "a direct parse-schema-list scopes its own option" "$(grep 'CLAUSES\|GLOBAL\|rror' <<<"$OUT" | head -3 | tr '\n' ' ')"
+fi
+
+echo
 echo "=== propositionalize :cnf-format ==="
 
 # instantiate records the format it was given; that is a generation-time fact

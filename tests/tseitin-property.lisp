@@ -13,8 +13,10 @@
 ;;; It also counts the formulas that actually produced (TSEITIN ...) atoms and
 ;;; FAILS if there were none: a run in which the compact encoding never fired
 ;;; would pass vacuously.  (A first version did, because an (option
-;;; *compact-encoding* 0) line SETQs the global, which then stayed off for every
-;;; later instantiation in the process -- hence the per-call LET below.)
+;;; *compact-encoding* 0) line then SETQ'd the global, which stayed off for every
+;;; later instantiation in the process.  Options are now scoped to the call that
+;;; reads the file, which run-test-options.sh checks; the per-call LET below is
+;;; kept anyway, so this test does not depend on that.)
 ;;;
 ;;;   FIFO=<path to FiFO.lisp>  SEED=<n>  TRIALS=<n>  sbcl --non-interactive --load tseitin-property.lisp
 ;;; Exit 0 on success.
