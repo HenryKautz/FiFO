@@ -2,7 +2,7 @@
 
 ## Documentation
 
-- $\color{red}{\textbf{README.md}}$ — the FiFO language reference and user guide.
+- **README.md** — the FiFO language reference and user guide.
 - [software-components.md](software-components.md) - summary of FiFO scripts and all the systems for logical and probabilistic reasoning and scripts that FiFO uses.
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.

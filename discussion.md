@@ -8,7 +8,7 @@
 - [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
 - [benchmarks.md](benchmarks.md) — measured results: horizons, CNF sizes, and compilation costs.
-- $\color{red}{\textbf{discussion.md}}$ — discussion and open issues.
+- **discussion.md** — discussion and open issues.
 
 ## Table of Contents
 

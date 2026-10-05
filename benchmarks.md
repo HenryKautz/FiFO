@@ -7,7 +7,7 @@
 - [SatPlan/satplan.md](SatPlan/satplan.md) — implementing SatPlan in FiFO: the PDDL translation and the planning/conditioning/marginal-inference driver.
 - [Probability/probability.md](Probability/probability.md) — the probabilistic layer in practice: MAP inference, computing marginals under a weighted theory, and learning weights from target probabilities.
 - [Probability/probability-background.md](Probability/probability-background.md) — the theory behind the probabilistic layer: learning across data regimes, sampling-based inference, and related work.
-- $\color{red}{\textbf{benchmarks.md}}$ — measured results: horizons, CNF sizes, and compilation costs.
+- **benchmarks.md** — measured results: horizons, CNF sizes, and compilation costs.
 - [discussion.md](discussion.md) — discussion and open issues.
 
 ## Table of Contents
