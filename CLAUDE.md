@@ -120,7 +120,8 @@ preprocessor-techniques timeout)`.
 - Scripts run under macOS `/bin/bash` 3.2: no `mapfile`, `${v,,}`, empty-array
   `"${a[@]}"` (use `${a[@]+"${a[@]}"}`).
 - `planner.sh` path math must `pwd -P` both sides (symlinked `/tmp`).
-- `cleanupfifo.sh` never deletes git-tracked files or touches `tests/`.
+- `cleanupfifo.sh` never deletes git-tracked files or touches `tests/` or
+  `Solvers/sharpsat-td/examples/` (git-ignored, so only its own guard protects it).
 - `make-scratch-file-root` includes the pid; SBCL's default random state is
   identical across processes.
 

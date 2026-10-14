@@ -16,9 +16,12 @@
 #      committed .scnf/.answer under tests_instantiate/ and tests_solve/ -- so a
 #      sweep by extension alone would delete the test suite's expected outputs.
 #
-#   2. Everything under the checkout's tests/ tree, tracked or not, so the
-#      regression-test directories cannot lose a file even by accident.  An
-#      explicit target inside tests/ is refused rather than silently skipped.
+#   2. Everything under a protected subtree of the checkout, tracked or not
+#      (PROTECTED_DIRS below): tests/, so the regression-test directories cannot
+#      lose a file even by accident, and Solvers/sharpsat-td/examples/, the
+#      example inputs shipped with that solver's source -- Solvers/ is
+#      git-ignored, so guard 1 does not cover them.  An explicit target inside a
+#      protected subtree is refused rather than silently skipped.
 #
 # Source files (.wff, .pddl, .lisp, ...) are never candidates in the first place:
 # a .wff may be hand-written, so no extension that can hold source is listed.
@@ -42,7 +45,8 @@ recursively.  With arguments, cleans exactly those directories (a file argument
 means the directory containing it); add -r to recurse into them.
 
 Never deleted: anything git tracks, and anything under the checkout's tests/
-tree.  Source files (.wff, .pddl, .lisp, ...) are never candidates.
+or Solvers/sharpsat-td/examples/.  Source files (.wff, .pddl, .lisp, ...) are
+never candidates.
 
   -r, --recursive   recurse into the directories named on the command line
                     (the no-argument checkout sweep is always recursive)
@@ -90,13 +94,21 @@ find_repo() {
 }
 REPO="$(find_repo)"
 
-# protected <abs-path> : true for anything under the checkout's tests/ tree
+# Subtrees of the checkout that are never cleaned, tracked or not: the
+# regression tests, and the example inputs shipped with the SharpSAT-TD source
+# (Solvers/ is git-ignored, so the tracked-file guard does not cover them).
+PROTECTED_DIRS=(tests Solvers/sharpsat-td/examples)
+
+# protected <abs-path> : true for anything under a protected subtree
 protected() {
   [[ -n "$REPO" ]] || return 1
-  case "$1" in
-    "$REPO"/tests|"$REPO"/tests/*) return 0 ;;
-    *) return 1 ;;
-  esac
+  local p
+  for p in "${PROTECTED_DIRS[@]}"; do
+    case "$1" in
+      "$REPO/$p"|"$REPO/$p"/*) return 0 ;;
+    esac
+  done
+  return 1
 }
 
 # ------------------------------------------------------- git-tracked files
@@ -129,13 +141,14 @@ CANDIDATES="$(mktemp)"
 trap 'rm -f "$TRACKED" "$TOPS" "$CANDIDATES"' EXIT
 
 # collect <dir> <recursive 0|1> : append matching files, skipping .git and the
-# protected tests/ tree
+# protected subtrees
 collect() {
-  local dir="$1" rec="$2"
+  local dir="$1" rec="$2" p prune=()
   load_tracked "$dir"
   if [[ "$rec" -eq 1 ]]; then
     if [[ -n "$REPO" ]]; then
-      find "$dir" -name .git -prune -o -path "$REPO/tests" -prune -o \
+      for p in "${PROTECTED_DIRS[@]}"; do prune+=(-path "$REPO/$p" -prune -o); done
+      find "$dir" -name .git -prune -o "${prune[@]}" \
            -type f \( "${NAME_ARGS[@]}" \) -print 2>/dev/null >> "$CANDIDATES"
     else
       find "$dir" -name .git -prune -o \
@@ -155,7 +168,7 @@ if [[ ${#TARGETS[@]} -gt 0 ]]; then
     else echo "cleanupfifo.sh: no such file or directory: $t" >&2; exit 2; fi
     if protected "$dir"; then
       echo "cleanupfifo.sh: refusing to clean $dir" >&2
-      echo "  the regression-test tree under $REPO/tests is never cleaned." >&2
+      echo "  protected subtrees of $REPO are never cleaned: ${PROTECTED_DIRS[*]}" >&2
       exit 2
     fi
     collect "$dir" "$RECURSIVE"
@@ -191,7 +204,7 @@ COUNT=$(wc -l < "$FILES" | tr -d ' ')
 KEPT=$(( $(sort -u "$CANDIDATES" | wc -l | tr -d ' ') - COUNT ))
 
 if [[ -n "$SKIPPED_PROTECTED" ]]; then
-  echo "Note: $SKIPPED_PROTECTED is inside the protected tests/ tree and was not cleaned."
+  echo "Note: $SKIPPED_PROTECTED is inside a protected subtree and was not cleaned."
 fi
 
 if [[ "$COUNT" -eq 0 ]]; then

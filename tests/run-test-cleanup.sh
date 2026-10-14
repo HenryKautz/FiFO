@@ -38,6 +38,8 @@ make_fake_repo() {   # make_fake_repo <dir>
   : > "$d/tests/tests_solve/committed.answer"
   : > "$d/SatPlan/Examples/Sub/tracked.wcnf"
   : > "$d/keep.wff"
+  # Solvers/ is git-ignored, as in the real checkout
+  printf 'Solvers/\n' > "$d/.gitignore"
   git -C "$d" add -A >/dev/null
   git -C "$d" commit -qm init
 }
@@ -50,6 +52,12 @@ make_junk() {   # make_junk <repo-dir>
   : > "$d/SatPlan/Examples/Sub/junk.map"
   : > "$d/tests/gold_instantiate/STRAY.scnf"
   : > "$d/tests/tests_solve/STRAY.answer"
+  # the solver's shipped example inputs (ignored, so untracked) and a real
+  # byproduct beside them, which must still be swept
+  mkdir -p "$d/Solvers/sharpsat-td/examples"
+  : > "$d/Solvers/sharpsat-td/examples/track1_009.cnf"
+  : > "$d/Solvers/sharpsat-td/examples/track2_003.wcnf"
+  : > "$d/Solvers/sharpsat-td/run.satout"
 }
 
 R="$TMP/repo"
@@ -75,6 +83,15 @@ if [[ -e "$R/tests/gold_instantiate/x_gold.scnf" \
       && -e "$R/tests/tests_solve/STRAY.answer" ]]
 then pass; else fail "a file under tests/ was deleted"; fi
 
+name "never touches Solvers/sharpsat-td/examples/"
+if [[ -e "$R/Solvers/sharpsat-td/examples/track1_009.cnf" \
+      && -e "$R/Solvers/sharpsat-td/examples/track2_003.wcnf" ]]
+then pass; else fail "a shipped solver example was deleted"; fi
+
+name "still sweeps the rest of Solvers/"
+if [[ ! -e "$R/Solvers/sharpsat-td/run.satout" ]]; then pass
+else fail "the guard covered more than examples/"; fi
+
 name "leaves source files alone"
 if [[ -e "$R/keep.wff" && -e "$R/lisp/FiFO.lisp" ]]; then pass
 else fail "a source file was deleted"; fi
@@ -84,10 +101,16 @@ out="$(cd "$R" && bash "$R/bin/cleanupfifo.sh" tests/gold_instantiate 2>&1)"; rc
 if [[ $rc -eq 2 ]] && echo "$out" | grep -q "refusing to clean"; then pass
 else fail "rc=$rc out=$out"; fi
 
+name "an explicit target inside the solver examples is refused"
+out="$(cd "$R" && bash "$R/bin/cleanupfifo.sh" Solvers/sharpsat-td/examples 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "refusing to clean" \
+   && [[ -e "$R/Solvers/sharpsat-td/examples/track1_009.cnf" ]]; then pass
+else fail "rc=$rc out=$out"; fi
+
 name "run from inside tests/: says so, and sweeps the rest"
 make_junk "$R"
 out="$(cd "$R/tests/gold_instantiate" && bash "$R/bin/cleanupfifo.sh" 2>&1)"
-if echo "$out" | grep -q "protected tests/ tree" \
+if echo "$out" | grep -q "inside a protected subtree" \
    && [[ -e "$R/tests/gold_instantiate/STRAY.scnf" && ! -e "$R/scratch-1-2-3.cnf" ]]
 then pass; else fail "$out"; fi
 
