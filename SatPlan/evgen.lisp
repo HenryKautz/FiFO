@@ -217,6 +217,49 @@ the evidence quietly do nothing, so the check belongs here."
         (error "internal: slice ~d is out of range for ~(~a~) (1-~d)"
                slice kind limit)))))
 
+;;; How paths are written into the settings block.  Absolute paths only replay on
+;;; the machine (and in the directory layout) they were made on, so evgen.sh
+;;; binds *EVGEN-RECORD-DIR* to the directory it was run from and paths are
+;;; recorded relative to it -- the block then replays from that directory.  A
+;;; domain found in the domain library is recorded by its bare file name, which
+;;; --domain looks up in the library again.  NIL keeps absolute paths.
+(defvar *evgen-record-dir* nil
+  "Absolute directory (with trailing /) to record paths relative to, or NIL.")
+(defvar *evgen-domain-library* nil
+  "The domain library directory, or NIL.")
+
+(defun evgen--relative (path base)
+  "The namestring of absolute PATH relative to absolute directory BASE."
+  (let* ((p (rest (pathname-directory (pathname path))))
+         (b (rest (pathname-directory (pathname base))))
+         (common (loop for x in p for y in b while (string= x y) count t)))
+    (format nil "~{~a/~}~{~a/~}~a"
+            (make-list (- (length b) common) :initial-element "..")
+            (nthcdr common p)
+            (file-namestring path))))
+
+(defun evgen--recorded-path (path)
+  "PATH relative to *EVGEN-RECORD-DIR* when the two share a directory below the
+root; otherwise absolute, since a ../ chain up to / is no more portable."
+  (let ((p (rest (pathname-directory (pathname path))))
+        (b (rest (pathname-directory (pathname (or *evgen-record-dir* ""))))))
+    (if (and *evgen-record-dir* p b (string= (first p) (first b)))
+        (evgen--relative (namestring path) *evgen-record-dir*)
+        (namestring path))))
+
+(defun evgen--recorded-domain (domain)
+  "DOMAIN as the settings block records it: its bare name when it lives in the
+domain library and nothing of that name sits in the record directory (where
+--domain would look first), else as a path."
+  (let ((true (probe-file domain))
+        (lib (and *evgen-domain-library* (probe-file *evgen-domain-library*))))
+    (if (and *evgen-record-dir* true lib
+             (equal (pathname-directory true) (pathname-directory lib))
+             (not (probe-file (merge-pathnames (file-namestring true)
+                                               *evgen-record-dir*))))
+        (file-namestring true)
+        (evgen--recorded-path domain))))
+
 (defun evgen--write (evidence problem-path solution-path domain
                      requested horizon true fluents actions
                      slices observe negative-evidence recognition)
@@ -243,13 +286,13 @@ the evidence quietly do nothing, so the check belongs here."
               so this is an error rather than a file."
              slices (and (string/= (string-trim " " observe) "") observe)))
     (evgen--verify-emitted lines fluents actions horizon)
-    (let ((args (list (cons "--problem" (namestring problem-path))
-                      (cons "--evidence" (namestring evidence))
-                      (cons "--solution" (namestring solution-path))
+    (let ((args (list (cons "--problem" (evgen--recorded-path problem-path))
+                      (cons "--evidence" (evgen--recorded-path evidence))
+                      (cons "--solution" (evgen--recorded-path solution-path))
                       ;; The domain as given, or the file (:domain ...) resolved
                       ;; to (the caller passes it), so the block is a complete
                       ;; command line.
-                      (cons "--domain" (namestring domain))
+                      (cons "--domain" (evgen--recorded-domain domain))
                       (cons "--slices" slices)
                       (cons "--observe" (if (string= (string-trim " " observe) "")
                                             "\"\"" observe))
@@ -812,8 +855,19 @@ observations as a single occur-in-order constraint.  Returns their count."
 (defun evgen (&key problem solution domain evidence slices (observe "")
                    (negative-evidence 0) (recognition nil) export-dataset
                    export-constraints export-ordering (nonstrict-ordering 0)
-                   (satplan "satplan.wff"))
-  "Write an evidence file from a solved PDDL problem.  See the file header."
+                   (satplan "satplan.wff") record-dir domain-library)
+  "Write an evidence file from a solved PDDL problem.  See the file header.
+RECORD-DIR and DOMAIN-LIBRARY set how the settings block writes paths (see
+*EVGEN-RECORD-DIR*)."
+  (let ((*evgen-record-dir* record-dir)
+        (*evgen-domain-library* domain-library))
+    (evgen--run problem solution domain evidence slices observe negative-evidence
+                recognition export-dataset export-constraints export-ordering
+                nonstrict-ordering satplan)))
+
+(defun evgen--run (problem solution domain evidence slices observe negative-evidence
+                   recognition export-dataset export-constraints export-ordering
+                   nonstrict-ordering satplan)
   (unless problem  (error "--problem is required: the PDDL problem instance"))
   (unless (or evidence export-dataset export-constraints export-ordering)
     (error "nothing to write: give --evidence <file>, --export-dataset <dir>, ~

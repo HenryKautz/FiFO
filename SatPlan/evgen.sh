@@ -218,6 +218,11 @@ done
 # (include ...) and resolved against that file's truename, so a path measured
 # through a symlink -- /tmp, which is /private/tmp on macOS -- would not resolve.
 abspath() { echo "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"; }
+# The settings block records paths relative to the directory evgen.sh was run
+# from, and a library domain by its bare name, so it replays from there.
+RUN_DIR="$(pwd -P)"
+DOMAIN_LIBRARY=""
+if [[ -d "$FIFO_LISP/../pddl" ]]; then DOMAIN_LIBRARY="$(cd -P "$FIFO_LISP/../pddl" && pwd -P)/"; fi
 PROBLEM="$(abspath "$PROBLEM")"
 [[ -n "$SOLUTION" ]] && SOLUTION="$(abspath "$SOLUTION")"
 [[ -n "$DOMAIN"   ]] && DOMAIN="$(abspath "$DOMAIN")"
@@ -246,9 +251,10 @@ lisp_quote() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')"; }
 lisp_string() { if [[ -n "$1" ]]; then lisp_quote "$1"; else printf 'nil'; fi; }
 
 sbcl --noinform --disable-debugger \
-     --eval "(load $(lisp_quote "$FIFO"))" \
-     --eval "(load $(lisp_quote "$PDDL2FIFO"))" \
-     --eval "(load $(lisp_quote "$EVGEN"))" \
+     --eval "(with-compilation-unit ()
+               (load $(lisp_quote "$FIFO"))
+               (load $(lisp_quote "$PDDL2FIFO"))
+               (load $(lisp_quote "$EVGEN")))" \
      --eval "(handler-case
                  (multiple-value-bind (file n horizon)
                      (evgen :problem $(lisp_quote "$PROBLEM")
@@ -263,7 +269,9 @@ sbcl --noinform --disable-debugger \
                             :observe $(lisp_quote "$OBSERVE")
                             :negative-evidence $NEGATIVE
                             :recognition $([[ "$RECOGNITION" == 1 ]] && echo t || echo nil)
-                            :satplan $(lisp_quote "$SATPLAN"))
+                            :satplan $(lisp_quote "$SATPLAN")
+                            :record-dir $(lisp_quote "$RUN_DIR/")
+                            :domain-library $(lisp_string "$DOMAIN_LIBRARY"))
                    (when file
                      (format *error-output* \"Wrote ~a (~d literal~:p, horizon ~d)~%\"
                              file n horizon)))

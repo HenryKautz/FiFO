@@ -241,6 +241,34 @@ name "--domain's default is recorded as the domain file, not the problem"
 if grep -qx ";;   --domain $(cd "$TMP" && pwd -P)/clara-logistics.pddl" "$TMP/dd.txt"
 then pass; else fail "recorded: $(grep -- '--domain' "$TMP/dd.txt")"; fi
 
+# Paths are recorded relative to the directory evgen.sh runs in, so the block
+# replays there on any machine; a domain from the library by its bare name.
+# (The case above runs from an unrelated directory, so it stays absolute.)
+mkdir -p "$TMP/rel/sub"
+cp "$PROB" "$TMP/rel/sub/pb.pddl"; cp "$SRC" "$TMP/rel/sub/pb.answer"
+(cd "$TMP/rel" && bash "$EVGEN" --problem sub/pb.pddl --evidence out/e.txt \
+     --slices "2" >/dev/null 2>&1)
+name "paths are recorded relative to the run directory"
+if grep -qx ';;   --problem sub/pb.pddl' "$TMP/rel/out/e.txt" \
+   && grep -qx ';;   --evidence out/e.txt' "$TMP/rel/out/e.txt" \
+   && grep -qx ';;   --solution sub/pb.answer' "$TMP/rel/out/e.txt"
+then pass; else fail "$(grep '^;;   --' "$TMP/rel/out/e.txt" | tr '\n' ' ')"; fi
+
+name "a library domain is recorded by its bare name"
+if grep -qx ';;   --domain clara-logistics.pddl' "$TMP/rel/out/e.txt"
+then pass; else fail "$(grep -- '--domain' "$TMP/rel/out/e.txt")"; fi
+
+name "the relative settings block replays byte for byte"
+cp "$TMP/rel/out/e.txt" "$TMP/rel/e.before"
+(cd "$TMP/rel" && bash "$EVGEN" $(sed -n 's/^;;   //p' out/e.txt | tr '\n' ' ') >/dev/null 2>&1)
+if cmp -s "$TMP/rel/e.before" "$TMP/rel/out/e.txt"; then pass
+else fail "$(diff "$TMP/rel/e.before" "$TMP/rel/out/e.txt" | head -5)"; fi
+
+name "loading prints no compiler warnings"
+if ! (cd "$TMP/rel" && bash "$EVGEN" --problem sub/pb.pddl --evidence out/w.txt \
+       --slices "2" 2>&1 >/dev/null) | grep -q 'WARNING'
+then pass; else fail "evgen.sh printed a compiler warning"; fi
+
 # -------------------------------------------------------------- binding ----
 
 name "the evidence binds: the true observations reproduce the plan's cost"

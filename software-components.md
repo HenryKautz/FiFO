@@ -564,8 +564,11 @@ empty selection. Downstream, a literal naming an atom the problem lacks would
 constrain nothing, silently.
 
 **Output.** The evidence file opens with the settings that made it — the domain
-file it resolved included — so it can be regenerated exactly. The exports write
-the files listed above, each with a README.
+file it resolved included — so it can be regenerated exactly. Paths are recorded
+relative to the directory `evgen.sh` was run from (absolute only when the two
+share nothing below `/`), and a domain found in the domain library by its bare
+name, so the block replays from that directory on any machine. The exports
+write the files listed above, each with a README.
 
 **Files.** `SatPlan/evgen.sh` and `SatPlan/evgen.lisp` in the checkout; `make
 install` puts the script in `~/bin` and the Lisp beside the rest of the library.
