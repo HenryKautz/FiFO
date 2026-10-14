@@ -469,6 +469,19 @@ assert len(goal)==4 and all(goal[k]!=start[k] for k in goal), (start,goal)
 EOF
 then pass; else fail "grid truck goals wrong"; fi
 
+# A road-only grid: no airports, so no airplanes and no routes.
+name "--airports 0 --packages 0: a road-only grid"
+gen --style grid --dimensions 3 3 --airports 0 --trucks 1 --packages 0 --seed 26 > "$TMP/tg0.pddl"
+if pycheck "$TMP/tg0.pddl" <<'EOF'
+import sys,re
+t=open(sys.argv[1]).read()
+objs=t.split('(:objects')[1].split('(:init')[0]
+assert '- airport' not in objs and '- airplane' not in objs, objs
+assert '(route ' not in t and ';; no airports;' in t, t[:400]
+assert len(re.findall(r'\(at truck1 [\w-]+\)',t.split('(:goal')[1]))==1
+EOF
+then pass; else fail "zero-airport grid malformed"; fi
+
 name "--packages 0 still takes --airplanes N"
 # (the airplane line is the last object line here, so it carries the close paren)
 if gen --style grid --dimensions 3 3 --packages 0 --airplanes 2 --seed 23 | grep -q ' - airplane)\{0,1\}$'
@@ -839,6 +852,7 @@ err "an unknown style is reported"         "must be 'grid'"       --style hex --
 err "--airports is rejected for clique"    "grid style"           --style clique --clique-size 3 --number-cliques 2 --airports 2
 err "--clique-size is rejected for grid"   "clique style"         --style grid --dimensions 3 3 --clique-size 4
 err "too many airports for the grid"       "Cannot place"         --style grid --dimensions 2 2 --airports 9
+err "airplanes with no airports are rejected" "over 0 groups"     --style grid --dimensions 3 3 --airports 0 --airplanes 2
 err "a non-numeric count is rejected"      "expects a non-negative" --style grid --dimensions 3 x
 err "an unknown flag is rejected"          "unknown option"       --style grid --dimensions 3 3 --bogus 1
 err "--preferences with one bound is rejected" "two numbers"       --style grid --dimensions 3 3 --preferences 5

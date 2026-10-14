@@ -81,8 +81,12 @@
 (defun even-split (n groups)
   "Split N items over GROUPS buckets so any two differ by at most one, with the
 buckets that get the extra item chosen at random.  Returns a list of counts."
+  ;; No groups is fine with nothing to place (a grid with no airports and so no
+  ;; airplanes); checked before any draw, so other runs keep their random stream.
   (when (zerop groups)
-    (error "Cannot distribute ~d item~:p over 0 groups" n))
+    (if (zerop n)
+        (return-from even-split '())
+        (error "Cannot distribute ~d item~:p over 0 groups" n)))
   (multiple-value-bind (base extra) (floor n groups)
     (let ((counts (make-list groups :initial-element base)))
       (dolist (i (subseq (shuffled (loop for i below groups collect i)) 0 extra))
@@ -596,8 +600,10 @@ only to places at least MINDIST and at most MAXDIST steps away."
                networks (list place-names)
                header (list (format nil "~d x ~d grid of places, roads between adjacent cells;"
                                     rows cols)
-                            (format nil "~d airport~:p placed to maximize their minimum separation~@[ (~d)~];"
-                                    airports (and (> airports 1) spread))
+                            (if (zerop airports)
+                                "no airports;"
+                                (format nil "~d airport~:p placed to maximize their minimum separation~@[ (~d)~];"
+                                        airports (and (> airports 1) spread)))
                             ;; the goal objects start at the origin with
                             ;; --mindist/--maxdist, the rest at random
                             (cond ((not origin)

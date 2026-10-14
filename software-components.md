@@ -494,7 +494,7 @@ ppgen.sh --style <clique|grid> [options]
 | `--clique-size <N>` | Places in each clique. | — | Clique style only, and required there. |
 | `--number-cliques <N>` | Number of cliques. | — | Clique style only, and required there. |
 | `--dimensions <M> <N>` | Grid size. | — | Grid style only, and required there. Both positive. |
-| `--airports <N>` | Airports on the grid, placed to maximize their minimum separation. | 2 | Grid style only (a clique has one airport each); no more than the grid's places. |
+| `--airports <N>` | Airports on the grid, placed to maximize their minimum separation. | 2 | Grid style only (a clique has one airport each); no more than the grid's places. 0 gives a road-only grid, which then needs `--airplanes 0` (the default with `--packages 0`). |
 | `--trucks <N>` | Number of trucks. | Clique: number of cliques. Grid: number of airports. | At least 1 with `--packages 0`. |
 | `--airplanes <N>` | Number of airplanes, spread evenly over the airports. | Clique: number of cliques. Grid: number of airports. With `--packages 0`: 0. | |
 | `--packages <N>` | Number of packages. **0** gives the truck-goal problem: no packages, and the goal sends each truck to a destination other than its start — within its own clique in clique style. Every goal option then applies per truck. | Clique: number of cliques. Grid: number of airports. | |
