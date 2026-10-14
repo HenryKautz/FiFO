@@ -422,27 +422,15 @@ There are two topologies.
 
 In both styles every pair of airports is joined by a two-way route, and each package's goal is a place other than the one it starts at, so no package is already where it needs to be.
 
-**Hard goals or graded preferences.** By default the goal is a conjunction: every package must reach its destination. With `--preferences <L> <H>` the goal becomes a *disjunction* instead — at least one delivery is required — and each delivery additionally carries a preference weight, so the planner trades them off:
+**Shaping the goal.** Three independent options decide what the goal asks for. An *object* below is a package, or a truck with `--packages 0` (see **Truck goals** below).
 
-```lisp
-(:goal (and
-      (or (at pkg1 c1-p1) (at pkg2 c1-air) (at pkg3 c2-p2))   ; hard: at least one
-      (preference deliver-pkg1 (at pkg1 c1-p1) 1)             ; soft, graded
-      (preference deliver-pkg2 (at pkg2 c1-air) 5)
-      (preference deliver-pkg3 (at pkg3 c2-p2) 3)))
-```
+| Option | Decides | Default |
+|---|---|---|
+| `--destinations <N>` | how many alternative destinations each object has | 1 |
+| `--require all\|some` | whether every object must reach a destination, or at least one | `all` |
+| `--preferences <L> <H>` | whether every goal also carries a soft weight, charged when it does not hold | none |
 
-The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, three get `L`, `(L+H)/2`, `H`, and so on — and which package gets which is random. A weight is charged when that delivery is *not* made, so the planner gives up the least-preferred deliveries first: on the problem above it drops only `deliver-pkg1`, the weight-1 goal. See [Preferences Between Disjunctive Goals](#preferences-between-disjunctive-goals) for the underlying encoding.
-
-**Capping the deliveries.** `--maxgoals <N>` requires *at most* `N` of the deliveries to hold in the goal state, turning the problem into a bounded selection: with a disjunctive goal and graded weights, the planner must choose which `N` are worth making. It is encoded by forbidding every `N+1` of the goal atoms at once,
-
-```lisp
-(not (and (at pkg1 p2-4) (at pkg2 p4-2) (at pkg3 p2-1)))    ; one per (N+1)-subset
-```
-
-which is why `N` is **capped at 3** — the number of these grows as `packages^(N+1)`, and a larger `N` is rejected with an error. `--maxgoals` **requires `--preferences`**: the default goal demands that every package be delivered, so a cap on how many are delivered would either contradict it or say nothing at all.
-
-**Alternative destinations.** `--goals-per-package <N> <M>` gives each package `N` destinations instead of one, any of which counts as delivering it. Only one can ever hold — a package is at exactly one place — so the `N` goals for a package are genuine alternatives, each with its own preference weight, and the planner picks whichever is cheapest to reach against what it is worth. Weights are still equally spaced over `L`..`H` across *all* `packages × N` goals in random order, and the preference names gain an index to tell them apart:
+**Alternative destinations.** `--destinations <N>` gives each object `N` destinations instead of one, any of which counts as reaching it. Only one can ever hold — an object is at exactly one place — so the `N` goals are genuine alternatives. With the default `--require all` each object gets its own disjunction, so every one must reach *some* destination, and with `--preferences` the planner picks whichever is cheapest against what it is worth. Preference names gain an index to tell the alternatives apart:
 
 ```lisp
 (:goal (and
@@ -454,9 +442,30 @@ which is why `N` is **capped at 3** — the number of these grows as `packages^(
       ...))
 ```
 
-`M` is the **minimum number of hard goals per package**, `0` or `1`. With `M = 0` the goal keeps the single disjunction preferences normally impose — one delivery overall is required, and every package beyond that is optional. With `M = 1`, shown above, each package gets its own disjunction, so *every* package must reach one of its destinations regardless of cost; the global disjunction is implied by any one of them and so is not also emitted. Both `N > 1` and `M = 1` **require `--preferences`**: with a conjunctive goal, `N` destinations for one package would demand it be in `N` places at once, and a per-package requirement would say nothing that the conjunction does not already say. `N` may not exceed the number of places available once a package's own starting place is excluded, and `M = 1` is incompatible with a `--maxgoals` below the package count (each package contributes exactly one satisfied goal, so the total is pinned at the package count).
+`N` may not exceed the number of places available once an object's own starting place is excluded.
 
-**Truck goals: the simpler problem.** `--truck-goals` drops the packages altogether: the goal sends each truck to a destination instead, a place other than the one it starts at.
+**How many must arrive.** `--require all` (the default) requires every object to reach one of its destinations: one disjunction per object, as above. `--require some` requires only that at least one does: a single disjunction over every destination of every object. With `--require some --preferences L H` one delivery is required and the rest are optional and graded:
+
+```lisp
+(:goal (and
+      (or (at pkg1 c1-p1) (at pkg2 c1-air) (at pkg3 c2-p2))   ; hard: at least one
+      (preference deliver-pkg1 (at pkg1 c1-p1) 1)             ; soft, graded
+      (preference deliver-pkg2 (at pkg2 c1-air) 5)
+      (preference deliver-pkg3 (at pkg3 c2-p2) 3)))
+```
+
+Without weights, `--require some` makes the planner deliver just one object, whichever is cheapest.
+
+**Preference weights.** `--preferences <L> <H>` makes every goal a preference too. The weights are equally spaced from `L` to `H` — two goals get `L` and `H`, three get `L`, `(L+H)/2`, `H`, and so on — across *all* `objects × destinations` goals, and which goal gets which is random. A weight is charged when its goal does *not* hold, so the planner gives up the least-preferred deliveries first: on the problem above it drops only `deliver-pkg1`, the weight-1 goal. See [Preferences Between Disjunctive Goals](#preferences-between-disjunctive-goals) for the underlying encoding.
+
+Preferences are refused when every goal is forced — `--require all` with one destination (or `--require some` with a single object) — since the weights could not change the plan. Use `--require some`, or several destinations. Everything else works with or without weights.
+
+```sh
+ppgen.sh --style grid --dimensions 4 4 --packages 3 --destinations 2
+ppgen.sh --style grid --dimensions 5 5 --packages 6 --require some --preferences 1 9
+```
+
+**Truck goals: the simpler problem.** `--packages 0` drops the packages altogether: the goal sends each truck to a destination instead, a place other than the one it starts at.
 
 ```lisp
 (:goal (and
@@ -464,12 +473,13 @@ which is why `N` is **capped at 3** — the number of these grows as `packages^(
       (at truck2 c2-p2)))
 ```
 
-In the clique style the destination is always in the truck's **own clique**: roads never leave one, so anywhere else would be unreachable and the problem unsolvable. On a grid any place will do. Airplanes default to `0`, since with nothing to carry they would only add idle actions to every slice; `--airplanes N` still adds them, for instance as distractors. An explicit `--packages` above `0` is refused. Every goal option above applies unchanged, **per truck** rather than per package: `--preferences` makes the goal a disjunction over the trucks' arrivals, with preferences named `reach-truck1`, `reach-truck2`, …; `--maxgoals` caps how many trucks arrive; and `--goals-per-package N M` — or its alias `--goals-per-object N M`, which reads better here — gives each truck `N` alternative destinations (all within its own clique, so at most `clique-size − 1` of them), with `M = 1` requiring every truck to reach one of them.
+In the clique style the destination is always in the truck's **own clique**: roads never leave one, so anywhere else would be unreachable and the problem unsolvable. On a grid any place will do. Airplanes default to `0`, since with nothing to carry they would only add idle actions to every slice; `--airplanes N` still adds them, for instance as distractors. At least one truck is needed. Every goal option above applies unchanged, **per truck** rather than per package: `--require` counts trucks, preferences are named `reach-truck1`, `reach-truck2`, …, and `--destinations N` gives each truck `N` alternatives (all within its own clique, so at most `clique-size − 1` of them).
 
 ```sh
-ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
-ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
+ppgen.sh --style clique --clique-size 4 --number-cliques 2 --packages 0
+ppgen.sh --style grid --dimensions 4 4 --trucks 3 --packages 0 --require some --preferences 1 5
 ```
+
 
 **Knocking out roads.** `--knockout <N>` deletes `N` percent of the roads, so trucks must take longer routes and the planner has real choices to make about which way to go. It acts on each **road network** separately — every clique loses `N` percent of its own roads; the grid, being one network, loses `N` percent overall — and never disconnects one, so every delivery stays reachable. It works the other way round from deletion: it keeps a random **spanning tree** of each network, then adds random other roads back until `⌊E·(100−N)/100⌋` of the network's `E` roads remain. A road here is the two-way pair, so a knocked-out road is gone in both directions.
 
@@ -488,6 +498,23 @@ That is a 4 × 4 grid: 24 roads, a tree of 15, so at most 37% can go. A clique o
 
 The knockout draws from its own random stream, derived from the seed. So the same `--seed` with and without `--knockout` gives the same instance — airports, starting places, goals, preference weights — except for the missing roads, which makes the effect of the knockout directly comparable. `--knockout 0` (the default) does nothing at all, and the option is recorded in the settings block only when it is above 0, so files made without it are unchanged.
 
+**Goal distance.** `--mindist <N>` and `--maxdist <M>` (grid style only, either or both) control how far the goals are. Every goal object — each package, or with `--packages 0` each truck — starts at the origin `p1-1`, and its destinations are drawn only from places at least `N` and at most `M` steps away. A step is one drive along a road or one flight between airports, and the distance is the shortest path, found by breadth-first search from the origin over the roads that remain after `--knockout`. A truck cannot fly, so with `--packages 0` the distance is over roads alone, and so is a package's when there are no airplanes to fly it (`--airplanes 0`). Setting both to the same value puts every destination at *exactly* that distance, so all the goals are equally far away.
+
+```sh
+ppgen.sh --style grid --dimensions 6 6 --packages 3 --mindist 6
+ppgen.sh --style grid --dimensions 6 6 --packages 3 --maxdist 2
+ppgen.sh --style grid --dimensions 6 6 --packages 3 --destinations 2 \
+         --mindist 3 --maxdist 3
+```
+
+Airports shorten distances: with an airport at or near the origin, the far corner of the grid may be only a few steps away. When too few places qualify for each object's distinct destinations, the generator refuses and names the farthest distance there is:
+
+```
+ppgen.sh: --mindist 5 --maxdist 5: only 0 places are exactly 5 steps from the origin p1-1 by road or flight (the farthest is 4), but each package needs 2 distinct destinations
+```
+
+Only the goal objects' starting places and the goals change: trucks, airplanes, airports and roads are the same as for the same `--seed` without these options. Each is recorded in the settings block only when set.
+
 **Reproducibility.** `--seed <N>` fixes the random draws. With no `--seed` the clock supplies one, but the value used is still *recorded*, so an interesting random instance is never lost. Every generated file opens with the complete settings it was made from, defaults included:
 
 ```
@@ -500,11 +527,12 @@ The knockout draws from its own random stream, derived from the seed. So the sam
 ;;   --drive-cost 1
 ;;   --fly-cost 3
 ;;   --preferences none
-;;   --goals-per-package 1 0
+;;   --destinations 1
+;;   --require all
 ;;   --seed 1003680683
 ```
 
-Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques` — and `--maxgoals` appears only when it was given, since its unset value is "no cap", which has no spelling on the command line. `--truck-goals` is recorded as a bare flag when set, alongside `--packages 0`, and `--knockout` only when it is above 0.
+Passing those flags back to `ppgen.sh` regenerates the file byte for byte. Only the settings that apply to the chosen style are listed — a grid problem records `--dimensions` and `--airports`, a clique problem `--clique-size` and `--number-cliques`. `--knockout` is recorded only when it is above 0, and `--mindist`/`--maxdist` only when given.
 
 A generated problem feeds straight into the planner, from any directory. The problem says `(:domain clara-logistics)`, and the planner finds `clara-logistics.pddl` in the domain library (see [Where the domain file is found](#where-the-domain-file-is-found)), so no `--domain` is needed:
 

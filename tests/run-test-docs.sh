@@ -29,7 +29,7 @@ parser_flags() {
 }
 
 # documented <flag> <text> : the flag appears as a WHOLE token opening a code span
-# -- `--seed <N>`, `--style clique\|grid`, `--truck-goals` -- so an undocumented
+# -- `--seed <N>`, `--style clique\|grid`, `--help` -- so an undocumented
 # --obs is not excused by a documented --observe.  The character after it must be
 # a space, a backtick, or the backslash of an escaped |.
 documented() {
@@ -73,7 +73,7 @@ name "a prefix of a documented flag does not count as documented"
 if ! documented "--obs" '| `--observe "<names>"` | x |' \
    && documented "--observe" '| `--observe "<names>"` | x |' \
    && documented "--style" '| `--style clique\|grid` | x |' \
-   && documented "--truck-goals" '| `--truck-goals` | x |'; then pass
+   && documented "--help" '| `--help` | x |'; then pass
 else fail "matcher accepts a prefix, or rejects a real entry"; fi
 
 echo

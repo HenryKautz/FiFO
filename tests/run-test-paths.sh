@@ -103,7 +103,7 @@ else fail "unexpected: $(head -2 <<<"$OUT")"; fi
 
 name "installed ppgen.sh runs with FIFO_LISP unset"
 if (cd "$TMP" && env -u FIFO_LISP HOME="$H" "$H/bin/ppgen.sh" --style clique --clique-size 3 \
-      --number-cliques 2 --truck-goals --seed 3 -o "$TMP/inst.pddl") >/dev/null 2>&1 \
+      --number-cliques 2 --packages 0 --seed 3 -o "$TMP/inst.pddl") >/dev/null 2>&1 \
    && grep -q '(:domain clara-logistics)' "$TMP/inst.pddl"; then pass
 else fail "no problem generated"; fi
 
@@ -112,7 +112,7 @@ else fail "no problem generated"; fi
 name "installed ppgen.sh with FIFO_LISP at a checkout's lisp/"
 mkdir -p "$TMP/bare/bin"; cp "$H/bin/ppgen.sh" "$H/bin/fifo-lisp.sh" "$TMP/bare/bin/"
 if (cd "$TMP" && env FIFO_LISP="$REPO/lisp" HOME="$TMP/nohome" "$TMP/bare/bin/ppgen.sh" \
-      --style clique --clique-size 3 --number-cliques 2 --truck-goals --seed 3 \
+      --style clique --clique-size 3 --number-cliques 2 --packages 0 --seed 3 \
       -o "$TMP/bare.pddl") >"$TMP/bare.log" 2>&1 && [[ -s "$TMP/bare.pddl" ]]; then pass
 else fail "$(tail -1 "$TMP/bare.log")"; fi
 
@@ -122,7 +122,7 @@ echo "=== where the domain file is found ==="
 # A problem naming (:domain clara-logistics), alone in its own directory.
 mkdir -p "$TMP/prob" "$TMP/work" "$TMP/empty"
 FIFO_LISP="$LISP" bash "$REPO/SatPlan/ppgen.sh" --style clique --clique-size 3 \
-  --number-cliques 2 --truck-goals --seed 3 -o "$TMP/prob/p.pddl" >/dev/null 2>&1
+  --number-cliques 2 --packages 0 --seed 3 -o "$TMP/prob/p.pddl" >/dev/null 2>&1
 BROKEN='(define (domain clara-logistics) (:requirements :strips) (:action broken'
 
 # translate <cwd> [args...] : planner.sh --stop-after wff from <cwd>; stderr+stdout

@@ -409,7 +409,7 @@ if command -v "${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" >/dev/null 2>&1; then
       "$REPO/pddl/clara-logistics.pddl" > dom.pddl
   bash "$REPO/SatPlan/ppgen.sh" --style clique --clique-size 3 --number-cliques 2 \
        --packages 3 --trucks 2 --airplanes 1 --preferences 1 6 \
-       --goals-per-package 2 1 --seed 23 -o base.pddl 2>/dev/null
+       --destinations 2 --seed 23 -o base.pddl 2>/dev/null
   # the plan puts A at slice 1, B at 2, C at 4; unconstrained cost 16
   A='(load pkg2 truck1 c1-air)'; B='(drive truck1 c1-air c1-p2)'; C='(fly plane1 c2-air c1-air)'
   mkprob() {   # mkprob <file> <constraint>

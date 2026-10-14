@@ -52,7 +52,7 @@ everr() { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "
 
 PROB="$TMP/pb.pddl"
 bash "$PPGEN" --style clique --clique-size 3 --number-cliques 2 --packages 3 \
-     --trucks 2 --airplanes 1 --preferences 1 6 --goals-per-package 2 1 \
+     --trucks 2 --airplanes 1 --preferences 1 6 --destinations 2 \
      --seed 23 -o "$PROB" 2>/dev/null
 ANSWER="$TMP/pb.answer"
 
@@ -313,6 +313,28 @@ else fail "should refuse complete observability in recognition mode"; fi
 name "--recognition 2 is refused"
 if everr --evidence "$TMP/x.txt" --slices "2" --recognition 2 | grep -q "must be 0 or 1"
 then pass; else fail "should reject a non-boolean"; fi
+
+# Options that shape one output are refused without it, not silently ignored.
+name "--recognition 1 without --evidence is refused"
+if everr --slices "2" --export-constraints "$TMP/xrc" --recognition 1 \
+   | grep -q "shapes the --evidence file"; then pass
+else fail "should refuse an option with nothing to apply to"; fi
+
+name "--nonstrict-ordering 1 without --export-ordering-constraints is refused"
+if everr --evidence "$TMP/x.txt" --slices "2" --nonstrict-ordering 1 \
+   | grep -q "applies only to --export-ordering-constraints"; then pass
+else fail "should refuse an option with nothing to apply to"; fi
+
+name "a missing --problem says so"
+if bash "$EVGEN" --evidence "$TMP/x.txt" --slices "2" 2>&1 >/dev/null \
+   | grep -q -- "--problem <file.pddl> is required"; then pass
+else fail "should name the missing option"; fi
+
+# Paths and names reach Lisp as string literals: a " or \ must read as itself.
+name "a path containing a double quote is passed through intact"
+QDIR="$TMP/q\"d"
+if ev --evidence "$QDIR/ev.txt" --slices "2" >/dev/null && [ -s "$QDIR/ev.txt" ]
+then pass; else fail "evgen failed on a quoted path"; fi
 
 name "the recognition header replays byte for byte"
 cp "$TMP/r.txt" "$TMP/r-orig.txt"

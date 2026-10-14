@@ -33,17 +33,25 @@ In the initial state, trucks are randomly placed on the grid as are packages.
 In the goal state, packages are randomly placed on the grid.
 
 For either styke
+The goal is shaped by three independent options.  A goal "object" is a
+package, or a truck when --packages is 0 (below).
+
+--destinations N   default 1
+Each object gets N distinct destinations, none its own starting place;
+reaching any one of them counts as reaching the object's goal.
+
+--require <all | some>   default all
+all: every object must reach one of its destinations.  some: at least
+one object must reach one of its destinations.
+
 --preferences <none | L H> default none
-If preferences is not set to none, then the goals is a disjunction of the final package places rather than
-a conjunction of them.  The goals are assigned preference values in the range L to H.  The chosen values
+If preferences is not set to none, every goal is also a preference.  The goals are assigned preference values in the range L to H.  The chosen values
 are equally spaced from L to H.  For example, if there are two goals, one is assign L and the other H.
 If there are three, then one is assigned L, one (L+H)/2, and the third H.  The order in which preferences
-are assigned to goals is random.
-
---maxgoals N default is the number of packages
-Constrain the goal state to have at most N of the goals satisfied.
-The maximum value of N should be 3, if a larger value is specified
-then print an error.
+are assigned to goals is random.  Preferences do not change what is
+required.  With --require all and one destination every goal is forced,
+so preferences are refused there (likewise --require some with a single
+object).
 
 --seed N
 Seed the random number generator with the integer N.  If not given, the clock is used to create the seed, and the value used is
@@ -52,28 +60,13 @@ remembered to be included in the pddl file.
 The generated pddl file includes comment lines with the seed (specified or default) and the values of the all of the parameters
 that apply to the specified style (including the style itself), including any default values.
 
---goals-per-package  N M default N=1 M=0
-If N is greater than 1, then instead of having one goal per package,
-there are N soft goals for each package.  Setting goals-per-package
-greater than one requires --preferences to be set to a value other
-than none.  M is the minimum number of hard goals per package, and
-takes the value 0 or 1.  If 0, then the final state has a disjunction
-over all packages and goals as is normal for preferences. If M=1, then
-there is also a hard constraint that each package must satisfy one of
-the goals regardless of cost.
-
---truck-goals
+--packages 0
 Generate a simpler problem with no packages, where the goals are to get
-the trucks to their destinations.  --goals-per-object N M is an alias
-for --goals-per-package N M (recorded under the original name).  Each truck gets a destination other
+the trucks to their destinations.  Each truck gets a destination other
 than its starting place; in clique style the destination is in the
-truck's own clique, since roads do not connect cliques.  The number of
-packages is 0, and --packages greater than 0 is an error.  The number
+truck's own clique, since roads do not connect cliques.  The number
 of airplanes defaults to 0 but may be set with --airplanes.  The goal
-options generalize to trucks: --preferences, --maxgoals, and
---goals-per-package (N destinations per truck, M the minimum number of
-hard goals per truck) behave as they do for packages.  The flag is
-recorded in the generated file's settings block.
+options --destinations, --require and --preferences apply per truck.
 
 --knockout N   N an integer 0 to 100, default 0
 If set, N percent of the roads are deleted from the problem instance in a
@@ -85,3 +78,16 @@ missing.  If the spanning tree already has more than (100 - N) percent of
 the roads, it prints the error "Knockout value set too high, <M>% required
 to maintain connectivity", where M is the size of the spanning tree(s)
 divided by the total number of possible roads, as a percentage.
+
+--mindist N   N an integer, at least 1; grid style only
+--maxdist M   M an integer, at least 1 and at least N; grid style only
+With either or both, every object that gets goals (the packages, or the
+trucks with --packages 0) starts at the origin p1-1, and every
+destination is at least N and at most M steps from the origin, counting
+the shortest path over roads and airport routes (a flight is one step),
+found by breadth-first search from the origin over the roads left after
+--knockout.  A truck cannot fly, so with --packages 0 the distance is
+over roads alone, as it is for a package when there are no airplanes.
+--mindist N --maxdist N puts every destination at exactly N steps.  If
+fewer places qualify than the distinct destinations
+each object needs (--destinations N), it is an error.

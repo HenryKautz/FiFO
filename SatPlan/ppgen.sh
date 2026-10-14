@@ -18,8 +18,11 @@
 #
 # Every pair of airports is joined by a two-way route in both styles.  Goals
 # place each package somewhere other than where it started -- or, with
-# --truck-goals, send each truck somewhere (no packages at all).  --knockout N
+# --packages 0, send each truck somewhere.  --destinations, --require and
+# --preferences shape the goal independently.  --knockout N
 # deletes N percent of each road network's roads, keeping it connected.
+# --mindist N and --maxdist M (grid) start the goal objects at p1-1 and put every
+# destination at least N and at most M steps away.
 #
 # The problem is written to stdout unless --output names a file.
 #
@@ -46,73 +49,71 @@ usage: ppgen.sh --style <grid|clique> [options]
 clique style:
   --clique-size <N>         places in each clique of roads (required)
   --number-cliques <N>      number of cliques (required)
-  --trucks <N>              default: number of cliques
-  --airplanes <N>           default: number of cliques
-  --packages <N>            default: number of cliques
 
 grid style:
   --dimensions <M> <N>      grid size (required)
   --airports <N>            default 2
-  --airplanes <N>           default: number of airports
-  --trucks <N>              default: number of airports
-  --packages <N>            default: number of airports
+  --mindist <N>             every goal object (package, or truck with
+                               --packages 0) starts at the origin p1-1, and its
+                               destinations are all at least N steps away -- the
+                               shortest path over roads, plus airport routes
+                               for a package when there are airplanes.  Refused
+                               when too few places qualify for the distinct
+                               destinations
+  --maxdist <M>             likewise, with every destination at most M steps
+                               away.  Either or both; --mindist N --maxdist N
+                               puts every destination at exactly N steps
 
 both styles:
+  --trucks <N>              default: number of cliques, or of airports (grid)
+  --airplanes <N>           default: number of cliques, or of airports (grid);
+                               0 with --packages 0
+  --packages <N>            default: number of cliques, or of airports (grid).
+                               0 is the simpler problem: no packages, and the
+                               goals send each TRUCK to a destination instead
+                               (within its own clique in clique style -- roads
+                               never leave one).  Every goal option below then
+                               applies per truck
   --drive-cost <R>          cost of one drive, default 1
   --fly-cost <R>            cost of one flight, default 3
-  --preferences none        conjunctive goal: every package must be delivered
-  --preferences <L> <H>     disjunctive goal instead -- ONE delivery is required,
-                            and each is preferred by a weight, equally spaced
-                            from L to H and handed out in random order
-  --goals-per-package <N> <M>
-                            N destinations per package (default 1) instead of one,
-                            any of which delivers it; only one can ever hold, since
-                            a package is at one place.  M (0 or 1, default 0) is the
-                            minimum number of HARD goals per package: 0 leaves the
-                            usual single disjunction over every goal, 1 requires
-                            each package to reach one of its own destinations
-                            regardless of cost.  N > 1 or M = 1 REQUIRES
-                            --preferences
-  --goals-per-object <N> <M>
-                            the same option under a neutral name, which reads
-                            better with --truck-goals; the file records it as
-                            --goals-per-package
-  --maxgoals <N>            require at most N deliveries in the goal state.
-                            At most 3.  REQUIRES --preferences: the default goal
-                            demands every delivery, so a cap on the number
-                            delivered would be contradictory or vacuous.
-                            Default: the number of packages, i.e. no limit
-  --truck-goals             the simpler problem: NO packages, and the goals send
-                            each truck to a destination instead (within its own
-                            clique in clique style -- roads never leave one).
-                            Airplanes default to 0 (--airplanes N still adds
-                            some); --packages above 0 is refused.  Every goal
-                            option above applies per TRUCK: --preferences,
-                            --maxgoals, and --goals-per-package (destinations
-                            per truck)
   --knockout <N>            delete N percent (0-100) of the roads of each road
-                            network -- each clique, or the whole grid -- keeping
-                            it connected: a random spanning tree is kept and
-                            random other roads added back.  Refused when the
-                            tree alone exceeds (100-N)% of the roads.  Default 0
-  --seed <N>                seed the generator, so a run is reproducible.  With
-                            no --seed the clock supplies one, and the value used
-                            is recorded in the generated file
+                               network -- each clique, or the whole grid --
+                               keeping it connected: a random spanning tree is
+                               kept and random other roads added back.  Refused
+                               when the tree alone exceeds (100-N)% of the
+                               roads.  Default 0
+  --seed <N>                seed the generator, so a run is reproducible.
+                               With no --seed the clock supplies one, and the
+                               value used is recorded in the generated file
   --name <name>             problem name, default <style>-problem
-  --domain <name>           domain named in (:domain ...), default clara-logistics
+  --domain <name>           domain named in (:domain ...), default
+                               clara-logistics
   --output <file>, -o       write here instead of stdout
   --help, -h                this message
+
+goals -- three independent options; "object" is a package, or a truck with
+--packages 0:
+  --destinations <N>        N distinct destinations per object, any one of
+                               which counts as reaching it (only one can hold:
+                               an object is at one place).  Default 1
+  --require all             every object must reach a destination (default)
+  --require some            at least one object must reach a destination
+  --preferences <L> <H>     every goal is also a preference, weighted equally
+                               spaced from L to H in random order and charged
+                               when the goal does not hold.  Refused with
+                               --require all and one destination, where every
+                               goal is forced
+  --preferences none        no weights (the default)
 
 examples:
   ppgen.sh --style clique --clique-size 4 --number-cliques 3 --seed 1
   ppgen.sh --style grid --dimensions 5 5 --airports 3 --packages 4 -o pb2.pddl
-  ppgen.sh --style grid --dimensions 4 4 --packages 3 --preferences 1 5
-  ppgen.sh --style grid --dimensions 5 5 --packages 6 --preferences 1 9 --maxgoals 2
-  ppgen.sh --style grid --dimensions 5 5 --packages 3 --preferences 1 9 \
-           --goals-per-package 3 1
-  ppgen.sh --style clique --clique-size 4 --number-cliques 2 --truck-goals
-  ppgen.sh --style grid --dimensions 4 4 --trucks 3 --truck-goals --preferences 1 5
+  ppgen.sh --style grid --dimensions 4 4 --packages 3 --require some \
+           --preferences 1 5
+  ppgen.sh --style grid --dimensions 5 5 --packages 3 --destinations 3
+  ppgen.sh --style clique --clique-size 4 --number-cliques 2 --packages 0
   ppgen.sh --style grid --dimensions 6 6 --knockout 25
+  ppgen.sh --style grid --dimensions 6 6 --packages 3 --mindist 6 --maxdist 6
 
 Every generated file records the settings it was made with -- defaults and the
 seed included -- as comment lines, so it can be regenerated exactly.
@@ -121,8 +122,8 @@ EOF
 
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
 TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
-SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H="" MAXGOALS=""
-GOALS_PER_PACKAGE="" MIN_HARD_GOALS="" TRUCK_GOALS=0 KNOCKOUT=""
+SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H=""
+DESTINATIONS="" REQUIRE="" KNOCKOUT="" MINDIST="" MAXDIST=""
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -159,13 +160,14 @@ while [[ $# -gt 0 ]]; do
         want_num "$1" "$2"; want_num "$1" "$3"
         PREF_L="$2"; PREF_H="$3"; shift 3
       fi ;;
-    --goals-per-package|--goals-per-object)
-      [[ $# -ge 3 ]] || die "$1 needs two values, e.g. $1 3 1"
-      want_int "$1" "$2"; want_int "$1" "$3"
-      GOALS_PER_PACKAGE="$2"; MIN_HARD_GOALS="$3"; shift 3 ;;
-    --maxgoals)       need "$@"; want_int "$1" "$2"; MAXGOALS="$2"; shift 2 ;;
-    --truck-goals)    TRUCK_GOALS=1; shift ;;
+    --destinations)   need "$@"; want_int "$1" "$2"; DESTINATIONS="$2"; shift 2 ;;
+    --require)
+      need "$@"
+      [[ "$2" == all || "$2" == some ]] || die "--require takes all or some, got '$2'"
+      REQUIRE="$2"; shift 2 ;;
     --knockout)       need "$@"; want_int "$1" "$2"; KNOCKOUT="$2"; shift 2 ;;
+    --mindist)        need "$@"; want_int "$1" "$2"; MINDIST="$2"; shift 2 ;;
+    --maxdist)        need "$@"; want_int "$1" "$2"; MAXDIST="$2"; shift 2 ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
     --name)           need "$@"; NAME="$2"; shift 2 ;;
     --domain)         need "$@"; DOMAIN="$2"; shift 2 ;;
@@ -178,23 +180,17 @@ done
 if [[ -n "$KNOCKOUT" && "$KNOCKOUT" -gt 100 ]]; then
   die "--knockout is a percentage, 0 to 100, got $KNOCKOUT"
 fi
-if [[ -n "$MAXGOALS" && "$MAXGOALS" -gt 3 ]]; then
-  die "--maxgoals is capped at 3, got $MAXGOALS"
+if [[ -n "$MINDIST" && "$MINDIST" -lt 1 ]]; then
+  die "--mindist must be at least 1, got $MINDIST"
 fi
-if [[ -n "$MAXGOALS" && -z "$PREF_L" ]]; then
-  die "--maxgoals needs --preferences: the default goal requires every package to be delivered, so a cap on how many are delivered is either contradictory or vacuous"
+if [[ -n "$MAXDIST" && "$MAXDIST" -lt 1 ]]; then
+  die "--maxdist must be at least 1, got $MAXDIST"
 fi
-if [[ -n "$MIN_HARD_GOALS" && "$MIN_HARD_GOALS" != "0" && "$MIN_HARD_GOALS" != "1" ]]; then
-  die "--goals-per-package's second value is the minimum number of hard goals per package, and must be 0 or 1, got $MIN_HARD_GOALS"
+if [[ -n "$MINDIST" && -n "$MAXDIST" && "$MAXDIST" -lt "$MINDIST" ]]; then
+  die "--maxdist $MAXDIST is below --mindist $MINDIST: no place is that far and that near"
 fi
-if [[ -n "$GOALS_PER_PACKAGE" && "$GOALS_PER_PACKAGE" -lt 1 ]]; then
-  die "--goals-per-package must be at least 1, got $GOALS_PER_PACKAGE"
-fi
-if [[ -n "$GOALS_PER_PACKAGE" && "$GOALS_PER_PACKAGE" -gt 1 && -z "$PREF_L" ]]; then
-  die "--goals-per-package $GOALS_PER_PACKAGE needs --preferences: the default goal is a conjunction of every delivery, so several destinations for one package would require it to be in several places at once"
-fi
-if [[ "${MIN_HARD_GOALS:-0}" == "1" && -z "$PREF_L" ]]; then
-  die "--goals-per-package's hard-goal minimum needs --preferences: without preferences every delivery is already required, so demanding one per package says nothing"
+if [[ -n "$DESTINATIONS" && "$DESTINATIONS" -lt 1 ]]; then
+  die "--destinations must be at least 1, got $DESTINATIONS"
 fi
 [[ -n "$STYLE" ]] || { print_usage >&2; exit 2; }
 command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
@@ -208,6 +204,12 @@ case "$STYLE" in
     if [[ -n "$ROWS" ]]; then die "--dimensions applies to grid style, not clique"; fi
     if [[ -n "$AIRPORTS" ]]; then
       die "--airports applies to grid style; clique style has one airport per clique"
+    fi
+    if [[ -n "$MINDIST" ]]; then
+      die "--mindist applies to grid style only: it measures from the grid's origin p1-1"
+    fi
+    if [[ -n "$MAXDIST" ]]; then
+      die "--maxdist applies to grid style only: it measures from the grid's origin p1-1"
     fi
     ;;
   grid)
@@ -233,14 +235,14 @@ ARGS+="$(kw :airplanes "$AIRPLANES")"
 ARGS+="$(kw :packages "$PACKAGES")"
 ARGS+="$(kw :drive-cost "$DRIVE_COST")"
 ARGS+="$(kw :fly-cost "$FLY_COST")"
-ARGS+="$(kw :maxgoals "$MAXGOALS")"
-ARGS+="$(kw :goals-per-package "$GOALS_PER_PACKAGE")"
-ARGS+="$(kw :min-hard-goals "$MIN_HARD_GOALS")"
+ARGS+="$(kw :destinations "$DESTINATIONS")"
+if [[ -n "$REQUIRE" ]]; then ARGS+=" :require \"$REQUIRE\""; fi
 ARGS+="$(kw :pref-low "$PREF_L")"
 ARGS+="$(kw :pref-high "$PREF_H")"
 ARGS+="$(kw :knockout "$KNOCKOUT")"
+ARGS+="$(kw :mindist "$MINDIST")"
+ARGS+="$(kw :maxdist "$MAXDIST")"
 ARGS+="$(kw :seed "$SEED")"
-if [[ "$TRUCK_GOALS" -eq 1 ]]; then ARGS+=" :truck-goals t"; fi
 if [[ -n "$NAME" ]]; then ARGS+=" :name \"$NAME\""; fi
 ARGS+=" :domain \"$DOMAIN\""
 

@@ -34,77 +34,91 @@ EVGEN="$SCRIPT_DIR/evgen.lisp"
 
 print_usage() {
   cat <<'EOF'
-usage: evgen.sh --problem <file.pddl> --evidence <file> --slices <spec> [options]
+usage: evgen.sh --problem <file.pddl> --slices <spec> <outputs> [options]
 
   --problem <file>        the PDDL problem instance (required)
-  --evidence <file>       where to write the evidence (required unless
-                          --export-dataset is given)
-  --slices "<spec>"       which slices are observed (required): integers and
-                          A-B ranges separated by commas, e.g. "1-3,5".
-                          Slices are numbered from 1.  Fluents run 1..N and
-                          actions 1..N-1, so the last slice yields fluents only
-  --solution <file>       the planner's answer file, default <problem>.answer
+  --evidence <file>       where to write the evidence.  At least one output
+                             is required: this, or any of the --export-*
+                             options below
+  --slices "<spec>"       which slices are observed (required): integers
+                             and A-B ranges separated by commas, e.g.
+                             "1-3,5".  Slices are numbered from 1.  Fluents
+                             run 1..N and actions 1..N-1, so the last slice
+                             yields fluents only
+  --solution <file>       the planner's answer file, default
+                             <problem>.answer
   --domain <file>         the PDDL domain; a bare name not in the current
-                          directory is looked for in the domain library
-                          ($FIFO_LISP/../pddl).  Default: the problem's
-                          (:domain <name>) as <name>.pddl beside the problem,
-                          else in the current directory, else in the library
+                             directory is looked for in the domain library
+                             ($FIFO_LISP/../pddl).  Default: the problem's
+                             (:domain <name>) as <name>.pddl beside the
+                             problem, else in the current directory, else
+                             in the library
   --observe "<names>"     restrict to these fluent and action names, comma
-                          separated, e.g. "fly,in".  Default "" = no
-                          restriction.  A name matching nothing is an error
+                             separated, e.g. "fly,in".  Default "" = no
+                             restriction.  A name matching nothing is an
+                             error
   --negative-evidence <0|1>
-                          0 (default) records only what is true.  1 also records
-                          (not ...) for everything false at those slices --
-                          restricted by --observe, which is usually essential:
-                          unrestricted, a toy 3-package problem yields ~1700
-                          literals.  Note this asserts COMPLETE observability,
-                          a much stronger claim than "more evidence"
-  --recognition <0|1>     1 emits ONE (and ...) form instead of a literal per line,
-                          which is what recognize.sh needs: it builds the
-                          not-comply case by wrapping the whole file in (not ...),
-                          and that is only valid for a single form.  Refuses
-                          --negative-evidence 1, which would collapse the
-                          posterior.  Pair it with --observe over ACTION names:
-                          an action at slice s means slice s at any horizon, while
-                          a fluent at the FINAL slice means "at the end" only at
-                          the horizon it came from
+                          0 (default) records only what is true.  1 also
+                             records (not ...) for everything false at
+                             those slices -- restricted by --observe, which
+                             is usually essential: unrestricted, a toy
+                             3-package problem yields ~1700 literals.  Note
+                             this asserts COMPLETE observability, a much
+                             stronger claim than "more evidence"
+  --recognition <0|1>     1 emits ONE (and ...) form instead of a literal
+                             per line, which is what recognize.sh needs: it
+                             builds the not-comply case by wrapping the
+                             whole file in (not ...), and that is only
+                             valid for a single form.  Refuses
+                             --negative-evidence 1, which would collapse
+                             the posterior.  Pair it with --observe over
+                             ACTION names: an action at slice s means
+                             slice s at any horizon, while a fluent at the
+                             FINAL slice means "at the end" only at the
+                             horizon it came from
   --export-dataset <dir>  ALSO write the instance in the Ramirez & Geffner
-                          dataset format -- domain.pddl, template.pddl (goal =
-                          <HYPOTHESIS>), hyps.dat, obs.dat, real_hyp.dat and a
-                          README -- for handing the problem to a tool chain that
-                          does not read FiFO.  Needs a recognition instance (a
-                          goal that is a disjunction of nullary derived
-                          predicates).  obs.dat holds ACTIONS in order, so a
-                          fluent named in --observe is an error, and
-                          --negative-evidence 1 is refused
+                             dataset format -- domain.pddl, template.pddl
+                             (goal = <HYPOTHESIS>), hyps.dat, obs.dat,
+                             real_hyp.dat and a README -- for handing the
+                             problem to a tool chain that does not read
+                             FiFO.  Needs a recognition instance (a goal
+                             that is a disjunction of nullary derived
+                             predicates).  obs.dat holds ACTIONS in order,
+                             so a fluent named in --observe is an error,
+                             and --negative-evidence 1 is refused
   --export-constraints <dir>
-                          ALSO write the problem with the observations asserted
-                          as PDDL 3.0 trajectory constraints AT THEIR EXACT
-                          SLICES -- (hold-during t t <fluent>) for a fluent,
-                          (occur-sometime t t <action>) for an action.
-                          hold-during is standard; occur-sometime is NOT (every
-                          standard con-GD operator takes a state formula, so the
-                          standard cannot say an action occurred), and a file
-                          containing one says so in a comment.  Writes
-                          domain.pddl, problem.pddl and a README.
-                          --negative-evidence 1 is refused: there is no
-                          constraint form for "this action did not occur"
+                          ALSO write the problem with the observations
+                             asserted as PDDL 3.0 trajectory constraints AT
+                             THEIR EXACT SLICES --
+                             (hold-during t t <fluent>) for a fluent,
+                             (occur-sometime t t <action>) for an action.
+                             hold-during is standard; occur-sometime is
+                             NOT (every standard con-GD operator takes a
+                             state formula, so the standard cannot say an
+                             action occurred), and a file containing one
+                             says so in a comment.  Writes domain.pddl,
+                             problem.pddl and a README.
+                             --negative-evidence 1 is refused: there is no
+                             constraint form for "this action did not
+                             occur"
   --export-ordering-constraints <dir>
-                          ALSO write the problem with the observations as ONE
-                          (occur-in-order M N a1 ... ak) constraint: their order
-                          and the span of the plan they fell in, without pinning
-                          any of them to a slice.  ACTIONS only -- a fluent has
-                          no ordering form -- and two observed at the SAME slice
-                          are refused, since occur-in-order needs strictly
-                          increasing slices and FiFO's are parallel
+                          ALSO write the problem with the observations as
+                             ONE (occur-in-order M N a1 ... ak) constraint:
+                             their order and the span of the plan they fell
+                             in, without pinning any of them to a slice.
+                             ACTIONS only (a fluent has no ordering form),
+                             and two observed at the SAME slice are
+                             refused, since occur-in-order needs strictly
+                             increasing slices and FiFO's are parallel
   --nonstrict-ordering <0|1>
                           with --export-ordering-constraints, emit
-                          (occur-in-nonstrict-order ...) instead, whose
-                          observations may SHARE a slice.  Default 0 (strict).
-                          Non-strict is what a parallel plan needs: strict
-                          ordering forces simultaneous observations onto
-                          different slices, claiming an order the plan never
-                          asserted, which is why strict refuses a tie
+                             (occur-in-nonstrict-order ...) instead, whose
+                             observations may SHARE a slice.  Default 0
+                             (strict).  Non-strict is what a parallel plan
+                             needs: strict ordering forces simultaneous
+                             observations onto different slices, claiming
+                             an order the plan never asserted, which is why
+                             strict refuses a tie
   --help, -h              this message
 
 examples:
@@ -116,6 +130,8 @@ examples:
            --observe "drive,fly" --recognition 1
   evgen.sh --problem pb.pddl --slices "1-5" --export-dataset out/
   evgen.sh --problem pb.pddl --slices "1-3,5" --export-constraints out/
+  evgen.sh --problem pb.pddl --slices "1-5" --observe "drive,fly" \
+           --export-ordering-constraints out/ --nonstrict-ordering 1
 
   planner.sh pb.pddl --domain d.pddl --numslices <N> --evidence-file ev.txt
 
@@ -149,7 +165,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$PROBLEM"  ]] || { print_usage >&2; exit 2; }
+[[ -n "$PROBLEM"  ]] || die "--problem <file.pddl> is required (try --help)"
 if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" && -z "$ORD_DIR" ]]; then
   die "nothing to write: give --evidence <file>, --export-dataset <dir>, --export-constraints <dir>, --export-ordering-constraints <dir>, or several"
 fi
@@ -162,6 +178,13 @@ if [[ "$RECOGNITION" != "0" && "$RECOGNITION" != "1" ]]; then
 fi
 if [[ "$NONSTRICT" != "0" && "$NONSTRICT" != "1" ]]; then
   die "--nonstrict-ordering must be 0 or 1, got '$NONSTRICT'"
+fi
+# Options that shape one output only: refused without it rather than ignored.
+if [[ "$NONSTRICT" == "1" && -z "$ORD_DIR" ]]; then
+  die "--nonstrict-ordering applies only to --export-ordering-constraints"
+fi
+if [[ "$RECOGNITION" == "1" && -z "$EVIDENCE" ]]; then
+  die "--recognition shapes the --evidence file, and none was asked for"
 fi
 if [[ -n "$ORD_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-ordering-constraints and --negative-evidence 1 do not go together: an ordering constraint records only what did happen"
@@ -216,17 +239,19 @@ if [[ -n "$ORD_DIR" ]]; then
   ORD_DIR="$(cd "$ORD_DIR" && pwd -P)/"
 fi
 
-# Lisp string literals for the optional arguments; NIL when not given, so the
-# generator applies its own default.
-lisp_string() { if [[ -n "$1" ]]; then printf '"%s"' "$1"; else printf 'nil'; fi; }
+# lisp_quote: a Lisp string literal, with \ and " escaped so a path or name
+# containing them reads as itself.  lisp_string: the same for the optional
+# arguments, NIL when not given, so the generator applies its own default.
+lisp_quote() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')"; }
+lisp_string() { if [[ -n "$1" ]]; then lisp_quote "$1"; else printf 'nil'; fi; }
 
 sbcl --noinform --disable-debugger \
-     --eval "(load \"$FIFO\")" \
-     --eval "(load \"$PDDL2FIFO\")" \
-     --eval "(load \"$EVGEN\")" \
+     --eval "(load $(lisp_quote "$FIFO"))" \
+     --eval "(load $(lisp_quote "$PDDL2FIFO"))" \
+     --eval "(load $(lisp_quote "$EVGEN"))" \
      --eval "(handler-case
                  (multiple-value-bind (file n horizon)
-                     (evgen :problem \"$PROBLEM\"
+                     (evgen :problem $(lisp_quote "$PROBLEM")
                             :solution $(lisp_string "$SOLUTION")
                             :domain $(lisp_string "$DOMAIN")
                             :evidence $(lisp_string "$EVIDENCE")
@@ -234,11 +259,11 @@ sbcl --noinform --disable-debugger \
                             :export-constraints $(lisp_string "$CONS_DIR")
                             :export-ordering $(lisp_string "$ORD_DIR")
                             :nonstrict-ordering $NONSTRICT
-                            :slices \"$SLICES\"
-                            :observe \"$OBSERVE\"
+                            :slices $(lisp_quote "$SLICES")
+                            :observe $(lisp_quote "$OBSERVE")
                             :negative-evidence $NEGATIVE
                             :recognition $([[ "$RECOGNITION" == 1 ]] && echo t || echo nil)
-                            :satplan \"$SATPLAN\")
+                            :satplan $(lisp_quote "$SATPLAN"))
                    (when file
                      (format *error-output* \"Wrote ~a (~d literal~:p, horizon ~d)~%\"
                              file n horizon)))
