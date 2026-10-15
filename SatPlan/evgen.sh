@@ -37,9 +37,17 @@ print_usage() {
 usage: evgen.sh --problem <file.pddl> --slices <spec> <outputs> [options]
 
   --problem <file>        the PDDL problem instance (required)
-  --evidence <file>       where to write the evidence.  At least one output
-                             is required: this, or any of the --export-*
-                             options below
+  --evidence <file>       where to write the evidence, each observation
+                             pinned to its slice.  At least one output is
+                             required: this, --ordering-evidence, or any of
+                             the --export-* options below
+  --ordering-evidence <file>
+                          where to write the observed ACTIONS as ONE
+                             (occur-in-order a1 ... ak) form: their order,
+                             with no slices fixed -- the Ramirez & Geffner
+                             model, for recognize.sh --evidence-kind pddl.
+                             Two observed at the SAME slice are refused
+                             unless --nonstrict-ordering 1
   --slices "<spec>"       which slices are observed (required): integers
                              and A-B ranges separated by commas, e.g.
                              "1-3,5".  Slices are numbered from 1.  Fluents
@@ -111,7 +119,8 @@ usage: evgen.sh --problem <file.pddl> --slices <spec> <outputs> [options]
                              refused, since occur-in-order needs strictly
                              increasing slices and FiFO's are parallel
   --nonstrict-ordering <0|1>
-                          with --export-ordering-constraints, emit
+                          with --ordering-evidence or
+                             --export-ordering-constraints, emit
                              (occur-in-nonstrict-order ...) instead, whose
                              observations may SHARE a slice.  Default 0
                              (strict).  Non-strict is what a parallel plan
@@ -128,6 +137,8 @@ examples:
            --observe "fly" --negative-evidence 1
   evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-5" \
            --observe "drive,fly" --recognition 1
+  evgen.sh --problem pb.pddl --slices "1-3" --observe "drive,fly" \
+           --ordering-evidence ord.txt
   evgen.sh --problem pb.pddl --slices "1-5" --export-dataset out/
   evgen.sh --problem pb.pddl --slices "1-3,5" --export-constraints out/
   evgen.sh --problem pb.pddl --slices "1-5" --observe "drive,fly" \
@@ -141,7 +152,7 @@ EOF
 }
 
 PROBLEM="" SOLUTION="" DOMAIN="" EVIDENCE="" SLICES="" OBSERVE="" NEGATIVE="0"
-RECOGNITION="0" EXPORT_DIR="" CONS_DIR="" ORD_DIR="" NONSTRICT="0"
+RECOGNITION="0" EXPORT_DIR="" CONS_DIR="" ORD_DIR="" NONSTRICT="0" ORD_EVIDENCE=""
 
 die() { echo "evgen.sh: $1" >&2; exit 2; }
 need() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
@@ -152,6 +163,7 @@ while [[ $# -gt 0 ]]; do
     --solution)          need "$@"; SOLUTION="$2"; shift 2 ;;
     --domain)            need "$@"; DOMAIN="$2";   shift 2 ;;
     --evidence)          need "$@"; EVIDENCE="$2"; shift 2 ;;
+    --ordering-evidence) need "$@"; ORD_EVIDENCE="$2"; shift 2 ;;
     --slices)            need "$@"; SLICES="$2";   shift 2 ;;
     --observe)           need "$@"; OBSERVE="$2";  shift 2 ;;
     --negative-evidence) need "$@"; NEGATIVE="$2"; shift 2 ;;
@@ -166,8 +178,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$PROBLEM"  ]] || die "--problem <file.pddl> is required (try --help)"
-if [[ -z "$EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" && -z "$ORD_DIR" ]]; then
-  die "nothing to write: give --evidence <file>, --export-dataset <dir>, --export-constraints <dir>, --export-ordering-constraints <dir>, or several"
+if [[ -z "$EVIDENCE" && -z "$ORD_EVIDENCE" && -z "$EXPORT_DIR" && -z "$CONS_DIR" && -z "$ORD_DIR" ]]; then
+  die "nothing to write: give --evidence <file>, --ordering-evidence <file>, --export-dataset <dir>, --export-constraints <dir>, --export-ordering-constraints <dir>, or several"
 fi
 [[ -n "$SLICES"   ]] || die "--slices is required, e.g. --slices \"1-3,5\""
 if [[ "$NEGATIVE" != "0" && "$NEGATIVE" != "1" ]]; then
@@ -180,14 +192,17 @@ if [[ "$NONSTRICT" != "0" && "$NONSTRICT" != "1" ]]; then
   die "--nonstrict-ordering must be 0 or 1, got '$NONSTRICT'"
 fi
 # Options that shape one output only: refused without it rather than ignored.
-if [[ "$NONSTRICT" == "1" && -z "$ORD_DIR" ]]; then
-  die "--nonstrict-ordering applies only to --export-ordering-constraints"
+if [[ "$NONSTRICT" == "1" && -z "$ORD_DIR" && -z "$ORD_EVIDENCE" ]]; then
+  die "--nonstrict-ordering applies only to --ordering-evidence and --export-ordering-constraints"
 fi
 if [[ "$RECOGNITION" == "1" && -z "$EVIDENCE" ]]; then
   die "--recognition shapes the --evidence file, and none was asked for"
 fi
 if [[ -n "$ORD_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-ordering-constraints and --negative-evidence 1 do not go together: an ordering constraint records only what did happen"
+fi
+if [[ -n "$ORD_EVIDENCE" && "$NEGATIVE" == "1" ]]; then
+  die "--ordering-evidence and --negative-evidence 1 do not go together: an ordering records only what did happen"
 fi
 if [[ -n "$CONS_DIR" && "$NEGATIVE" == "1" ]]; then
   die "--export-constraints and --negative-evidence 1 do not go together: PDDL has no trajectory constraint saying an action did NOT occur"
@@ -231,6 +246,10 @@ if [[ -n "$EVIDENCE" ]]; then
   mkdir -p "$(dirname "$EVIDENCE")"
   EVIDENCE="$(cd "$(dirname "$EVIDENCE")" && pwd -P)/$(basename "$EVIDENCE")"
 fi
+if [[ -n "$ORD_EVIDENCE" ]]; then
+  mkdir -p "$(dirname "$ORD_EVIDENCE")"
+  ORD_EVIDENCE="$(cd "$(dirname "$ORD_EVIDENCE")" && pwd -P)/$(basename "$ORD_EVIDENCE")"
+fi
 if [[ -n "$EXPORT_DIR" ]]; then
   mkdir -p "$EXPORT_DIR"
   EXPORT_DIR="$(cd "$EXPORT_DIR" && pwd -P)/"
@@ -261,6 +280,7 @@ sbcl --noinform --disable-debugger \
                             :solution $(lisp_string "$SOLUTION")
                             :domain $(lisp_string "$DOMAIN")
                             :evidence $(lisp_string "$EVIDENCE")
+                            :ordering-evidence $(lisp_string "$ORD_EVIDENCE")
                             :export-dataset $(lisp_string "$EXPORT_DIR")
                             :export-constraints $(lisp_string "$CONS_DIR")
                             :export-ordering $(lisp_string "$ORD_DIR")

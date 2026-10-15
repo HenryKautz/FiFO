@@ -236,15 +236,18 @@ if [[ -f "$TMP/pprob/pswitch_learned.pddl" && ! -e "$TMP/plib/pddl/pswitch_learn
 else fail "$(grep -m2 -i 'learned\|error' <<<"$OUT")"; fi
 
 # evgen resolves (:domain ...) by the same function, and records the file it
-# used in its settings block.
+# used in its settings block -- a library domain by its bare name, which
+# --domain looks up in the library again (the domain itself is reported on
+# stderr by its full path).
 name "evgen finds a library domain and records it"
 if [[ $HAVE_SOLVERS -eq 0 ]]; then skip "kissat / tt-open-wbo-inc not installed"
 else
   (cd "$TMP/empty" && env FIFO_LISP="$LISP" "$BIN/planner.sh" "$TMP/prob/p.pddl" >/dev/null 2>&1)
   OUT="$(cd "$TMP/empty" && env FIFO_LISP="$LISP" bash "$REPO/SatPlan/evgen.sh" \
           --problem "$TMP/prob/p.pddl" --evidence "$TMP/ev.txt" --slices 1 2>&1)"
-  grep -qx ";;   --domain $LIB/clara-logistics.pddl" "$TMP/ev.txt" 2>/dev/null && pass \
-    || fail "$(tail -2 <<<"$OUT")"
+  grep -qx ";;   --domain clara-logistics.pddl" "$TMP/ev.txt" 2>/dev/null \
+    && grep -q "; domain clara-logistics: $LIB/clara-logistics.pddl" <<<"$OUT" && pass \
+    || fail "$(grep -- '--domain' "$TMP/ev.txt" 2>&1); $(tail -2 <<<"$OUT")"
 fi
 
 echo

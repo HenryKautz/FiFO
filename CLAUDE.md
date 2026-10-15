@@ -17,7 +17,8 @@ rules and the traps.
   `reweight.lisp`/`maxent.lisp`/`plearn.lisp` (learning; maxent also exact
   marginals), `wmc.lisp` (ADDMC, SharpSAT-TD), `ddnnf.lisp` (own d-DNNF compiler +
   d4 import, projection), `mcsat.lisp` (WalkSAT v58 MC-SAT), `maxterm.lisp`,
-  `hypotheses.lisp`, `satplan.wff`, `solvers.dat`.
+  `hypotheses.lisp`, `recognition-goal.lisp` (recognize.sh's goal reader), `satplan.wff`,
+  `solvers.dat`.
 - `bin/` — CLIs: `solve.sh`, `map.sh`, `planner.sh`, `marginals.sh`, `wmc.sh`,
   `learn.sh`, `learn-pddl.sh`, `recognize.sh`, `cleanupfifo.sh`,
   `install-solvers.sh`, `run_regression_tests.sh`; helpers `fifo-lisp.sh`,
@@ -108,9 +109,14 @@ preprocessor-techniques timeout)`.
 - `occur-in-order` windows are quantifier guards, never named slice constants (a
   slice past the horizon makes the constraint vacuous). Two identical adjacent
   observations can't share a slice even in nonstrict order.
-- recognize.sh: hypotheses = nullary disjuncts of the parsed goal; priors are by
-  NAME, relative weights, normalised before forwarding to marginals.sh (which
-  takes probabilities); forward nothing when the user gave none.
+- recognize.sh: hypotheses = disjuncts of ONE goal `(or …)` (`lisp/recognition-goal.lisp`),
+  each scored as one atom — nullary as is, a ground literal as is, anything else
+  via a created derived atom. Both methods score the SAME normalized problem
+  (exclusivity clauses dropped, preferences kept); never let plan-runs rewrite
+  more of the goal than the hypothesis set. An `(and …)` of plain atoms is a
+  conjunction, never a hypothesis set. Priors are by NAME, relative weights,
+  normalised before forwarding to marginals.sh (which takes probabilities);
+  forward nothing when the user gave none.
 - evgen/recognize.sh: a multi-form evidence file is refused (`(not A B)` reads as
   `(not A)`); use `--recognition 1`.
 - `map.sh` scratch root must contain no `.` (FiFO derives `.satout` from the first

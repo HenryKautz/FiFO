@@ -555,11 +555,12 @@ evgen.sh --problem pb.pddl --evidence ev.txt --slices "1-3,5"
 planner.sh pb.pddl --numslices 6 --evidence-file ev.txt
 ```
 
-It can write that in four shapes, and which you want depends on who reads it:
+It can write that in five shapes, and which you want depends on who reads it:
 
 | output | flag | for |
 |---|---|---|
 | **FiFO evidence** | `--evidence <file>` | `planner.sh --evidence-file`, `--marginals`, and — with `--recognition 1` — `bin/recognize.sh` |
+| **Ordering evidence** | `--ordering-evidence <file>` | `bin/recognize.sh` (the default `--evidence-kind pddl`) and `planner.sh --pddl-evidence-file`. One bare `(occur-in-order a1 … ak)`: the observed actions in **order**, no slices fixed — the Ramírez & Geffner observation model. Actions only; a same-slice tie is refused unless `--nonstrict-ordering 1` |
 | **R&G dataset** | `--export-dataset <dir>` | any plan-recognition tool chain. `domain.pddl` + `template.pddl` + `hyps.dat` + `obs.dat`. Actions in order, **no times**; needs a recognition instance |
 | **PDDL constraints** | `--export-constraints <dir>` | a planner, directly. The problem with the observations in `(:constraints …)` at their **exact slices**; actions need the non-standard `occur-sometime` |
 | **Ordering constraint** | `--export-ordering-constraints <dir>` | a planner, directly, when only the **order** is claimed. One `(occur-in-order M N …)` spanning the observed slices; actions only. Two observed in the same slice are refused unless `--nonstrict-ordering 1` |
@@ -1062,14 +1063,19 @@ end to end.
 
 #### 5. Plan recognition: a posterior over hypotheses
 
-For an instance whose goal is `(or (hyp0) … (hypN))` over nullary derived
-predicates, with observations as an `(occur-in-order …)` file:
+For a problem whose goal is a disjunction of hypotheses, with observations as an
+`(occur-in-order …)` file (or slice-pinned FiFO evidence, `--evidence-kind fifo`):
 
-The hypotheses are read by **parsing the `:goal`** and taking its disjuncts; a
-hypothesis is a **nullary** predicate, so an ordinary disjunctive planning goal
-like `(or (at p1 bos) (at p1 jfk))` is not mistaken for a recognition instance.
-Goal order is the reported order. The name `hypI` is a convention, not a
-requirement — the criterion is arity.
+The hypotheses are read by **parsing the `:goal`** and taking the disjuncts of
+its one `(or …)`. Each is scored as a single atom: a nullary derived predicate
+`(hypI)` as `make-recognition-instance.lisp` writes, a ground goal literal such as
+`(at truck1 p3-2)` directly, or — for any other closed formula — a derived atom
+recognize.sh creates, with a warning (`--create-hypothesis-atoms` does that for
+every hypothesis; the results are identical). Exclusivity clauses
+`(or (not hi) (not hj))` over the hypotheses are ignored, preferences count on
+both methods, and a second set of hypotheses, a plain conjunction or another
+hard goal is refused with the reason. Goal order is the reported order. See
+[`recognize.sh`](../software-components.md#recognizesh) for the rules.
 
 ```sh
 bin/recognize.sh costs-domain.pddl problem.pddl evidence-3.txt --horizon 6

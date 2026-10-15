@@ -281,12 +281,6 @@ expect_err "an unknown hypothesis in --prior is refused" "is not a hypothesis of
 printf '9\n1\n' > old-style.txt
 expect_err "the old positional priors file is refused" "given BY NAME" \
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --horizon 6 --priors old-style.txt
-cat > notrec.pddl <<'PDDL'
-(define (problem p) (:domain intrusion-detection) (:init (dummy))
- (:goal (or (recon-performed leo) (recon-performed taurus))))
-PDDL
-expect_err "a non-nullary goal disjunct is refused" "not a nullary predicate" \
-  intrusion-detection-costs.pddl notrec.pddl evidence-3.txt --horizon 3
 
 # --- 5e. priors from preferences, opt-in ------------------------------------
 # pi = exp(w): w is a VIOLATION penalty, so escaping it is worth odds exp(w).
@@ -337,6 +331,179 @@ if grep -q '^hyp0	20	20	0' r-fifo/summary.tsv 2>/dev/null; then
 else
   bad "slice-pinned FiFO evidence takes the fast path too" "$(sed -n 2p r-fifo/summary.tsv 2>&1)"
 fi
+
+echo
+echo "=== recognize.sh: hypotheses read from the goal ==="
+
+# A 3x3 road-only grid, one truck at p1-1, two goal literals at distance 2.
+# The first drive goes to p1-2, toward p1-3: complying costs 2 for p1-3 and 4
+# for p3-1 (a detour).  Not complying costs 2 for both: with the horizon's slack
+# the truck can wait a slice and then drive.  So the deltas are 0 and -2, the
+# posterior must favour p1-3, and that is what keeps these cases from
+# passing vacuously: every comparison below is between non-uniform results.
+bash "$REPO/SatPlan/ppgen.sh" --style grid --dimensions 3 3 --airports 0 --trucks 1 \
+     --packages 0 --mindist 1 --seed 1 -o grid-base.pddl 2>/dev/null
+lit_problem() {   # lit_problem <out.pddl> <goal>
+  sed "/(:goal/,/^\$/c\\
+  (:goal $2)\\
+" grid-base.pddl > "$1"
+}
+GOAL2='(or (at truck1 p1-3) (at truck1 p3-1))'
+lit_problem lit.pddl "$GOAL2"
+printf '(and\n  (occurs (drive truck1 p1-1 p1-2) 1))\n' > lit-ev.txt
+printf '(occur-in-order (drive truck1 p1-1 p1-2))\n' > lit-ord.txt
+GD="$REPO/pddl/clara-logistics.pddl"
+rec() { local out="$1"; shift; bash "$BIN/recognize.sh" "$GD" "$@" --horizon 5 --out "$out" > "$out.log" 2>&1; }
+# The scores without the hypothesis names, which differ between spellings.
+scores() { cut -f2- "$1/summary.tsv" 2>/dev/null; }
+
+rec r-lit lit.pddl lit-ev.txt --evidence-kind fifo
+if awk -F'\t' '$1=="at-truck1-p1-3"{a=$7} $1=="at-truck1-p3-1"{b=$7} END{exit !(a>b && a>0)}' r-lit/summary.tsv 2>/dev/null \
+   && grep -q "^at-truck1-p1-3	2	2	0	" r-lit/summary.tsv && grep -q "^at-truck1-p3-1	4	2	-2	" r-lit/summary.tsv; then
+  ok "ground goal literals are hypotheses (deltas 0 and -2, favours p1-3)"
+else
+  bad "ground goal literals are hypotheses" "$(tr '\n' ' ' < r-lit/summary.tsv 2>/dev/null; tail -2 r-lit.log)"
+fi
+
+rec r-lit-slow lit.pddl lit-ev.txt --evidence-kind fifo --method plan-runs
+diff -q r-lit/summary.tsv r-lit-slow/summary.tsv >/dev/null 2>&1 \
+  && ok "literal hypotheses: fast and plan-runs agree exactly" \
+  || bad "literal hypotheses: fast and plan-runs agree exactly" "$(diff r-lit/summary.tsv r-lit-slow/summary.tsv 2>&1 | head -3 | tr '\n' ' ')"
+
+rec r-lit-atoms lit.pddl lit-ev.txt --evidence-kind fifo --create-hypothesis-atoms
+if diff -q r-lit/summary.tsv r-lit-atoms/summary.tsv >/dev/null 2>&1 \
+   && grep -q 'derived atom (rechyp0)' r-lit-atoms.log; then
+  ok "--create-hypothesis-atoms: derived atoms, identical results"
+else
+  bad "--create-hypothesis-atoms: derived atoms, identical results" "$(diff r-lit/summary.tsv r-lit-atoms/summary.tsv 2>&1 | head -3 | tr '\n' ' ')"
+fi
+
+rec r-lit-ord lit.pddl lit-ord.txt
+rec r-lit-ord-slow lit.pddl lit-ord.txt --method plan-runs
+if grep -q '^at-truck1-p1-3	' r-lit-ord/summary.tsv 2>/dev/null \
+   && diff -q r-lit-ord/summary.tsv r-lit-ord-slow/summary.tsv >/dev/null 2>&1 \
+   && awk -F'\t' '$1=="at-truck1-p1-3"{a=$7} $1=="at-truck1-p3-1"{b=$7} END{exit !(a>b)}' r-lit-ord/summary.tsv; then
+  ok "literal hypotheses with ordering evidence, fast == plan-runs"
+else
+  bad "literal hypotheses with ordering evidence" "$(tr '\n' ' ' < r-lit-ord/summary.tsv 2>/dev/null; diff r-lit-ord/summary.tsv r-lit-ord-slow/summary.tsv 2>&1 | head -2)"
+fi
+
+# Exclusivity clauses are ignored: dropped from the problem both methods score.
+lit_problem lit-x.pddl "(and $GOAL2 (or (not (at truck1 p1-3)) (not (at truck1 p3-1))))"
+rec r-lit-x lit-x.pddl lit-ev.txt --evidence-kind fifo
+if diff -q r-lit/summary.tsv r-lit-x/summary.tsv >/dev/null 2>&1 \
+   && ! sed -n '/(:goal/,$p' r-lit-x/rec-problem-base.pddl | grep -q '(not'; then
+  ok "exclusivity clauses are accepted and dropped"
+else
+  bad "exclusivity clauses are accepted and dropped" "$(tail -2 r-lit-x.log)"
+fi
+
+# A disjunct that is not an atom gets a derived atom, with a warning.  At the
+# final slice (and (at truck1 p3-1) (not (at truck1 p2-2))) holds exactly when
+# (at truck1 p3-1) does, so the scores must be the literal case's.
+lit_problem lit-c.pddl '(or (at truck1 p1-3) (and (at truck1 p3-1) (not (at truck1 p2-2))))'
+rec r-lit-c lit-c.pddl lit-ev.txt --evidence-kind fifo
+if grep -q 'WARNING: hypothesis (and (at truck1 p3-1)' r-lit-c.log \
+   && [[ -n "$(scores r-lit)" && "$(scores r-lit)" == "$(scores r-lit-c)" ]]; then
+  ok "a complex hypothesis gets a derived atom, with a warning"
+else
+  bad "a complex hypothesis gets a derived atom, with a warning" "$(grep -i warn r-lit-c.log | head -1); $(scores r-lit-c | tr '\n' ' ')"
+fi
+
+# Goal preferences stay in the costs on BOTH methods.  plan-runs used to replace
+# the whole goal with the hypothesis, dropping every preference.  Not stripped
+# (no --priors-from-preferences), the weight 5 is charged whenever p3-1 is the
+# hypothesis, so it shows in p3-1's costs -- and must on both methods.
+lit_problem lit-p.pddl "(and $GOAL2 (preference end-p1-3 (at truck1 p1-3) 5))"
+rec r-lit-p lit-p.pddl lit-ev.txt --evidence-kind fifo
+rec r-lit-p-slow lit-p.pddl lit-ev.txt --evidence-kind fifo --method plan-runs
+if grep -q '^at-truck1-p3-1	9	7	' r-lit-p/summary.tsv 2>/dev/null \
+   && diff -q r-lit-p/summary.tsv r-lit-p-slow/summary.tsv >/dev/null 2>&1; then
+  ok "goal preferences count on both methods (p3-1 costs 9/7)"
+else
+  bad "goal preferences count on both methods" "fast: $(sed -n '/p3-1/p' r-lit-p/summary.tsv 2>&1) slow: $(sed -n '/p3-1/p' r-lit-p-slow/summary.tsv 2>&1)"
+fi
+
+# --priors-from-preferences matches a preference on a literal hypothesis.
+lit_problem lit-pp.pddl "(and $GOAL2 (preference h (at truck1 p3-1) 0.69314718))"
+rec r-lit-pp lit-pp.pddl lit-ev.txt --evidence-kind fifo --priors-from-preferences
+rec r-lit-p2 lit.pddl lit-ev.txt --evidence-kind fifo --prior at-truck1-p3-1=2
+PP=$(awk -F'\t' '$1=="at-truck1-p3-1"{print $7}' r-lit-pp/summary.tsv 2>/dev/null)
+P2=$(awk -F'\t' '$1=="at-truck1-p3-1"{print $7}' r-lit-p2/summary.tsv 2>/dev/null)
+[[ -n "$PP" && "$PP" == "$P2" ]] \
+  && ok "a preference on a literal hypothesis gives its prior ($PP)" \
+  || bad "a preference on a literal hypothesis gives its prior" "preference '$PP', --prior '$P2'"
+
+# --- review fixes ----------------------------------------------------------
+# Observations are counted from the parsed evidence: an evgen-style comment
+# holding "(...)" must not count as one (it raised the default horizon).
+{ echo ';; (order only: the slices are not fixed).'; cat lit-ord.txt; } > lit-ord-c.txt
+bash "$BIN/recognize.sh" "$GD" lit.pddl lit-ord-c.txt --out r-lit-oc > r-lit-oc.log 2>&1
+grep -q 'observations = 1)' r-lit-oc.log \
+  && ok "a comment is not counted as an observation" \
+  || bad "a comment is not counted as an observation" "$(grep 'observations' r-lit-oc.log)"
+
+# Several preferences on one hypothesis: penalties add, so the prior is
+# exp(w1 + w2) -- here exp(0.3 + 0.39314718) = 2, exactly --prior ...=2.
+lit_problem lit-pp2.pddl "(and $GOAL2 (preference a (at truck1 p3-1) 0.3) (preference b (at truck1 p3-1) 0.39314718))"
+rec r-lit-pp2 lit-pp2.pddl lit-ev.txt --evidence-kind fifo --priors-from-preferences
+PP2=$(awk -F'\t' '$1=="at-truck1-p3-1"{print $7}' r-lit-pp2/summary.tsv 2>/dev/null)
+[[ -n "$PP2" && "$PP2" == "$P2" ]] \
+  && ok "two preferences on one hypothesis add ($PP2)" \
+  || bad "two preferences on one hypothesis add" "got '$PP2', --prior gave '$P2'"
+
+# Floats survive the rewrite at full precision.
+lit_problem lit-f.pddl "(and $GOAL2 (preference far (at truck1 p1-3) 0.123456789))"
+rec r-lit-f lit-f.pddl lit-ev.txt --evidence-kind fifo
+grep -q '0.123456789' r-lit-f/rec-problem-base.pddl 2>/dev/null \
+  && ok "float weights keep full precision in the scored problem" \
+  || bad "float weights keep full precision in the scored problem" "$(grep -o 'far.*' r-lit-f/rec-problem-base.pddl 2>&1)"
+
+# A set of NEGATED literals is still the hypothesis set beside a preference.
+lit_problem lit-n.pddl "(and (or (not (at truck1 p1-3)) (not (at truck1 p3-1))) (preference q (at truck1 p1-3) 1))"
+rec r-lit-n lit-n.pddl lit-ev.txt --evidence-kind fifo
+if ! grep -q 'conjunction with no' r-lit-n.log && [[ "$(grep -c '^rechyp' r-lit-n/summary.tsv 2>/dev/null)" == 2 ]]; then
+  ok "a negated hypothesis set beside a preference is read"
+else
+  bad "a negated hypothesis set beside a preference is read" "$(grep -m1 'recognize.sh:' r-lit-n.log)"
+fi
+
+# Report names stay distinct even when a renamed one could collide.
+lit_problem lit-nm.pddl '(or (on-a-b 3) (on a b) (on-a b))'
+NAMES=$(sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/recognition-goal.lisp\")" \
+          --eval "(rg-prepare \"$TMP/lit-nm.pddl\" \"$GD\" \"$TMP/\")" 2>/dev/null | awk -F'\t' '$1=="HYP"{print $2}')
+[[ "$(sort -u <<<"$NAMES" | wc -l | tr -d ' ')" == 3 ]] \
+  && ok "hypothesis names are distinct ($(echo $NAMES))" \
+  || bad "hypothesis names are distinct" "$(echo $NAMES)"
+
+# A stale assertion from an earlier run in the same --out is not reused: the
+# second evidence cannot be split, so the run must say so, not condition on
+# the first run's assertion.
+rec r-stale lit.pddl lit-ord.txt
+printf '(and (occur-in-order (drive truck1 p1-1 p1-2)) (never (drive truck1 p1-2 p2-2)))\n' > lit-ord2.txt
+bash "$BIN/recognize.sh" "$GD" lit.pddl lit-ord2.txt --horizon 5 --out r-stale > r-stale2.log 2>&1
+grep -q 'no assertion literal was written' r-stale2.log \
+  && ok "a stale assertion from an earlier run is not reused" \
+  || bad "a stale assertion from an earlier run is not reused" "$(tail -2 r-stale2.log | tr '\n' ' ')"
+
+# What the reader refuses, each with its reason.
+lit_problem lit-2.pddl '(and (or (at truck1 p1-3) (at truck1 p3-1)) (or (at truck1 p2-3) (at truck1 p3-2)))'
+expect_err "two hypothesis sets are refused, not yet supported" "2 hypothesis sets" \
+  "$GD" lit-2.pddl lit-ev.txt --evidence-kind fifo --horizon 5
+expect_err "  ... and the message says it is not supported yet" "not supported yet" \
+  "$GD" lit-2.pddl lit-ev.txt --evidence-kind fifo --horizon 5
+lit_problem lit-and.pddl '(and (at truck1 p1-3) (at truck1 p3-1))'
+expect_err "a plain conjunction is not read as hypotheses" "conjunction with no (or" \
+  "$GD" lit-and.pddl lit-ev.txt --evidence-kind fifo --horizon 5
+lit_problem lit-hard.pddl "(and $GOAL2 (at truck1 p2-2))"
+expect_err "another hard goal beside the hypotheses is refused" "hard goal beside the hypotheses" \
+  "$GD" lit-hard.pddl lit-ev.txt --evidence-kind fifo --horizon 5
+lit_problem lit-xo.pddl "(and $GOAL2 (or (not (at truck1 p1-3)) (not (at truck1 p2-2))))"
+expect_err "an exclusivity clause outside the set is refused" "not one of the hypotheses" \
+  "$GD" lit-xo.pddl lit-ev.txt --evidence-kind fifo --horizon 5
+lit_problem lit-var.pddl '(or (at truck1 p1-3) (at truck1 ?p))'
+expect_err "a hypothesis with a free variable is refused" "free variable" \
+  "$GD" lit-var.pddl lit-ev.txt --evidence-kind fifo --horizon 5
 
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="

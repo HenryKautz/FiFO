@@ -348,9 +348,9 @@ if everr --slices "2" --export-constraints "$TMP/xrc" --recognition 1 \
    | grep -q "shapes the --evidence file"; then pass
 else fail "should refuse an option with nothing to apply to"; fi
 
-name "--nonstrict-ordering 1 without --export-ordering-constraints is refused"
+name "--nonstrict-ordering 1 without an ordering output is refused"
 if everr --evidence "$TMP/x.txt" --slices "2" --nonstrict-ordering 1 \
-   | grep -q "applies only to --export-ordering-constraints"; then pass
+   | grep -q "applies only to --ordering-evidence and --export-ordering-constraints"; then pass
 else fail "should refuse an option with nothing to apply to"; fi
 
 name "a missing --problem says so"
@@ -953,6 +953,77 @@ then pass; else fail "should require --slices"; fi
 name "a missing problem file is reported"
 if bash "$EVGEN" --problem "$TMP/nope.pddl" --evidence "$TMP/x.txt" --slices "2" 2>&1 >/dev/null \
    | grep -q "problem file not found"; then pass; else fail "should reject a missing problem"; fi
+
+echo
+echo "=== --ordering-evidence (one bare occur-in-order, for recognize.sh) ==="
+OE="$TMP/oe.txt"
+
+name "writes the observed actions as ONE bare occur-in-order form"
+# slices 3 and 4 each hold exactly one load/fly observation (as above)
+ev --slices "3,4" --observe "load,fly" --ordering-evidence "$OE" >/dev/null 2>&1
+if pycheck "$SRC" "$OE" <<'EOF'
+import sys,re
+ans=open(sys.argv[1]).read()
+body=''.join(l for l in open(sys.argv[2]) if not l.lstrip().startswith(';'))
+forms=re.findall(r'^\(.*\)$',body.strip(),re.M)
+assert len(forms)==1, forms                       # exactly one form
+m=re.match(r'\(occur-in-order((?:\s*\([^()]*\))+)\)$',forms[0])
+assert m, forms[0]                                # bare: no slice window
+acts=[a.strip().lower() for a in re.findall(r'\([^()]*\)',m.group(1))]
+want=sorted((int(s),t.lower()) for t,s in re.findall(r'\(OCCURS (\([^)]*\)) (\d+)\)',ans)
+            if int(s) in (3,4) and t.split()[0].lstrip('(').lower() in ('load','fly'))
+assert acts==[t for _,t in want], (acts,want)
+EOF
+then pass; else fail "$(grep -v '^;;' "$OE" 2>&1 | head -3)"; fi
+
+name "it binds: conditioning on it reproduces the plan's cost"
+OECOST=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
+           --numslices "$HORIZON" --pddl-evidence-file "$OE" 2>&1 \
+         | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+if [[ -n "$OECOST" && "$OECOST" == "$BASE_COST" ]]; then pass
+else fail "cost '$OECOST' vs source '$BASE_COST'"; fi
+
+name "and the order matters: the reversed sequence costs more or is impossible"
+# The two observed actions, swapped -- if the evidence did nothing this would
+# still reach the source plan's cost.
+python3 - "$OE" "$TMP/oe-rev.txt" <<'EOF'
+import sys,re
+t=open(sys.argv[1]).read()
+form=[l for l in t.splitlines() if l.startswith('(occur-in-order')][0]
+acts=re.findall(r'\([^()]*\)',form[len('(occur-in-order'):])
+open(sys.argv[2],'w').write('(occur-in-order '+' '.join(reversed(acts))+')\n')
+EOF
+ROUT=$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
+         --numslices "$HORIZON" --pddl-evidence-file "$TMP/oe-rev.txt" 2>&1)
+RCOST2=$(echo "$ROUT" | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')
+if echo "$ROUT" | grep -qi unsatisfiable || [[ -n "$RCOST2" && "$RCOST2" -gt "$BASE_COST" ]]
+then pass; else fail "reversing the order changed nothing (cost $RCOST2)"; fi
+
+name "a same-slice tie is refused, and --nonstrict-ordering 1 accepts it"
+if everr --slices "1-3" --ordering-evidence "$TMP/oe-tie.txt" | grep -q "STRICTLY increasing slices" \
+   && ev --slices "1-3" --ordering-evidence "$TMP/oe-tie.txt" --nonstrict-ordering 1 >/dev/null 2>&1 \
+   && grep -q '^(occur-in-nonstrict-order ' "$TMP/oe-tie.txt"; then pass
+else fail "tie handling wrong"; fi
+
+name "--negative-evidence 1 is refused"
+if everr --slices "3,4" --observe "load,fly" --negative-evidence 1 \
+         --ordering-evidence "$TMP/oe-neg.txt" | grep -q "only what did happen"
+then pass; else fail "should refuse negative evidence"; fi
+
+name "a fluent in --observe is refused, not silently dropped"
+# With an action selected too, the old code wrote the actions and lost the fluent.
+if everr --slices "3,4" --observe "load,at" --ordering-evidence "$TMP/oe-fl.txt" \
+     | grep -q "cannot record the fluent at"; then pass
+else fail "a fluent named in --observe vanished from the ordering"; fi
+
+name "its settings block replays byte for byte"
+(cd "$TMP" && bash "$EVGEN" --problem pb.pddl --domain "$DOMAIN" --solution pb-source.answer \
+     --slices "3,4" --observe "load,fly" --ordering-evidence oe2.txt >/dev/null 2>&1)
+cp "$TMP/oe2.txt" "$TMP/oe2.before" 2>/dev/null
+(cd "$TMP" && bash "$EVGEN" $(sed -n 's/^;;   //p' oe2.txt) >/dev/null 2>&1)
+if [[ -s "$TMP/oe2.before" ]] && cmp -s "$TMP/oe2.before" "$TMP/oe2.txt" \
+   && grep -qx ';;   --problem pb.pddl' "$TMP/oe2.txt"; then pass
+else fail "$(diff "$TMP/oe2.before" "$TMP/oe2.txt" 2>&1 | head -3)"; fi
 
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
