@@ -246,7 +246,11 @@ run_planner() {           # run_planner <logfile> <extra planner args...>
   done
   wait "$pid" 2>/dev/null; rc=$?
   set +m
-  pkill -9 -f kissat 2>/dev/null; pkill -9 -f open-wbo 2>/dev/null
+  # Reap any solver the planner left behind -- in ITS OWN process group only (set
+  # -m above made the planner a group leader).  This was a global
+  # `pkill -f kissat` / `pkill -f open-wbo`, which killed every other run's
+  # solvers too: recognize.sh runs in parallel then corrupted each other's costs.
+  kill -9 -- -"$pid" 2>/dev/null
   return "$rc"
 }
 # optimal cost printed by planner.sh ("... time slices: cost C"), else "inf"
