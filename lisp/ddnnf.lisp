@@ -369,8 +369,12 @@ variable still appears in the dump and our smoothing is correct)."
           (error "could not run the d4 compiler (~A): ~A~%Put a 'd4' on PATH (bin/install-solvers.sh --only d4)."
                  d4 c)))
     (declare (ignore out))
-    (when (and code (not (zerop code)) (not (probe-file nnf-file)))
-      (error "d4 (~A) failed (exit ~A) and produced no dump.~%--- stderr ---~%~A" d4 code err))
+    ;; d4 exits 0 on satisfiable and unsatisfiable input alike, so any other code
+    ;; is a crash -- and a crashed d4 can leave a PARTIAL dump, whose import would
+    ;; be a wrong circuit, not an error.  Refuse it whether or not a dump exists.
+    (when (and code (not (zerop code)))
+      (error "d4 (~A) failed (exit ~A)~:[ and produced no dump~;; its partial dump is not used~].~%--- stderr ---~%~A"
+             d4 code (probe-file nnf-file) err))
     (unless (probe-file nnf-file)
       (error "d4 produced no dump file ~A~%--- stderr ---~%~A" nnf-file err))
     nnf-file))
@@ -397,49 +401,95 @@ id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits)."
     (maphash (lambda (k v) (setf (gethash k arcs) (nreverse v))) arcs)
     (values node-type arcs)))
 
-(defun ddnnf--d4-scope (id node-type arcs cache)
-  "Set (list) of variables occurring in the subtree rooted at d4 node ID; memoized."
-  (multiple-value-bind (s hit) (gethash id cache)
-    (if hit s
-        (setf (gethash id cache)
-              (case (gethash id node-type)
-                ((:true :false) '())
-                (t (let ((acc '()))
-                     (dolist (arc (gethash id arcs))
-                       (dolist (l (cdr arc)) (pushnew (abs l) acc))
-                       (dolist (v (ddnnf--d4-scope (car arc) node-type arcs cache))
-                         (pushnew v acc)))
-                     acc)))))))
+;;; A d4 circuit can have millions of nodes and thousands of variables, so the
+;;; import must be linear in the circuit with small constants: scopes are bit
+;;; vectors (a list scope built with PUSHNEW is quadratic in time and holds
+;;; nodes x scope-size conses -- billions on an 8x8 SatPlan grid), and the walks
+;;; are iterative (the circuit's depth grows with the variable count, past what
+;;; SBCL's default control stack allows).
 
-(defun ddnnf--d4-build (b id node-type arcs scopes build-cache)
-  "Build d4 node ID into builder B, smooth over its scope; returns our node id."
-  (or (gethash id build-cache)
-      (setf (gethash id build-cache)
-            (case (gethash id node-type)
-              (:true (bld-true b))
-              (:false (bld-false b))
-              (:or
-               ;; OR of arcs; smooth each arc up to the OR's scope.
-               (let ((oscope (gethash id scopes)) (kids '()))
-                 (dolist (arc (gethash id arcs))
-                   (let* ((dst (car arc)) (lits (cdr arc))
-                          (covered (copy-list (gethash dst scopes)))
-                          (akids (list (ddnnf--d4-build b dst node-type arcs scopes build-cache))))
-                     (dolist (l lits)
-                       (pushnew (abs l) covered)
-                       (push (bld-lit b l) akids))
-                     (dolist (v (set-difference oscope covered))
-                       (push (bld-free b v) akids))
-                     (push (bld-and b (nreverse akids)) kids)))
-                 (bld-or b (nreverse kids))))
-              (:and
-               ;; AND of arcs (decomposable: disjoint scopes, no smoothing needed).
-               (let ((kids '()))
-                 (dolist (arc (gethash id arcs))
-                   (let ((akids (list (ddnnf--d4-build b (car arc) node-type arcs scopes build-cache))))
-                     (dolist (l (cdr arc)) (push (bld-lit b l) akids))
-                     (push (bld-and b (nreverse akids)) kids)))
-                 (bld-and b (nreverse kids))))))))
+(defun ddnnf--d4-postorder (root arcs fn)
+  "Call FN on every d4 node reachable from ROOT, each once, children before
+parents.  Iterative, so the circuit's depth does not touch the control stack."
+  ;; A node is marked when it is EXPANDED (its children pushed above it), not when
+  ;; pushed: a node can sit on the stack twice, and the lower copy is dropped when
+  ;; it surfaces.  Marking on push would let a parent be visited before a shared
+  ;; child still waiting lower down.  The circuit is acyclic, so an unvisited
+  ;; child is never an expanded-but-unfinished node.
+  (let ((expanded (make-hash-table)) (stack (list (cons root nil))))
+    (loop while stack
+          do (let ((top (car stack)))
+               (cond ((cdr top)                       ; children done: visit
+                      (pop stack) (funcall fn (car top)))
+                     ((gethash (car top) expanded)    ; a duplicate: already handled
+                      (pop stack))
+                     (t
+                      (setf (gethash (car top) expanded) t
+                            (cdr top) t)
+                      (dolist (arc (gethash (car top) arcs))
+                        (unless (gethash (car arc) expanded)
+                          (push (cons (car arc) nil) stack)))))))))
+
+(defun ddnnf--d4-scopes (root node-type arcs nvars)
+  "Hash table: d4 node id -> simple bit vector (index = variable) of the variables
+occurring at or under it, for every node reachable from ROOT."
+  (let ((scopes (make-hash-table))
+        (empty (make-array (1+ nvars) :element-type 'bit :initial-element 0)))
+    (ddnnf--d4-postorder
+     root arcs
+     (lambda (id)
+       (setf (gethash id scopes)
+             (if (member (gethash id node-type) '(:true :false))
+                 empty
+                 (let ((acc (make-array (1+ nvars) :element-type 'bit :initial-element 0)))
+                   (dolist (arc (gethash id arcs))
+                     (dolist (l (cdr arc)) (setf (sbit acc (abs l)) 1))
+                     (bit-ior acc (gethash (car arc) scopes) acc))
+                   acc)))))
+    scopes))
+
+(defun ddnnf--bits (bv)
+  "The indices of the 1 bits of BV, ascending.  POSITION on a simple bit vector
+scans a word at a time, so a mostly-zero vector -- an OR arc that needs little
+or no smoothing, the common case -- costs nvars/64 steps, not nvars."
+  (declare (type simple-bit-vector bv))
+  (loop for v = (position 1 bv) then (position 1 bv :start (1+ v))
+        while v collect v))
+
+(defun ddnnf--d4-build (b root node-type arcs scopes)
+  "Build the d4 circuit under ROOT into builder B, smoothing every OR arc up to
+the OR's scope; returns our id for ROOT."
+  (let ((built (make-hash-table)))
+    (ddnnf--d4-postorder
+     root arcs
+     (lambda (id)
+       (setf (gethash id built)
+             (case (gethash id node-type)
+               (:true (bld-true b))
+               (:false (bld-false b))
+               (:or
+                ;; OR of arcs; smooth each arc up to the OR's scope.
+                (let ((oscope (gethash id scopes)) (kids '()))
+                  (dolist (arc (gethash id arcs))
+                    (let* ((dst (car arc)) (lits (cdr arc))
+                           (covered (copy-seq (gethash dst scopes)))
+                           (akids (list (gethash dst built))))
+                      (dolist (l lits)
+                        (setf (sbit covered (abs l)) 1)
+                        (push (bld-lit b l) akids))
+                      (dolist (v (ddnnf--bits (bit-andc2 oscope covered)))
+                        (push (bld-free b v) akids))
+                      (push (bld-and b (nreverse akids)) kids)))
+                  (bld-or b (nreverse kids))))
+               (:and
+                ;; AND of arcs (decomposable: disjoint scopes, no smoothing needed).
+                (let ((kids '()))
+                  (dolist (arc (gethash id arcs))
+                    (let ((akids (list (gethash (car arc) built))))
+                      (dolist (l (cdr arc)) (push (bld-lit b l) akids))
+                      (push (bld-and b (nreverse akids)) kids)))
+                  (bld-and b (nreverse kids))))))))
+    (gethash root built)))
 
 (defun ddnnf--var-atom (a2i v)
   "The atom numbered V in A2I (a linear search -- for error messages only)."
@@ -454,40 +504,54 @@ variables only.  Root smoothing then adds free(v) for the kept variables alone:
 smoothing over every variable would count each projected-away one as a free
 factor of 2, which is exactly the existential the projection removed."
   (multiple-value-bind (node-type arcs) (ddnnf--read-d4-nnf nnf-file)
-    (let ((dsts (make-hash-table)) (root-id nil)
-          (scopes (make-hash-table)) (build-cache (make-hash-table))
+    (let ((dsts (make-hash-table)) (roots '())
           (b (bld-new)))
-      ;; root = the one node that is never an arc destination
+      ;; root = the one node that is never an arc destination.  More than one
+      ;; such node means a truncated or corrupt dump: building from any one of
+      ;; them would silently drop the others' subcircuits (and root smoothing
+      ;; would then cover the variables they held), giving a wrong Z, not an
+      ;; error.  With exactly one source, every node of the DAG is reachable.
       (maphash (lambda (src lst) (declare (ignore src))
-                 (dolist (a lst) (setf (gethash (car a) dsts) t)))
+                 (dolist (a lst)
+                   (setf (gethash (car a) dsts) t)
+                   (unless (gethash (car a) node-type)
+                     (error "d4 NNF dump ~A has an arc to undeclared node ~D"
+                            nnf-file (car a)))
+                   (dolist (l (cdr a))
+                     (unless (<= 1 (abs l) nvars)
+                       (error "d4 NNF dump ~A mentions variable ~D, outside 1..~D"
+                              nnf-file (abs l) nvars)))))
                arcs)
       (maphash (lambda (id ty) (declare (ignore ty))
-                 (unless (gethash id dsts) (setf root-id id)))
+                 (unless (gethash id dsts) (push id roots)))
                node-type)
-      (unless root-id (error "could not find the d4 NNF root in ~A" nnf-file))
-      (maphash (lambda (id ty) (declare (ignore ty))
-                 (ddnnf--d4-scope id node-type arcs scopes))
-               node-type)
-      (when projected
-        (let ((stray (find-if (lambda (v) (zerop (sbit projected v)))
-                              (gethash root-id scopes))))
-          (when stray
-            (error "d4's projected dump mentions variable ~D (~S), which is not in the ~
+      (unless (= 1 (length roots))
+        (error "d4 NNF dump ~A has ~:[no root~;~:*~D nodes with no parent (~{~D~^ ~}), ~
+not one root~] -- truncated or corrupt"
+               nnf-file (and roots (length roots)) (subseq roots 0 (min 5 (length roots)))))
+      (let* ((root-id (first roots))
+             (scopes (ddnnf--d4-scopes root-id node-type arcs nvars)))
+        (when projected
+          (let ((stray (find-if (lambda (v) (zerop (sbit projected v)))
+                                (ddnnf--bits (gethash root-id scopes)))))
+            (when stray
+              (error "d4's projected dump mentions variable ~D (~S), which is not in the ~
 projection -- d4 did not honour the 'c p show' line, so the circuit would not be ~
 the projected one"
-                   stray (ddnnf--var-atom a2i stray)))))
-      (let* ((body (ddnnf--d4-build b root-id node-type arcs scopes build-cache))
-             (never (set-difference (loop for v from 1 to nvars
-                                          when (or (null projected) (= 1 (sbit projected v)))
-                                            collect v)
-                                    (gethash root-id scopes)))
-             (root (bld-and b (append (mapcar (lambda (v) (bld-free b v)) never)
-                                      (list body))))
-             (i2a (make-array (1+ nvars))))
-        (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
-        (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
-                    :leaf-cost cost :scale scale :clauses int-clauses
-                    :projected projected)))))
+                     stray (ddnnf--var-atom a2i stray)))))
+        (let* ((body (ddnnf--d4-build b root-id node-type arcs scopes))
+               (rscope (gethash root-id scopes))
+               (never (loop for v from 1 to nvars
+                            when (and (or (null projected) (= 1 (sbit projected v)))
+                                      (zerop (sbit rscope v)))
+                              collect v))
+               (root (bld-and b (append (mapcar (lambda (v) (bld-free b v)) never)
+                                        (list body))))
+               (i2a (make-array (1+ nvars))))
+          (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
+          (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
+                      :leaf-cost cost :scale scale :clauses int-clauses
+                      :projected projected))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Projection: which atoms to keep, and the check that keeping only them is exact
@@ -812,6 +876,17 @@ ready to query -- no recompilation."
              (i2a (make-array (1+ nvars)))
              (cost (make-hash-table :test 'eql)))
         (dolist (s node-sexps) (vector-push-extend (ddnnf--sexp->node s) nodes))
+        ;; The evaluator indexes arrays by literal and by child id; a stale or
+        ;; edited file would otherwise fail there with a bare index error.
+        (loop for nd across nodes for i from 0
+              do (case (dn-type nd)
+                   (:lit (unless (and (integerp (dn-lit nd)) (<= 1 (abs (dn-lit nd)) nvars))
+                           (error "~A: node ~D is a leaf for literal ~S, outside 1..~D"
+                                  path i (dn-lit nd) nvars)))
+                   ((:and :or) (dolist (k (dn-kids nd))
+                                 (unless (and (integerp k) (<= 0 k (1- i)))
+                                   (error "~A: node ~D has child ~S, which does not precede it"
+                                          path i k))))))
         (loop for atom in (getf data :atoms) for v from 1
               do (setf (gethash atom a2i) v (aref i2a v) atom))
         (dolist (pair (getf data :leaf-cost))
@@ -847,19 +922,38 @@ times the evidence clamp factor."
          (w (if cost (exp (- (/ cost (ddnnf-scale c)))) 1.0d0)))
     (* w (ddnnf--clamp-factor clamp lit))))
 
+(defun ddnnf--leaf-weights (c clamp)
+  "Every literal's leaf weight, computed once per query: a vector indexed by
+LIT + NVARS (so -nvars..nvars maps to 0..2*nvars)."
+  (let* ((nv (ddnnf-nvars c))
+         (w (make-array (1+ (* 2 nv)) :element-type 'double-float :initial-element 1d0)))
+    (loop for v from 1 to nv do
+      (setf (aref w (+ nv v)) (ddnnf--leaf-weight c v clamp)
+            (aref w (- nv v)) (ddnnf--leaf-weight c (- v) clamp)))
+    w))
+
 (defun ddnnf--eval (c clamp)
   "UP pass.  Returns (values Z value-vector); Z is the root value."
   (let* ((nodes (ddnnf-nodes c)) (n (fill-pointer nodes))
+         (nv (ddnnf-nvars c))
+         (lw (ddnnf--leaf-weights c clamp))
          (val (make-array n :element-type 'double-float :initial-element 0d0)))
+    (declare (type (simple-array double-float (*)) val lw) (type fixnum n nv))
     (dotimes (i n)
       (let ((nd (aref nodes i)))
         (setf (aref val i)
               (ecase (dn-type nd)
                 (:true 1d0)
                 (:false 0d0)
-                (:lit (ddnnf--leaf-weight c (dn-lit nd) clamp))
-                (:and (let ((p 1d0)) (dolist (k (dn-kids nd)) (setf p (* p (aref val k)))) p))
-                (:or  (let ((s 0d0)) (dolist (k (dn-kids nd)) (incf s (aref val k))) s))))))
+                (:lit (aref lw (+ nv (the fixnum (dn-lit nd)))))
+                (:and (let ((p 1d0))
+                        (declare (type double-float p))
+                        (dolist (k (dn-kids nd)) (setf p (* p (aref val k))))
+                        p))
+                (:or  (let ((s 0d0))
+                        (declare (type double-float s))
+                        (dolist (k (dn-kids nd)) (incf s (aref val k)))
+                        s))))))
     (values (aref val (ddnnf-root c)) val)))
 
 (defun ddnnf--marginals-vec (c val)
@@ -868,20 +962,44 @@ times the evidence clamp factor."
   (let* ((nodes (ddnnf-nodes c)) (n (fill-pointer nodes))
          (der (make-array n :element-type 'double-float :initial-element 0d0))
          (ztrue (make-array (1+ (ddnnf-nvars c)) :element-type 'double-float
-                                                 :initial-element 0d0)))
+                                                 :initial-element 0d0))
+         ;; scratch for one AND node's children: their ids, and the product of
+         ;; the values of the children before each one
+         (ids (make-array 16 :element-type 'fixnum))
+         (pre (make-array 16 :element-type 'double-float)))
+    (declare (type (simple-array double-float (*)) val der ztrue pre)
+             (type (simple-array fixnum (*)) ids) (type fixnum n))
     (setf (aref der (ddnnf-root c)) 1d0)
-    (loop for i from (1- n) downto 0 do
+    (loop for i of-type fixnum from (1- n) downto 0 do
       (let* ((nd (aref nodes i)) (di (aref der i)))
+        (declare (type double-float di))
         (unless (zerop di)
           (case (dn-type nd)
             (:or  (dolist (k (dn-kids nd)) (incf (aref der k) di)))
-            (:and (let ((kids (dn-kids nd)))
-                    ;; d[k] += d[i] * (product of sibling values); recomputed
-                    ;; directly (no division) so a zero sibling is handled exactly.
-                    (dolist (k kids)
-                      (let ((sib 1d0))
-                        (dolist (j kids) (unless (eql j k) (setf sib (* sib (aref val j)))))
-                        (incf (aref der k) (* di sib))))))))))
+            (:and
+             ;; d[k] += d[i] * (product of the other children's values).  Each
+             ;; child's product is prefix * suffix -- the children before it times
+             ;; those after -- so a node with m children costs O(m), not O(m^2),
+             ;; and with no division a zero-valued sibling is still exact.
+             (let ((m 0))
+               (declare (type fixnum m))
+               (let ((p 1d0))
+                 (declare (type double-float p))
+                 (dolist (k (dn-kids nd))
+                   (when (= m (length ids))
+                     (let ((ids2 (make-array (* 2 m) :element-type 'fixnum))
+                           (pre2 (make-array (* 2 m) :element-type 'double-float)))
+                       (replace ids2 ids) (replace pre2 pre)
+                       (setf ids ids2 pre pre2)))
+                   (setf (aref ids m) k (aref pre m) p
+                         p (* p (aref val k)))
+                   (incf m)))
+               (let ((s 1d0))
+                 (declare (type double-float s))
+                 (loop for j of-type fixnum from (1- m) downto 0 do
+                   (let ((k (aref ids j)))
+                     (incf (aref der k) (* di (aref pre j) s))
+                     (setf s (* s (aref val k))))))))))))
     ;; Each model uses exactly one +v leaf (smoothness + determinism), so summing
     ;; value*derivative over the +v leaves gives Z[v=true] with no double counting.
     (dotimes (i n)
