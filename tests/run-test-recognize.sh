@@ -195,7 +195,7 @@ fi
 # never added to the header block usage() prints.
 HELP="$(bash "$BIN/recognize.sh" --help 2>&1)"
 MISSING=""
-for f in --counter --baseline --maxsat-solver --method; do
+for f in --counter --baseline --maxsat-solver --method --timeout; do
   grep -q -- "$f" <<<"$HELP" || MISSING="$MISSING $f"
 done
 [[ -z "$MISSING" ]] && ok "--help documents the new flags" \
@@ -210,6 +210,29 @@ expect_err "--counter is refused with --method plan-runs" "no meaning with --met
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --counter ddnnf
 expect_err "--baseline is refused with --method plan-runs" "no meaning with --method plan-runs" \
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --baseline best-rival
+expect_err "--timeout is refused with --method plan-runs" "applies to --method fast only" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method plan-runs --timeout 60
+expect_err "--timeout must be a number of seconds" "must be a number of seconds" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --timeout soon
+expect_err "--timeout -300 is refused, not read as no limit" "must be a number of seconds" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --timeout -300
+
+# --timeout must REACH the counts.  Without it every solver run inside the
+# inference had FiFO's default 600 s limit, which recognize.sh could not change:
+# in the 2026-10-17 SimpleGrid sweep 36 of 144 7x7 SharpSAT-TD runs failed on one
+# count over 600 s, inside a 1200 s run limit.  A stand-in sharpSAT that never
+# answers must be stopped after the 2 s asked for, not run its full 60 s.
+mkdir -p stall
+printf '#!/bin/sh\nexec sleep 60\n' > stall/sharpSAT
+chmod +x stall/sharpSAT
+T0=$SECONDS
+OUT_TO="$(PATH="$TMP/stall:$PATH" bash "$BIN/recognize.sh" intrusion-detection-costs.pddl \
+          problem.pddl evidence-3.txt --horizon 6 --counter sharpsat-td --timeout 2 --out r-to 2>&1)"
+if grep -q "timed out after 2 s" <<<"$OUT_TO" && (( SECONDS - T0 < 60 )); then
+  ok "--timeout reaches the counts ($((SECONDS - T0)) s)"
+else
+  bad "--timeout reaches the counts" "$((SECONDS - T0)) s: $(grep -i 'timed out\|error' <<<"$OUT_TO" | head -1)"
+fi
 
 # --priors must REACH marginals.sh on the path that reports its posterior; the
 # awk that would otherwise apply them never runs there.

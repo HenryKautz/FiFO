@@ -333,7 +333,10 @@ Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
                              (delta0 (if prior (+ delta theta) delta))
                              (z (+ (* b delta0) (if prior (mt--logit prior) 0)))
                              (p (mt--sigmoid z)))
-                        (when (or (eq st1 :unproved) (eq status0 :unproved))
+                        ;; :best (stopped at the time limit) is as unproved as
+                        ;; :unproved -- both are upper bounds, not minima
+                        (when (or (member st1 '(:best :unproved))
+                                  (member status0 '(:best :unproved)))
                           (incf unproved))
                         (push (list a p proved
                                     (or (member st1 '(:best :unproved))
@@ -342,10 +345,11 @@ Results are printed as (MAXTERM-MARGINAL <atom> <p>), deliberately not as
             (setq results (nreverse results))
             (when (plusp unproved)
               (format t "; ~%; WARNING: ~D of the ~D solves did not prove optimality -- the solver~%~
-                         ; returned its best assignment, not the minimum.  max-term is a DIFFERENCE~%~
+                         ; returned its best assignment, not the minimum (it was stopped at the~%~
+                         ; time limit, or never proves optimality).  max-term is a DIFFERENCE~%~
                          ; of two minima, so two upper bounds do NOT cancel and these numbers are~%~
                          ; not trustworthy.  The anytime solvers (tt-open-wbo-inc, nuwls-c) never~%~
-                         ; prove optimality; use an exact solver instead, e.g.~%~
+                         ; prove optimality; use an exact solver, and a longer --timeout, e.g.~%~
                          ;     marginals.sh ... --solver max-term --maxsat-solver rc2-maxsat.py~%; ~%"
                       unproved (1+ (length qatoms))))
             ;; 2. exclusive groups

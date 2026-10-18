@@ -48,13 +48,97 @@
 ;;; Circuit representation
 ;;; ----------------------------------------------------------------------------
 
-(defstruct (dnode (:conc-name dn-) (:constructor mk-dnode (type &key kids lit)))
-  type                  ; :true :false :lit :and :or
-  kids                  ; list of node ids (for :and / :or)
-  lit)                  ; signed DIMACS literal (for :lit)
+;;; The nodes are PACKED, one entry per node in a few typed arrays, with every
+;;; node's children in one flat array (compressed sparse rows):
+;;;   types[i]   +dn-true+ +dn-false+ +dn-lit+ +dn-and+ +dn-or+   (a byte)
+;;;   lits[i]    the signed DIMACS literal of a :lit node, else 0  (32 bits)
+;;;   kids[kstart[i] .. kstart[i+1]-1]   the child ids of an AND/OR (32 bits each)
+;;; A node is 13 bytes plus 4 per child.  As a vector of structs whose children
+;;; were Lisp lists it was ~40 bytes plus 16 per child, and a d4 circuit of a
+;;; 9x9 SimpleGrid problem -- millions of nodes, tens of millions of children --
+;;; did not fit a 12 GB heap.  Flat arrays are also what the binary circuit file
+;;; is: loading one is a few reads straight into them (DDNNF-SAVE-BINARY).
+
+(defconstant +dn-true+ 0)
+(defconstant +dn-false+ 1)
+(defconstant +dn-lit+ 2)
+(defconstant +dn-and+ 3)
+(defconstant +dn-or+ 4)
+
+(deftype dn-ids () '(simple-array (unsigned-byte 32) (*)))
+
+(defstruct (dnodes (:conc-name dns-) (:constructor %make-dnodes))
+  (n 0 :type fixnum)    ; number of nodes; the arrays may be longer while building
+  (types (make-array 16 :element-type '(unsigned-byte 8))
+   :type (simple-array (unsigned-byte 8) (*)))
+  (lits (make-array 16 :element-type '(signed-byte 32))
+   :type (simple-array (signed-byte 32) (*)))
+  (kstart (make-array 17 :element-type 'fixnum :initial-element 0)
+   :type (simple-array fixnum (*)))   ; n+1 entries in use; kstart[0] = 0
+  (kids (make-array 64 :element-type '(unsigned-byte 32))
+   :type dn-ids))
+
+(defun dns-new () (%make-dnodes))
+
+(declaim (inline dns-type dns-lit dns-kids-start dns-kids-end))
+(defun dns-type (d i) (aref (dns-types d) i))
+(defun dns-lit (d i) (aref (dns-lits d) i))
+(defun dns-kids-start (d i) (aref (dns-kstart d) i))
+(defun dns-kids-end (d i) (aref (dns-kstart d) (1+ i)))
+
+(defmacro do-dns-kids ((k d i) &body body)
+  "Run BODY with K bound to each child id of node I of D, in order."
+  (let ((dd (gensym)) (j (gensym)) (kids (gensym)))
+    `(let* ((,dd ,d) (,kids (dns-kids ,dd)))
+       (declare (type dn-ids ,kids))
+       (loop for ,j of-type fixnum from (dns-kids-start ,dd ,i) below (dns-kids-end ,dd ,i)
+             do (let ((,k (aref ,kids ,j))) ,@body)))))
+
+(defun dns-kid-list (d i)
+  (let ((acc '())) (do-dns-kids (k d i) (push k acc)) (nreverse acc)))
+
+(defun dns-kind (d i)
+  "The node's type as a keyword, for code that is not on a hot path."
+  (svref #(:true :false :lit :and :or) (dns-type d i)))
+
+(defun dns--grow (v need)
+  "V, or a copy at least twice as long when NEED elements will not fit."
+  (if (<= need (length v))
+      v
+      (let ((new (make-array (max need (* 2 (length v))) :element-type (array-element-type v))))
+        (replace new v)
+        new)))
+
+(defun dns-push (d type lit kids)
+  "Append a node of TYPE (a +dn-...+ code) with literal LIT and the child ids in
+the list KIDS; return its id."
+  (let* ((i (dns-n d)) (k0 (aref (dns-kstart d) i)) (k1 (+ k0 (length kids))))
+    (when (>= i #xffffffff)
+      (error "d-DNNF circuit has 2^32 nodes; child ids are 32 bits"))
+    (setf (dns-types d) (dns--grow (dns-types d) (1+ i))
+          (dns-lits d) (dns--grow (dns-lits d) (1+ i))
+          (dns-kstart d) (dns--grow (dns-kstart d) (+ i 2))
+          (dns-kids d) (dns--grow (dns-kids d) k1))
+    (setf (aref (dns-types d) i) type
+          (aref (dns-lits d) i) lit)
+    (let ((kv (dns-kids d)) (j k0))
+      (dolist (k kids) (setf (aref kv j) k) (incf j)))
+    (setf (aref (dns-kstart d) (1+ i)) k1
+          (dns-n d) (1+ i))
+    i))
+
+(defun dns-trim (d)
+  "D with its arrays cut to their used length (once building is over)."
+  (let ((n (dns-n d)))
+    (flet ((cut (v len) (if (= len (length v)) v (subseq v 0 len))))
+      (setf (dns-types d) (cut (dns-types d) n)
+            (dns-lits d) (cut (dns-lits d) n)
+            (dns-kids d) (cut (dns-kids d) (aref (dns-kstart d) n))
+            (dns-kstart d) (cut (dns-kstart d) (1+ n))))
+    d))
 
 (defstruct ddnnf
-  nodes                 ; adjustable vector of dnode, in topological order (kids precede parents)
+  nodes                 ; a DNODES, in topological order (kids precede parents)
   root                  ; id of the root node (always the highest id)
   nvars                 ; number of propositional variables
   a2i                   ; atom -> 1..nvars
@@ -71,14 +155,14 @@
 ;;; ----------------------------------------------------------------------------
 
 (defstruct bld
-  nodes                 ; adjustable vector with fill-pointer
+  nodes                 ; a DNODES, growing
   lit-ids               ; signed-lit -> id   (intern literal leaves)
   free-ids              ; var -> id          (intern free(v) nodes)
   true-id false-id      ; the unique constant nodes
   sub-cache)            ; clause-signature -> id  (the component cache; makes it a DAG)
 
 (defun bld-new ()
-  (make-bld :nodes (make-array 16 :adjustable t :fill-pointer 0)
+  (make-bld :nodes (dns-new)
             :lit-ids (make-hash-table)
             :free-ids (make-hash-table)
             :sub-cache (make-hash-table :test 'equal)))
@@ -88,20 +172,26 @@
 A blowup here means the instance has too much structure (treewidth) for this
 trace-based compiler -- the signal to use --solver addmc instead.")
 
-(defun bld-add (b nd)
-  (when (>= (fill-pointer (bld-nodes b)) *ddnnf-node-limit*)
-    (error "d-DNNF circuit exceeded ~:D nodes; this instance is too large for the ~
-trace-based compiler -- use --solver addmc (or raise *ddnnf-node-limit*)"
+(defun bld-add (b type &key (lit 0) kids)
+  (when (>= (dns-n (bld-nodes b)) *ddnnf-node-limit*)
+    ;; the cap covers d4 imports too (they build through here), where a big
+    ;; circuit is expected and raising the cap is the answer
+    (error "d-DNNF circuit exceeded ~:D nodes (*ddnnf-node-limit*; marginals.sh ~
+--node-limit raises it).  With the trace-based compiler (--solver ddnnf) this means ~
+the instance is too large for it -- use --solver d4 or addmc"
            *ddnnf-node-limit*))
-  (vector-push-extend nd (bld-nodes b))
-  (1- (fill-pointer (bld-nodes b))))
+  (dns-push (bld-nodes b) type lit kids))
 
-(defun bld-true (b)  (or (bld-true-id b)  (setf (bld-true-id b)  (bld-add b (mk-dnode :true)))))
-(defun bld-false (b) (or (bld-false-id b) (setf (bld-false-id b) (bld-add b (mk-dnode :false)))))
+(defun bld-true (b)  (or (bld-true-id b)  (setf (bld-true-id b)  (bld-add b +dn-true+))))
+(defun bld-false (b) (or (bld-false-id b) (setf (bld-false-id b) (bld-add b +dn-false+))))
 
 (defun bld-lit (b lit)
   (or (gethash lit (bld-lit-ids b))
-      (setf (gethash lit (bld-lit-ids b)) (bld-add b (mk-dnode :lit :lit lit)))))
+      (setf (gethash lit (bld-lit-ids b)) (bld-add b +dn-lit+ :lit lit))))
+
+(defun bld-finish (b)
+  "B's nodes, trimmed, for a DDNNF struct."
+  (dns-trim (bld-nodes b)))
 
 (defun bld-and (b ids)
   "AND of the given node ids, with the obvious simplifications: a FALSE child makes
@@ -109,14 +199,14 @@ the whole thing FALSE, TRUE children drop out, and a single surviving child is
 returned directly (preserving DAG sharing)."
   (let ((kids '()))
     (dolist (id ids)
-      (case (dn-type (aref (bld-nodes b) id))
-        (:true nil)
-        (:false (return-from bld-and (bld-false b)))
-        (t (push id kids))))
+      (let ((ty (dns-type (bld-nodes b) id)))
+        (cond ((= ty +dn-true+))
+              ((= ty +dn-false+) (return-from bld-and (bld-false b)))
+              (t (push id kids)))))
     (setf kids (nreverse kids))
     (cond ((null kids) (bld-true b))
           ((null (cdr kids)) (car kids))
-          (t (bld-add b (mk-dnode :and :kids kids))))))
+          (t (bld-add b +dn-and+ :kids kids)))))
 
 (defun bld-or (b ids)
   "OR of the given node ids; FALSE children drop out, a single surviving child is
@@ -125,13 +215,12 @@ decision on a variable, or a free variable's two polarities), so the children ar
 mutually exclusive and weighted counting over the result is exact."
   (let ((kids '()))
     (dolist (id ids)
-      (case (dn-type (aref (bld-nodes b) id))
-        (:false nil)
-        (t (push id kids))))
+      (unless (= (dns-type (bld-nodes b) id) +dn-false+)
+        (push id kids)))
     (setf kids (nreverse kids))
     (cond ((null kids) (bld-false b))
           ((null (cdr kids)) (car kids))
-          (t (bld-add b (mk-dnode :or :kids kids))))))
+          (t (bld-add b +dn-or+ :kids kids)))))
 
 (defun bld-free (b v)
   "free(v) = OR(lit(+v), lit(-v)) -- a variable unconstrained by the clauses, which
@@ -299,7 +388,7 @@ free node, keeping the result smooth over vars(COMPONENT)."
                                   (list body))))
          (i2a (make-array (1+ nvars))))
     (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
-    (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
+    (make-ddnnf :nodes (bld-finish b) :root root :nvars nvars :a2i a2i :i2a i2a
                 :leaf-cost cost :scale scale :clauses int-clauses)))
 
 (defun ddnnf-compile (scnf-file &key scale (verbose t))
@@ -379,24 +468,54 @@ variable still appears in the dump and our smoothing is correct)."
       (error "d4 produced no dump file ~A~%--- stderr ---~%~A" nnf-file err))
     nnf-file))
 
+(deftype ddnnf--litvec () '(simple-array (signed-byte 32) (*)))
+
+(defun ddnnf--line-ints (line scratch)
+  "The integers of LINE, in order, into the fixnum vector SCRATCH (fill pointer
+reset); no intermediate strings."
+  (setf (fill-pointer scratch) 0)
+  (let ((i 0) (n (length line)))
+    (loop
+      (loop while (and (< i n) (member (char line i) '(#\Space #\Tab #\Return)))
+            do (incf i))
+      (when (>= i n) (return scratch))
+      (multiple-value-bind (v end) (parse-integer line :start i :junk-allowed t)
+        (unless v (error "d4 NNF dump: unexpected text in line ~S" line))
+        (vector-push-extend v scratch)
+        (setf i end)))))
+
 (defun ddnnf--read-d4-nnf (path)
   "Parse a d4 NNF dump.  Returns (values node-type arcs) where NODE-TYPE maps an
-id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits)."
-  (let ((node-type (make-hash-table)) (arcs (make-hash-table)))
+id to :or/:and/:true/:false and ARCS maps a src id to a list of (dst . lits),
+LITS a packed (signed-byte 32) vector.  A large dump holds hundreds of millions
+of arc literals (the unit literals d4 records on each arc: 27 per arc on a 7x7
+SimpleGrid circuit), so they are packed, not consed -- 4 bytes each, not 16."
+  (let ((node-type (make-hash-table)) (arcs (make-hash-table))
+        (ints (make-array 64 :element-type 'fixnum :adjustable t :fill-pointer 0)))
     (with-open-file (in path :direction :input)
       (loop for line = (read-line in nil :eof)
             until (eq line :eof)
-            for trimmed = (string-trim '(#\Space #\Tab #\Return) line)
-            unless (zerop (length trimmed))
-              do (if (alpha-char-p (char trimmed 0))
-                     (let ((toks (cl-ppcre:split "\\s+" trimmed)))
-                       (setf (gethash (parse-integer (second toks)) node-type)
-                             (ecase (char trimmed 0)
+            for start = (position-if-not (lambda (c) (member c '(#\Space #\Tab #\Return))) line)
+            when start
+              do (if (alpha-char-p (char line start))
+                     (let ((id (parse-integer line :start (1+ start) :junk-allowed t)))
+                       ;; a truncated last line ("o") must be refused here, by
+                       ;; name, not stored under NIL to surface as a root error
+                       (unless id
+                         (error "d4 NNF dump ~A: malformed node line ~S" path line))
+                       (setf (gethash id node-type)
+                             (ecase (char line start)
                                (#\o :or) (#\a :and) (#\t :true) (#\f :false))))
-                     (let* ((toks (mapcar #'parse-integer (cl-ppcre:split "\\s+" trimmed)))
-                            (src (first toks)) (dst (second toks))
-                            (lits (butlast (cddr toks)))) ; drop terminating 0
-                       (push (cons dst lits) (gethash src arcs))))))
+                     (let* ((v (ddnnf--line-ints line ints))
+                            (n (length v)))
+                       ;; src dst lit... 0
+                       (unless (and (>= n 3) (zerop (aref v (1- n))))
+                         (error "d4 NNF dump ~A: malformed arc line ~S" path line))
+                       ;; one allocation per arc, straight into the packed type
+                       (push (cons (aref v 1)
+                                   (replace (make-array (- n 3) :element-type '(signed-byte 32))
+                                            v :start2 2 :end2 (1- n)))
+                             (gethash (aref v 0) arcs))))))
     ;; restore arc order (we pushed)
     (maphash (lambda (k v) (setf (gethash k arcs) (nreverse v))) arcs)
     (values node-type arcs)))
@@ -430,66 +549,87 @@ parents.  Iterative, so the circuit's depth does not touch the control stack."
                         (unless (gethash (car arc) expanded)
                           (push (cons (car arc) nil) stack)))))))))
 
-(defun ddnnf--d4-scopes (root node-type arcs nvars)
-  "Hash table: d4 node id -> simple bit vector (index = variable) of the variables
-occurring at or under it, for every node reachable from ROOT."
-  (let ((scopes (make-hash-table))
-        (empty (make-array (1+ nvars) :element-type 'bit :initial-element 0)))
-    (ddnnf--d4-postorder
-     root arcs
-     (lambda (id)
-       (setf (gethash id scopes)
-             (if (member (gethash id node-type) '(:true :false))
-                 empty
-                 (let ((acc (make-array (1+ nvars) :element-type 'bit :initial-element 0)))
-                   (dolist (arc (gethash id arcs))
-                     (dolist (l (cdr arc)) (setf (sbit acc (abs l)) 1))
-                     (bit-ior acc (gethash (car arc) scopes) acc))
-                   acc)))))
-    scopes))
+(defun ddnnf--free-kids (b missing acc)
+  "Push free(v) onto ACC for each variable set in the bit vector MISSING; return
+ACC.  POSITION on a simple bit vector scans a word at a time, so an arc that
+needs little or no smoothing -- the common case -- costs nvars/64 steps."
+  (declare (type simple-bit-vector missing))
+  (loop for v = (position 1 missing) then (position 1 missing :start (1+ v))
+        while v do (push (bld-free b v) acc))
+  acc)
 
-(defun ddnnf--bits (bv)
-  "The indices of the 1 bits of BV, ascending.  POSITION on a simple bit vector
-scans a word at a time, so a mostly-zero vector -- an OR arc that needs little
-or no smoothing, the common case -- costs nvars/64 steps, not nvars."
-  (declare (type simple-bit-vector bv))
-  (loop for v = (position 1 bv) then (position 1 bv :start (1+ v))
-        while v collect v))
-
-(defun ddnnf--d4-build (b root node-type arcs scopes)
+(defun ddnnf--d4-build (b root node-type arcs nvars)
   "Build the d4 circuit under ROOT into builder B, smoothing every OR arc up to
-the OR's scope; returns our id for ROOT."
-  (let ((built (make-hash-table)))
-    (ddnnf--d4-postorder
-     root arcs
-     (lambda (id)
-       (setf (gethash id built)
-             (case (gethash id node-type)
-               (:true (bld-true b))
-               (:false (bld-false b))
-               (:or
-                ;; OR of arcs; smooth each arc up to the OR's scope.
-                (let ((oscope (gethash id scopes)) (kids '()))
-                  (dolist (arc (gethash id arcs))
-                    (let* ((dst (car arc)) (lits (cdr arc))
-                           (covered (copy-seq (gethash dst scopes)))
-                           (akids (list (gethash dst built))))
-                      (dolist (l lits)
-                        (setf (sbit covered (abs l)) 1)
-                        (push (bld-lit b l) akids))
-                      (dolist (v (ddnnf--bits (bit-andc2 oscope covered)))
-                        (push (bld-free b v) akids))
-                      (push (bld-and b (nreverse akids)) kids)))
-                  (bld-or b (nreverse kids))))
-               (:and
-                ;; AND of arcs (decomposable: disjoint scopes, no smoothing needed).
-                (let ((kids '()))
-                  (dolist (arc (gethash id arcs))
-                    (let ((akids (list (gethash (car arc) built))))
-                      (dolist (l (cdr arc)) (push (bld-lit b l) akids))
-                      (push (bld-and b (nreverse akids)) kids)))
-                  (bld-and b (nreverse kids))))))))
-    (gethash root built)))
+the OR's scope.  Returns (values our id for ROOT, ROOT's scope: a bit vector of
+the variables occurring in the circuit).
+
+Memory is what limits the import of a large dump, so one postorder pass computes
+each node's scope from its children's and builds the node, and then drops what
+nothing will read again: the node's parsed arcs at once, and a child's scope and
+id once its last parent is built -- so only the scopes of the nodes still
+awaiting a parent are alive, not one per node (nodes x nvars bits: about 2 GB on
+a 9x9 SimpleGrid circuit).  An arc into a FALSE node is skipped (it would be
+dropped anyway); smoothing it first used to cons tens of millions of free(v)
+entries for nothing.  The scope of a node still counts every arc, as before."
+  (let ((built (make-hash-table)) (scopes (make-hash-table)) (parents (make-hash-table))
+        (empty (make-array (1+ nvars) :element-type 'bit :initial-element 0))
+        (covered (make-array (1+ nvars) :element-type 'bit))
+        (missing (make-array (1+ nvars) :element-type 'bit))
+        (nodes (bld-nodes b)))
+    (maphash (lambda (src lst) (declare (ignore src))
+               (dolist (a lst) (incf (gethash (car a) parents 0))))
+             arcs)
+    (flet ((false-p (our-id) (= (dns-type nodes our-id) +dn-false+))
+           (lit-kids (lits acc)
+             (declare (type ddnnf--litvec lits))
+             (loop for l across lits do (push (bld-lit b l) acc))
+             acc))
+      (ddnnf--d4-postorder
+       root arcs
+       (lambda (id)
+         (let ((type (gethash id node-type)) (arcs-of (gethash id arcs)) (scope empty))
+           (unless (member type '(:true :false))
+             (setf scope (make-array (1+ nvars) :element-type 'bit :initial-element 0))
+             (dolist (arc arcs-of)
+               (bit-ior scope (gethash (car arc) scopes) scope)
+               (loop for l across (the ddnnf--litvec (cdr arc))
+                     do (setf (sbit scope (abs l)) 1))))
+           (setf (gethash id scopes) scope
+                 (gethash id built)
+                 (ecase type
+                   (:true (bld-true b))
+                   (:false (bld-false b))
+                   (:or
+                    ;; OR of arcs; smooth each live arc up to the OR's scope.
+                    (let ((kids '()))
+                      (dolist (arc arcs-of)
+                        (let ((child (gethash (car arc) built)))
+                          (unless (false-p child)
+                            (replace covered (gethash (car arc) scopes))
+                            (loop for l across (the ddnnf--litvec (cdr arc))
+                                  do (setf (sbit covered (abs l)) 1))
+                            (bit-andc2 scope covered missing)
+                            (push (bld-and b (nreverse
+                                              (ddnnf--free-kids
+                                               b missing (lit-kids (cdr arc) (list child)))))
+                                  kids))))
+                      (bld-or b (nreverse kids))))
+                   (:and
+                    ;; AND of arcs (decomposable: disjoint scopes, no smoothing needed).
+                    (let ((kids '()))
+                      (dolist (arc arcs-of)
+                        (push (bld-and b (nreverse (lit-kids (cdr arc)
+                                                             (list (gethash (car arc) built)))))
+                              kids))
+                      (bld-and b (nreverse kids))))))
+           (remhash id arcs)
+           ;; this node was each child's parent once per arc: when a child has no
+           ;; parent left to build, nothing reads its scope or id again
+           (dolist (arc arcs-of)
+             (when (zerop (decf (gethash (car arc) parents)))
+               (remhash (car arc) scopes)
+               (remhash (car arc) built)))))))
+    (values (gethash root built) (gethash root scopes))))
 
 (defun ddnnf--var-atom (a2i v)
   "The atom numbered V in A2I (a linear search -- for error messages only)."
@@ -517,10 +657,10 @@ factor of 2, which is exactly the existential the projection removed."
                    (unless (gethash (car a) node-type)
                      (error "d4 NNF dump ~A has an arc to undeclared node ~D"
                             nnf-file (car a)))
-                   (dolist (l (cdr a))
-                     (unless (<= 1 (abs l) nvars)
-                       (error "d4 NNF dump ~A mentions variable ~D, outside 1..~D"
-                              nnf-file (abs l) nvars)))))
+                   (loop for l across (the ddnnf--litvec (cdr a))
+                         unless (<= 1 (abs l) nvars)
+                           do (error "d4 NNF dump ~A mentions variable ~D, outside 1..~D"
+                                     nnf-file (abs l) nvars))))
                arcs)
       (maphash (lambda (id ty) (declare (ignore ty))
                  (unless (gethash id dsts) (push id roots)))
@@ -529,27 +669,26 @@ factor of 2, which is exactly the existential the projection removed."
         (error "d4 NNF dump ~A has ~:[no root~;~:*~D nodes with no parent (~{~D~^ ~}), ~
 not one root~] -- truncated or corrupt"
                nnf-file (and roots (length roots)) (subseq roots 0 (min 5 (length roots)))))
-      (let* ((root-id (first roots))
-             (scopes (ddnnf--d4-scopes root-id node-type arcs nvars)))
+      (multiple-value-bind (body rscope)
+          (ddnnf--d4-build b (first roots) node-type arcs nvars)
         (when projected
-          (let ((stray (find-if (lambda (v) (zerop (sbit projected v)))
-                                (ddnnf--bits (gethash root-id scopes)))))
-            (when stray
+          (let ((v (position 1 (bit-andc2 rscope projected))))
+            (when v
               (error "d4's projected dump mentions variable ~D (~S), which is not in the ~
 projection -- d4 did not honour the 'c p show' line, so the circuit would not be ~
 the projected one"
-                     stray (ddnnf--var-atom a2i stray)))))
-        (let* ((body (ddnnf--d4-build b root-id node-type arcs scopes))
-               (rscope (gethash root-id scopes))
-               (never (loop for v from 1 to nvars
-                            when (and (or (null projected) (= 1 (sbit projected v)))
-                                      (zerop (sbit rscope v)))
-                              collect v))
-               (root (bld-and b (append (mapcar (lambda (v) (bld-free b v)) never)
-                                        (list body))))
+                     v (ddnnf--var-atom a2i v)))))
+        ;; root smoothing: the kept variables the circuit never mentions
+        (let* ((never (bit-andc2 (or projected
+                                     (let ((all (make-array (1+ nvars) :element-type 'bit
+                                                                       :initial-element 1)))
+                                       (setf (sbit all 0) 0)
+                                       all))
+                                 rscope))
+               (root (bld-and b (ddnnf--free-kids b never (list body))))
                (i2a (make-array (1+ nvars))))
           (maphash (lambda (atom i) (setf (aref i2a i) atom)) a2i)
-          (make-ddnnf :nodes (bld-nodes b) :root root :nvars nvars :a2i a2i :i2a i2a
+          (make-ddnnf :nodes (bld-finish b) :root root :nvars nvars :a2i a2i :i2a i2a
                       :leaf-cost cost :scale scale :clauses int-clauses
                       :projected projected))))))
 
@@ -805,101 +944,377 @@ the theory's, or an auxiliary atom minted for the evidence itself."
 ;;;
 ;;; A compiled circuit is a flat, topologically-ordered array of nodes whose
 ;;; children are integer ids (not pointers), plus the atom map, weights and
-;;; clauses -- all plain readable data.  So it serializes to a single s-expression
-;;; (a ".dnnf" text file) that round-trips across SBCL sessions with no fasl or
-;;; version coupling.  Compile once, save, and reuse on later marginals calls.
+;;; clauses.  It is saved in two formats:
+;;;
+;;;   TEXT (.dnnf)    one readable s-expression,
+;;;                     (:FIFO-DDNNF 1 :NVARS n :ROOT r :SCALE s
+;;;                      :NODES ((:T) (:F) (:L lit) (:A kid...) (:O kid...) ...)
+;;;                      :ATOMS (...) :LEAF-COST ((lit cost) ...) :CLAUSES (...)
+;;;                      :PROJECTED (var...))
+;;;                   for other tools and for reading by eye.  Written and read a
+;;;                   node at a time, never as one list in memory.
+;;;   BINARY (.dnnfb) the node arrays as they are in memory, so loading is a few
+;;;                   reads straight into them -- see DDNNF-SAVE-BINARY.  Native
+;;;                   byte order, refused on a machine of the other order.
+;;;
+;;; DDNNF-LOAD takes either, telling them apart by the first bytes.
 ;;; ----------------------------------------------------------------------------
 
-(defun ddnnf--node->sexp (nd)
-  (ecase (dn-type nd)
-    (:true '(:t))
-    (:false '(:f))
-    (:lit (list :l (dn-lit nd)))
-    (:and (list* :a (dn-kids nd)))
-    (:or  (list* :o (dn-kids nd)))))
+(defun ddnnf--meta-plist (circuit)
+  "Everything in CIRCUIT but its nodes, as plain readable data."
+  (let ((lc '()))
+    (maphash (lambda (lit c) (push (list lit c) lc)) (ddnnf-leaf-cost circuit))
+    (list :atoms (loop for v from 1 to (ddnnf-nvars circuit)
+                       collect (aref (ddnnf-i2a circuit) v))
+          :leaf-cost lc
+          :clauses (ddnnf-clauses circuit)
+          ;; the kept variables of a projected circuit (absent = not projected);
+          ;; without it a reload would report the dropped atoms as marginal 0
+          :projected (let ((p (ddnnf-projected circuit)))
+                       (and p (loop for v from 1 to (ddnnf-nvars circuit)
+                                    when (= 1 (sbit p v)) collect v))))))
 
-(defun ddnnf--sexp->node (s)
-  (ecase (car s)
-    (:t (mk-dnode :true))
-    (:f (mk-dnode :false))
-    (:l (mk-dnode :lit :lit (second s)))
-    (:a (mk-dnode :and :kids (cdr s)))
-    (:o (mk-dnode :or  :kids (cdr s)))))
+(defmacro ddnnf--with-io-syntax (&body body)
+  `(let ((*package* (find-package :common-lisp-user))
+         (*print-readably* nil) (*print-pretty* nil) (*print-circle* nil)
+         (*print-length* nil) (*print-level* nil)
+         (*read-eval* nil) (*read-default-float-format* 'single-float))
+     ,@body))
 
 (defun ddnnf-save (circuit path)
-  "Serialize the compiled CIRCUIT to PATH as one readable s-expression.  The atom
-map is stored as the ordered atom list (1..nvars), the weights as an alist; the
-expensive Boolean structure is the node list.  Returns PATH."
-  (let ((*package* (find-package :common-lisp-user))
-        (*print-readably* nil) (*print-pretty* nil) (*print-circle* nil)
-        (*print-length* nil) (*print-level* nil)
-        (lc '()))
-    (maphash (lambda (lit c) (push (list lit c) lc)) (ddnnf-leaf-cost circuit))
-    (with-open-file (out path :direction :output
-                              :if-exists :supersede :if-does-not-exist :create)
-      (prin1 (list :fifo-ddnnf 1
-                   :nvars (ddnnf-nvars circuit)
-                   :root (ddnnf-root circuit)
-                   :scale (ddnnf-scale circuit)
-                   :nodes (loop for i from 0 below (fill-pointer (ddnnf-nodes circuit))
-                                collect (ddnnf--node->sexp (aref (ddnnf-nodes circuit) i)))
-                   :atoms (loop for v from 1 to (ddnnf-nvars circuit)
-                                collect (aref (ddnnf-i2a circuit) v))
-                   :leaf-cost lc
-                   :clauses (ddnnf-clauses circuit)
-                   ;; the kept variables of a projected circuit (absent = not
-                   ;; projected); without it a reload would report the dropped
-                   ;; atoms as marginal 0
-                   :projected (let ((p (ddnnf-projected circuit)))
-                                (and p (loop for v from 1 to (ddnnf-nvars circuit)
-                                             when (= 1 (sbit p v)) collect v))))
-             out)
-      (terpri out)))
+  "Write CIRCUIT to PATH in the TEXT format (one s-expression).  Returns PATH."
+  (ddnnf--with-io-syntax
+    (let ((d (ddnnf-nodes circuit)))
+      (with-open-file (out path :direction :output
+                                :if-exists :supersede :if-does-not-exist :create)
+        (format out "(:FIFO-DDNNF 1 :NVARS ~S :ROOT ~S :SCALE ~S :NODES ("
+                (ddnnf-nvars circuit) (ddnnf-root circuit) (ddnnf-scale circuit))
+        (dotimes (i (dns-n d))
+          (unless (zerop i) (write-char #\Space out))
+          (let ((ty (dns-type d i)))
+            (cond ((= ty +dn-true+) (write-string "(:T)" out))
+                  ((= ty +dn-false+) (write-string "(:F)" out))
+                  ((= ty +dn-lit+) (format out "(:L ~D)" (dns-lit d i)))
+                  (t (write-string (if (= ty +dn-and+) "(:A" "(:O") out)
+                     (do-dns-kids (k d i) (write-char #\Space out) (write k :stream out))
+                     (write-char #\) out)))))
+        (write-char #\) out)
+        (loop for (key val) on (ddnnf--meta-plist circuit) by #'cddr
+              do (write-char #\Space out) (prin1 key out)
+                 (write-char #\Space out) (prin1 val out))
+        (write-char #\) out)
+        (terpri out))))
   path)
 
+;;; --- reading the text format -------------------------------------------------
+;;; A character scanner over a large buffer: the node list of a big circuit is
+;;; hundreds of millions of characters, and READ would cons it all into one list
+;;; first.  Only the small values (atoms, costs, clauses) go through READ, from
+;;; the text of each value.
+
+(defstruct (dscan (:constructor make-dscan (stream)))
+  stream
+  (buf (make-string 1048576) :type simple-string)
+  (pos 0 :type fixnum)
+  (end 0 :type fixnum))
+
+(defun dscan-refill (s)
+  (setf (dscan-end s) (read-sequence (dscan-buf s) (dscan-stream s))
+        (dscan-pos s) 0))
+
+(declaim (inline dscan-peek dscan-next))
+(defun dscan-peek (s)
+  "The next character, or NIL at the end."
+  (when (>= (dscan-pos s) (dscan-end s)) (dscan-refill s))
+  (and (< (dscan-pos s) (dscan-end s)) (schar (dscan-buf s) (dscan-pos s))))
+
+(defun dscan-next (s)
+  (let ((c (dscan-peek s))) (when c (incf (dscan-pos s))) c))
+
+(defun dscan-skip-space (s)
+  (loop for c = (dscan-peek s)
+        while (and c (or (char= c #\Space) (char= c #\Newline)
+                         (char= c #\Tab) (char= c #\Return)))
+        do (incf (dscan-pos s))))
+
+(defun dscan-expect (s ch what)
+  (dscan-skip-space s)
+  (let ((c (dscan-next s)))
+    (unless (eql c ch)
+      (error "d-DNNF circuit file: expected ~S ~A, found ~S" ch what c))))
+
+(defun dscan-int (s)
+  "A decimal integer, after any whitespace."
+  (dscan-skip-space s)
+  (let ((neg nil) (v 0) (digits 0))
+    (declare (type (unsigned-byte 60) v) (type fixnum digits))
+    (when (eql (dscan-peek s) #\-) (setf neg t) (dscan-next s))
+    (loop for c = (dscan-peek s)
+          while (and c (char<= #\0 c #\9))
+          do (when (> digits 17)
+               (error "d-DNNF circuit file: integer of more than 18 digits"))
+             (setf v (+ (* v 10) (- (char-code c) 48))) (incf digits) (dscan-next s))
+    (when (zerop digits)
+      (error "d-DNNF circuit file: expected an integer, found ~S" (dscan-peek s)))
+    (if neg (- v) v)))
+
+(defun dscan-datum-text (s)
+  "The text of the next datum -- a balanced list, a string, or an atom -- with
+strings, |...| and backslash escapes respected."
+  (dscan-skip-space s)
+  (with-output-to-string (o)
+    (let ((depth 0))
+      (loop
+        (let ((c (dscan-peek s)))
+          (cond ((null c) (return))
+                ((and (zerop depth) (member c '(#\Space #\Tab #\Newline #\Return #\))))
+                 (return))
+                (t (write-char (dscan-next s) o)
+                   (case c
+                     (#\( (incf depth))
+                     (#\) (decf depth) (when (zerop depth) (return)))
+                     (#\\ (let ((e (dscan-next s))) (when e (write-char e o))))
+                     ((#\" #\|)
+                      (loop for d = (dscan-next s)
+                            do (unless d (error "d-DNNF circuit file: unterminated ~C" c))
+                               (write-char d o)
+                               (cond ((eql d #\\) (let ((e (dscan-next s))) (when e (write-char e o))))
+                                     ((eql d c) (return)))))))))))))
+
+(defun dscan-read (s)
+  (let ((text (dscan-datum-text s)))
+    (when (zerop (length text)) (error "d-DNNF circuit file: truncated"))
+    (read-from-string text)))
+
+(defun dscan-nodes (s)
+  "The :NODES list, straight into a DNODES."
+  (let ((d (dns-new)) (kids '()))
+    (dscan-expect s #\( "opening the node list")
+    (loop
+      (dscan-skip-space s)
+      (when (eql (dscan-peek s) #\)) (dscan-next s) (return (dns-trim d)))
+      (dscan-expect s #\( "opening a node")
+      (dscan-expect s #\: "before a node type")
+      (let ((tag (char-upcase (or (dscan-next s) #\?))))
+        (case tag
+          (#\T (dns-push d +dn-true+ 0 nil))
+          (#\F (dns-push d +dn-false+ 0 nil))
+          (#\L (dns-push d +dn-lit+ (dscan-int s) nil))
+          ((#\A #\O)
+           (setf kids '())
+           (loop (dscan-skip-space s)
+                 (when (eql (dscan-peek s) #\)) (return))
+                 (push (dscan-int s) kids))
+           (dns-push d (if (char= tag #\A) +dn-and+ +dn-or+) 0 (nreverse kids)))
+          (t (error "d-DNNF circuit file: unknown node type :~C" tag))))
+      (dscan-expect s #\) "closing a node"))))
+
+(defun ddnnf--load-text (path)
+  (ddnnf--with-io-syntax
+    (let ((*read-default-float-format* 'double-float) (data '()) (nodes nil))
+      (with-open-file (in path :direction :input)
+        (let ((s (make-dscan in)))
+          (dscan-expect s #\( "at the start")
+          (unless (eq (dscan-read s) :fifo-ddnnf)
+            (error "~A is not a FiFO d-DNNF circuit file" path))
+          (let ((version (dscan-read s)))
+            (unless (eql version 1)
+              (error "unsupported d-DNNF circuit file version ~S in ~A" version path)))
+          (loop
+            (dscan-skip-space s)
+            (when (eql (dscan-peek s) #\)) (return))
+            (let ((key (dscan-read s)))
+              (if (eq key :nodes)
+                  (setf nodes (dscan-nodes s))
+                  (setf (getf data key) (dscan-read s)))))))
+      (unless nodes (error "~A has no :NODES" path))
+      (ddnnf--assemble path nodes data))))
+
+(defun ddnnf--assemble (path nodes data)
+  "A DDNNF from NODES and the plist DATA (:nvars :root :scale :atoms :leaf-cost
+:clauses :projected), after checking NODES against it."
+  ;; check first: it names a bad :NVARS, which the allocations below would hit as
+  ;; a bare type error
+  (ddnnf--check-nodes path nodes (getf data :nvars) (getf data :root))
+  (let* ((nvars (getf data :nvars))
+         (a2i (make-hash-table :test 'equal))
+         (i2a (make-array (1+ nvars)))
+         (cost (make-hash-table :test 'eql)))
+    (unless (<= (length (getf data :atoms)) nvars)
+      (error "~A: ~D atoms for ~D variables" path (length (getf data :atoms)) nvars))
+    (dolist (v (getf data :projected))
+      (unless (and (integerp v) (<= 1 v nvars))
+        (error "~A: projected variable ~S out of range 1..~D" path v nvars)))
+    (loop for atom in (getf data :atoms) for v from 1
+          do (setf (gethash atom a2i) v (aref i2a v) atom))
+    (dolist (pair (getf data :leaf-cost))
+      (setf (gethash (first pair) cost) (float (second pair) 1.0d0)))
+    (make-ddnnf :nodes nodes :root (getf data :root) :nvars nvars
+                :a2i a2i :i2a i2a :leaf-cost cost
+                :scale (float (getf data :scale) 1.0d0)
+                :clauses (getf data :clauses)
+                :projected (let ((kept (getf data :projected)))
+                             (when kept
+                               (let ((p (make-array (1+ nvars) :element-type 'bit
+                                                               :initial-element 0)))
+                                 (dolist (v kept p) (setf (sbit p v) 1))))))))
+
+(defun ddnnf--check-nodes (path d nvars root)
+  "The evaluator indexes arrays by literal and by child id, with safety off in
+its loops; a stale, edited or truncated file must fail here, by name, instead."
+  (let ((n (dns-n d)) (types (dns-types d)) (lits (dns-lits d))
+        (ks (dns-kstart d)) (kids (dns-kids d)))
+    (declare (type fixnum n) (type dn-ids kids))
+    (unless (and (integerp nvars) (>= nvars 0))
+      (error "~A: bad :NVARS ~S" path nvars))
+    (unless (and (integerp root) (< -1 root n))
+      (error "~A: root ~S is not one of the ~D nodes" path root n))
+    (unless (and (= (length types) n) (= (length lits) n) (= (length ks) (1+ n))
+                 (zerop (aref ks 0)) (= (aref ks n) (length kids)))
+      (error "~A: the node arrays are inconsistent (truncated?)" path))
+    (dotimes (i n)
+      (let ((ty (aref types i)))
+        (when (> ty +dn-or+) (error "~A: node ~D has unknown type ~D" path i ty))
+        (when (> (aref ks i) (aref ks (1+ i)))
+          (error "~A: node ~D has a negative child count" path i))
+        (cond ((>= ty +dn-and+)
+               (loop for j from (aref ks i) below (aref ks (1+ i))
+                     unless (< (aref kids j) i)
+                       do (error "~A: node ~D has child ~S, which does not precede it"
+                                 path i (aref kids j))))
+              ((/= (aref ks i) (aref ks (1+ i)))
+               (error "~A: leaf node ~D has children" path i))
+              ((and (= ty +dn-lit+) (not (<= 1 (abs (aref lits i)) nvars)))
+               (error "~A: node ~D is a leaf for literal ~S, outside 1..~D"
+                      path i (aref lits i) nvars)))))))
+
+;;; --- the binary format ------------------------------------------------------
+;;;   bytes 0-7    "FIFODNB1"
+;;;   then 4 words of 64 bits: #x0102030405060708 (byte order), nodes N,
+;;;                children K, metadata length M
+;;;   M bytes      UTF-8 text of the plist (:NVARS :ROOT :SCALE :ATOMS ...)
+;;;   N bytes      types;   4N bytes  literals;   8(N+1) bytes  child offsets;
+;;;   4K bytes     children
+;;; each section starting on an 8-byte boundary.
+
+(defparameter *ddnnf-binary-magic* "FIFODNB1")
+
+(defun ddnnf--pad8 (n) (* 8 (ceiling n 8)))
+
+(defun ddnnf--fd-io (fd vec nbytes write)
+  "Read (or with WRITE, write) the first NBYTES bytes of the specialized vector
+VEC from (to) file descriptor FD, looping over short transfers."
+  (sb-sys:with-pinned-objects (vec)
+    (let ((sap (sb-sys:vector-sap vec)) (off 0))
+      (loop while (< off nbytes) do
+        (let ((chunk (min (- nbytes off) (ash 1 30))))
+          (multiple-value-bind (got err)
+              (if write
+                  (sb-unix:unix-write fd (sb-sys:sap+ sap off) 0 chunk)
+                  (sb-unix:unix-read fd (sb-sys:sap+ sap off) chunk))
+            (unless (and got (plusp got))
+              (error "~:[reading~;writing~] a binary d-DNNF circuit failed~@[ (errno ~D)~]"
+                     write (and (null got) err)))
+            (incf off got)))))))
+
+(defun ddnnf--fd-skip (fd nbytes)
+  (when (plusp nbytes)
+    (ddnnf--fd-io fd (make-array nbytes :element-type '(unsigned-byte 8)) nbytes nil)))
+
+(defun ddnnf--path-ends-p (path suffix)
+  (let ((p (namestring path)))
+    (and (> (length p) (length suffix))
+         (string-equal suffix p :start2 (- (length p) (length suffix))))))
+
+(defun ddnnf--binary-path (path)
+  "Where --save-circuit PATH puts the binary copy: x.dnnf -> x.dnnfb, x.dnnfb
+itself (binary only, see DDNNF-MARGINALS), else PATH.dnnfb."
+  (let ((p (namestring path)))
+    (cond ((ddnnf--path-ends-p p ".dnnfb") p)
+          ((ddnnf--path-ends-p p ".dnnf") (concatenate 'string p "b"))
+          (t (concatenate 'string p ".dnnfb")))))
+
+(defun ddnnf-save-binary (circuit path)
+  "Write CIRCUIT to PATH in the BINARY format.  Returns PATH."
+  (let* ((d (ddnnf-nodes circuit)) (n (dns-n d)) (k (aref (dns-kstart d) n))
+         (meta (sb-ext:string-to-octets
+                (ddnnf--with-io-syntax
+                  (prin1-to-string (list* :nvars (ddnnf-nvars circuit)
+                                          :root (ddnnf-root circuit)
+                                          :scale (ddnnf-scale circuit)
+                                          (ddnnf--meta-plist circuit))))
+                :external-format :utf-8))
+         (head (make-array 4 :element-type '(unsigned-byte 64)
+                             :initial-contents (list #x0102030405060708 n k (length meta))))
+         (offsets (make-array (1+ n) :element-type '(unsigned-byte 64))))
+    (dotimes (i (1+ n)) (setf (aref offsets i) (aref (dns-kstart d) i)))
+    (with-open-file (out path :direction :output :element-type '(unsigned-byte 8)
+                              :if-exists :supersede :if-does-not-exist :create)
+      (let ((fd (sb-sys:fd-stream-fd out))
+            (zeros (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
+        (flet ((section (vec nbytes)
+                 (ddnnf--fd-io fd vec nbytes t)
+                 (ddnnf--fd-io fd zeros (- (ddnnf--pad8 nbytes) nbytes) t)))
+          (section (sb-ext:string-to-octets *ddnnf-binary-magic* :external-format :ascii) 8)
+          (section head 32)
+          (section meta (length meta))
+          (section (dns-types d) n)
+          (section (dns-lits d) (* 4 n))
+          (section offsets (* 8 (1+ n)))
+          (section (dns-kids d) (* 4 k))))))
+  path)
+
+(defun ddnnf--binary-file-p (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8))
+    (let ((b (make-array 8 :element-type '(unsigned-byte 8))))
+      (and (= 8 (read-sequence b in))
+           (string= (map 'string #'code-char b) *ddnnf-binary-magic*)))))
+
+(defun ddnnf--load-binary (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8))
+    (let ((fd (sb-sys:fd-stream-fd in))
+          (head (make-array 4 :element-type '(unsigned-byte 64))))
+      (flet ((section (vec nbytes)
+               (ddnnf--fd-io fd vec nbytes nil)
+               (ddnnf--fd-skip fd (- (ddnnf--pad8 nbytes) nbytes))
+               vec))
+        (ddnnf--fd-skip fd 8)
+        (section head 32)
+        (unless (= (aref head 0) #x0102030405060708)
+          (error "~A was written on a machine of the other byte order" path))
+        (let* ((n (aref head 1)) (k (aref head 2)) (m (aref head 3))
+               (size (file-length in)))
+          ;; the sizes come from the file: check them against its length before
+          ;; allocating anything, so a corrupt header is an error, not a huge array
+          (unless (= size (+ 40 (ddnnf--pad8 m) (ddnnf--pad8 n) (ddnnf--pad8 (* 4 n))
+                             (* 8 (1+ n)) (ddnnf--pad8 (* 4 k))))
+            (error "~A: binary circuit file is ~:D bytes, not what its header implies -- ~
+truncated or corrupt" path size))
+          (let* ((meta (section (make-array m :element-type '(unsigned-byte 8)) m))
+                 (data (ddnnf--with-io-syntax
+                         (let ((*read-default-float-format* 'double-float))
+                           (read-from-string
+                            (sb-ext:octets-to-string meta :external-format :utf-8)))))
+                 (types (section (make-array n :element-type '(unsigned-byte 8)) n))
+                 (lits (section (make-array n :element-type '(signed-byte 32)) (* 4 n)))
+                 (offsets (section (make-array (1+ n) :element-type '(unsigned-byte 64))
+                                   (* 8 (1+ n))))
+                 (kids (section (make-array k :element-type '(unsigned-byte 32)) (* 4 k)))
+                 (kstart (make-array (1+ n) :element-type 'fixnum)))
+            (dotimes (i (1+ n))
+              (let ((o (aref offsets i)))
+                (unless (<= o k) (error "~A: child offset ~D past the ~D children" path o k))
+                (setf (aref kstart i) o)))
+            (ddnnf--assemble path (%make-dnodes :n n :types types :lits lits
+                                                :kstart kstart :kids kids)
+                             data)))))))
+
 (defun ddnnf-load (path)
-  "Reconstruct a circuit previously written by DDNNF-SAVE.  Returns a DDNNF struct
-ready to query -- no recompilation."
-  (let* ((*package* (find-package :common-lisp-user))
-         (*read-eval* nil)
-         (*read-default-float-format* 'double-float)
-         (form (with-open-file (in path :direction :input) (read in nil :eof))))
-    (unless (and (consp form) (eq (car form) :fifo-ddnnf))
-      (error "~A is not a FiFO d-DNNF circuit file" path))
-    (let ((version (cadr form)) (data (cddr form)))
-      (unless (eql version 1)
-        (error "unsupported d-DNNF circuit file version ~S in ~A" version path))
-      (let* ((nvars (getf data :nvars))
-             (node-sexps (getf data :nodes))
-             (nodes (make-array (max 1 (length node-sexps)) :adjustable t :fill-pointer 0))
-             (a2i (make-hash-table :test 'equal))
-             (i2a (make-array (1+ nvars)))
-             (cost (make-hash-table :test 'eql)))
-        (dolist (s node-sexps) (vector-push-extend (ddnnf--sexp->node s) nodes))
-        ;; The evaluator indexes arrays by literal and by child id; a stale or
-        ;; edited file would otherwise fail there with a bare index error.
-        (loop for nd across nodes for i from 0
-              do (case (dn-type nd)
-                   (:lit (unless (and (integerp (dn-lit nd)) (<= 1 (abs (dn-lit nd)) nvars))
-                           (error "~A: node ~D is a leaf for literal ~S, outside 1..~D"
-                                  path i (dn-lit nd) nvars)))
-                   ((:and :or) (dolist (k (dn-kids nd))
-                                 (unless (and (integerp k) (<= 0 k (1- i)))
-                                   (error "~A: node ~D has child ~S, which does not precede it"
-                                          path i k))))))
-        (loop for atom in (getf data :atoms) for v from 1
-              do (setf (gethash atom a2i) v (aref i2a v) atom))
-        (dolist (pair (getf data :leaf-cost))
-          (setf (gethash (first pair) cost) (float (second pair) 1.0d0)))
-        (make-ddnnf :nodes nodes :root (getf data :root) :nvars nvars
-                    :a2i a2i :i2a i2a :leaf-cost cost
-                    :scale (float (getf data :scale) 1.0d0)
-                    :clauses (getf data :clauses)
-                    :projected (let ((kept (getf data :projected)))
-                                 (when kept
-                                   (let ((p (make-array (1+ nvars) :element-type 'bit
-                                                                   :initial-element 0)))
-                                     (dolist (v kept p) (setf (sbit p v) 1))))))))))
+  "Reconstruct a circuit written by DDNNF-SAVE (text) or DDNNF-SAVE-BINARY.
+Returns a DDNNF struct ready to query -- no recompilation."
+  (if (ddnnf--binary-file-p path)
+      (ddnnf--load-binary path)
+      (ddnnf--load-text path)))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Evaluation: Z (up pass) and all marginals (down pass)
@@ -934,78 +1349,85 @@ LIT + NVARS (so -nvars..nvars maps to 0..2*nvars)."
 
 (defun ddnnf--eval (c clamp)
   "UP pass.  Returns (values Z value-vector); Z is the root value."
-  (let* ((nodes (ddnnf-nodes c)) (n (fill-pointer nodes))
+  (let* ((d (ddnnf-nodes c)) (n (dns-n d))
+         (types (dns-types d)) (lits (dns-lits d)) (ks (dns-kstart d)) (kids (dns-kids d))
          (nv (ddnnf-nvars c))
          (lw (ddnnf--leaf-weights c clamp))
          (val (make-array n :element-type 'double-float :initial-element 0d0)))
-    (declare (type (simple-array double-float (*)) val lw) (type fixnum n nv))
+    (declare (type (simple-array double-float (*)) val lw) (type fixnum n nv)
+             (type (simple-array (unsigned-byte 8) (*)) types)
+             (type (simple-array (signed-byte 32) (*)) lits)
+             (type (simple-array fixnum (*)) ks) (type dn-ids kids))
     (dotimes (i n)
-      (let ((nd (aref nodes i)))
+      (let ((ty (aref types i)))
         (setf (aref val i)
-              (ecase (dn-type nd)
-                (:true 1d0)
-                (:false 0d0)
-                (:lit (aref lw (+ nv (the fixnum (dn-lit nd)))))
-                (:and (let ((p 1d0))
-                        (declare (type double-float p))
-                        (dolist (k (dn-kids nd)) (setf p (* p (aref val k))))
-                        p))
-                (:or  (let ((s 0d0))
-                        (declare (type double-float s))
-                        (dolist (k (dn-kids nd)) (incf s (aref val k)))
-                        s))))))
+              (cond ((= ty +dn-true+) 1d0)
+                    ((= ty +dn-false+) 0d0)
+                    ((= ty +dn-lit+) (aref lw (+ nv (aref lits i))))
+                    ((= ty +dn-and+)
+                     (let ((p 1d0))
+                       (declare (type double-float p))
+                       (loop for j of-type fixnum from (aref ks i) below (aref ks (1+ i))
+                             do (setf p (* p (aref val (aref kids j)))))
+                       p))
+                    (t
+                     (let ((s 0d0))
+                       (declare (type double-float s))
+                       (loop for j of-type fixnum from (aref ks i) below (aref ks (1+ i))
+                             do (incf s (aref val (aref kids j))))
+                       s))))))
     (values (aref val (ddnnf-root c)) val)))
 
 (defun ddnnf--marginals-vec (c val)
   "DOWN pass over the (smooth, deterministic) circuit.  Returns a vector ZTRUE,
 1..nvars, where ZTRUE[v] is the unnormalized weight of the models with v true."
-  (let* ((nodes (ddnnf-nodes c)) (n (fill-pointer nodes))
+  (let* ((d (ddnnf-nodes c)) (n (dns-n d))
+         (types (dns-types d)) (lits (dns-lits d)) (ks (dns-kstart d)) (kids (dns-kids d))
          (der (make-array n :element-type 'double-float :initial-element 0d0))
          (ztrue (make-array (1+ (ddnnf-nvars c)) :element-type 'double-float
                                                  :initial-element 0d0))
-         ;; scratch for one AND node's children: their ids, and the product of
-         ;; the values of the children before each one
-         (ids (make-array 16 :element-type 'fixnum))
+         ;; scratch for one AND node: the product of the values of the children
+         ;; before each one
          (pre (make-array 16 :element-type 'double-float)))
-    (declare (type (simple-array double-float (*)) val der ztrue pre)
-             (type (simple-array fixnum (*)) ids) (type fixnum n))
+    (declare (type (simple-array double-float (*)) val der ztrue pre) (type fixnum n)
+             (type (simple-array (unsigned-byte 8) (*)) types)
+             (type (simple-array (signed-byte 32) (*)) lits)
+             (type (simple-array fixnum (*)) ks) (type dn-ids kids))
     (setf (aref der (ddnnf-root c)) 1d0)
     (loop for i of-type fixnum from (1- n) downto 0 do
-      (let* ((nd (aref nodes i)) (di (aref der i)))
-        (declare (type double-float di))
+      (let ((di (aref der i)) (ty (aref types i))
+            (k0 (aref ks i)) (k1 (aref ks (1+ i))))
+        (declare (type double-float di) (type fixnum k0 k1))
         (unless (zerop di)
-          (case (dn-type nd)
-            (:or  (dolist (k (dn-kids nd)) (incf (aref der k) di)))
-            (:and
+          (cond
+            ((= ty +dn-or+)
+             (loop for j of-type fixnum from k0 below k1
+                   do (incf (aref der (aref kids j)) di)))
+            ((= ty +dn-and+)
              ;; d[k] += d[i] * (product of the other children's values).  Each
              ;; child's product is prefix * suffix -- the children before it times
              ;; those after -- so a node with m children costs O(m), not O(m^2),
              ;; and with no division a zero-valued sibling is still exact.
-             (let ((m 0))
+             (let ((m (- k1 k0)))
                (declare (type fixnum m))
+               (when (> m (length pre))
+                 (setf pre (make-array (max m (* 2 (length pre))) :element-type 'double-float)))
                (let ((p 1d0))
                  (declare (type double-float p))
-                 (dolist (k (dn-kids nd))
-                   (when (= m (length ids))
-                     (let ((ids2 (make-array (* 2 m) :element-type 'fixnum))
-                           (pre2 (make-array (* 2 m) :element-type 'double-float)))
-                       (replace ids2 ids) (replace pre2 pre)
-                       (setf ids ids2 pre pre2)))
-                   (setf (aref ids m) k (aref pre m) p
-                         p (* p (aref val k)))
-                   (incf m)))
+                 (loop for j of-type fixnum from 0 below m
+                       do (setf (aref pre j) p
+                                p (* p (aref val (aref kids (+ k0 j)))))))
                (let ((s 1d0))
                  (declare (type double-float s))
                  (loop for j of-type fixnum from (1- m) downto 0 do
-                   (let ((k (aref ids j)))
+                   (let ((k (aref kids (+ k0 j))))
                      (incf (aref der k) (* di (aref pre j) s))
                      (setf s (* s (aref val k))))))))))))
     ;; Each model uses exactly one +v leaf (smoothness + determinism), so summing
     ;; value*derivative over the +v leaves gives Z[v=true] with no double counting.
     (dotimes (i n)
-      (let ((nd (aref nodes i)))
-        (when (and (eq (dn-type nd) :lit) (plusp (dn-lit nd)))
-          (incf (aref ztrue (dn-lit nd)) (* (aref val i) (aref der i))))))
+      (when (and (= (aref types i) +dn-lit+) (plusp (aref lits i)))
+        (incf (aref ztrue (aref lits i)) (* (aref val i) (aref der i)))))
     ztrue))
 
 (defun ddnnf-query (circuit &key clamp)
@@ -1168,11 +1590,14 @@ recompiled (circuit not reused)~%"
   "Exact marginal P(atom = true) of every atom via a compiled d-DNNF circuit.
 
 The theory comes from either CIRCUIT -- a prebuilt DDNNF struct or the path to one
-saved by DDNNF-SAVE, in which case NO recompilation happens -- or, when CIRCUIT is
-NIL, by compiling SCNF-FILE.  COMPILER selects the front end: :home (default) uses
-the built-in trace compiler; :d4 shells out to the external d4 (d4v2) compiler (at
-D4) and smooths its dump.  With SAVE-CIRCUIT (a path), the base circuit is written
-there for reuse on later calls.
+saved by DDNNF-SAVE or DDNNF-SAVE-BINARY (either format), in which case NO
+recompilation happens -- or, when CIRCUIT is NIL, by compiling SCNF-FILE.
+COMPILER selects the front end: :home (default) uses the built-in trace compiler;
+:d4 shells out to the external d4 (d4v2) compiler (at D4) and smooths its dump.
+With SAVE-CIRCUIT (a path), the base circuit is written there in the text format
+for reuse on later calls, and in the binary format beside it (x.dnnf -> x.dnnfb,
+see DDNNF--BINARY-PATH), which loads much faster; a path ending in .dnnfb gets
+the binary format only.
 
 Conditions on EVIDENCE / EVIDENCE-FILE (ground FiFO formulas; unit literals reuse
 the circuit, anything else triggers a recompile from the stored clauses), and
@@ -1215,8 +1640,17 @@ atoms are kept in the projection and it is applied afterwards as usual."
     (when (and circuit scale)
       (setf (ddnnf-scale base) (float scale 1.0d0)))
     (when save-circuit
-      (ddnnf-save base save-circuit)
-      (when verbose (format t "; saved compiled circuit to ~A~%" save-circuit)))
+      ;; both formats -- the text for other tools, the binary to load fast --
+      ;; unless the name asks for the binary alone (x.dnnfb): writing text into a
+      ;; .dnnfb would make every reload take the slow path
+      (let ((bin (ddnnf--binary-path save-circuit))
+            (text (not (ddnnf--path-ends-p save-circuit ".dnnfb"))))
+        (when text (ddnnf-save base save-circuit))
+        (ddnnf-save-binary base bin)
+        (when verbose
+          (if text
+              (format t "; saved compiled circuit to ~A (and binary ~A)~%" save-circuit bin)
+              (format t "; saved compiled circuit to ~A (binary)~%" bin)))))
     (multiple-value-bind (c clamp)
         (if conjoin
             (values base nil)

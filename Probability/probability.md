@@ -467,16 +467,16 @@ One limit holds for both counters: each individual weight is written as a double
 (ddnnf-save circuit "file.dnnf") (ddnnf-load "file.dnnf") ; persist / restore a compiled circuit
 ```
 
-**Persistence.** The circuit is a flat, topologically-ordered array of nodes with integer-id children — plain readable data — so it serializes to a single s-expression (a `.dnnf` text file) that round-trips across SBCL sessions with no fasl or version coupling. Compile once, save, and reuse on later runs. Because weights are stored separately from the structure, a loaded circuit can be **re-weighted by `--scale` without recompiling**.
+**Persistence.** The circuit is a flat, topologically-ordered array of nodes with integer-id children — plain readable data — so it serializes to a single s-expression (a `.dnnf` text file) that round-trips across SBCL sessions with no fasl or version coupling. `--save-circuit` also writes a **binary** copy beside it (`problem.dnnfb`): the node arrays exactly as they sit in memory, so loading is a few reads rather than parsing, about 20× faster — what matters once circuits reach hundreds of MB, since a slow load would undo the point of compiling once. `--circuit` takes either file, and `--save-circuit problem.dnnfb` writes the binary one alone. Compile once, save, and reuse on later runs. Because weights are stored separately from the structure, a loaded circuit can be **re-weighted by `--scale` without recompiling**.
 
 ```sh
-# compile once, save the artifact, and report the unconditioned marginals
+# compile once, save the artifact (problem.dnnf + problem.dnnfb), report the marginals
 bin/marginals.sh problem.scnf --solver ddnnf --save-circuit problem.dnnf
 
 # later, separate runs: load the artifact and query WITHOUT recompiling
-bin/marginals.sh --circuit problem.dnnf --evidence '(not (occurs (turn-on s1) 1))'
-bin/marginals.sh --circuit problem.dnnf --evidence '(occurs (turn-off s1) 1)'
-bin/marginals.sh --circuit problem.dnnf --scale 1            # re-weight, no recompile
+bin/marginals.sh --circuit problem.dnnfb --evidence '(not (occurs (turn-on s1) 1))'
+bin/marginals.sh --circuit problem.dnnfb --evidence '(occurs (turn-off s1) 1)'
+bin/marginals.sh --circuit problem.dnnfb --scale 1           # re-weight, no recompile
 ```
 
 **Evidence reuse — the one rule that matters.** Unit-literal evidence (ground facts) becomes a *clamp* on leaf weights and **reuses** the compiled circuit; only non-unit evidence (a disjunction, or an implication that doesn't reduce to units) is recompiled, from the circuit's stored clauses. So the compile is amortized across all the literal-evidence queries — exactly the case ADDMC and enumeration cannot amortize.

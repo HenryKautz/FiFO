@@ -70,9 +70,11 @@ reach of exact counting.
                       atom -- much cheaper on instances with many state atoms
   --out <file>        also write the (MARGINAL ...) lines to <file>
   --node-limit <int>  cap on search effort before giving up: for maxent, the number
-                      of enumeration nodes (default 5000000); for ddnnf, the number
-                      of circuit nodes (default 2000000).  A blowup means the
-                      instance is too structured for that back end -- try addmc
+                      of enumeration nodes (default 5000000); for ddnnf and d4, the
+                      number of circuit nodes (default 2000000; a d4 circuit of a
+                      large theory can need far more).  For maxent and ddnnf a
+                      blowup means the instance is too structured for that back
+                      end -- try d4 or addmc
   --scale <n>         divide integer weights by n before exponentiating; default
                       reads the 'scale: N' the weight-learning pipeline records in
                       the header (1 if absent).  The pipeline scales costs by an
@@ -90,6 +92,14 @@ reach of exact counting.
   --jobs <n>          (addmc, sharpsat-td) how many of the 1 + n clamped counts
                       run at once (default 4).  They are independent, so this
                       divides the wall-clock time; 1 runs them in turn
+  --timeout <secs>    wall-clock limit on EACH external solver run: every
+                      sharpsat-td/addmc count, every max-term MaxSAT solve, and
+                      the kissat checks (SIGTERM, then SIGKILL).  0, -1 or none:
+                      no limit.  Default: FiFO's *solver-timeout*, 600 s.  An
+                      exact count stopped this way is an error, not a partial
+                      answer; a max-term solve stopped this way gives an upper
+                      bound, flagged in a WARNING.  It does not bound mc-sat's
+                      walksat or d4
   --samples <n>       (mc-sat only) number of retained samples (default 10000).
                       Monte-Carlo error falls as 1/sqrt(n)
   --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)
@@ -156,10 +166,14 @@ reach of exact counting.
                       conjoined with any --evidence forms.  Evidence must be ground
                       (over atoms already in the scnf); quantified evidence needs
                       the .wff (re-instantiate with the assertion added).
-  --save-circuit <f>  (ddnnf only) after compiling, write the compiled circuit to
-                      <f> for reuse; this run also reports marginals as usual.
-  --circuit <f>       (ddnnf only) load a circuit saved by --save-circuit and query
-                      it WITHOUT recompiling (give this instead of a .scnf file).
+  --save-circuit <f>  (ddnnf/d4) after compiling, write the compiled circuit to
+                      <f> for reuse, as text, and beside it as binary (x.dnnf ->
+                      x.dnnfb), which loads much faster; <f> ending in .dnnfb
+                      writes the binary alone.  This run also reports marginals
+                      as usual.
+  --circuit <f>       (ddnnf/d4) load a circuit saved by --save-circuit, either
+                      file, and query it WITHOUT recompiling (give this instead
+                      of a .scnf file).
                       Unit-literal --evidence reuses it; non-unit evidence recompiles
                       from the stored clauses.  --scale re-weights it for free.
   --project           (d4 only) compile the PROJECTION onto the atoms that matter
@@ -263,6 +277,7 @@ EPSILON=""
 DECOT=""
 CACHE_MB=""
 JOBS=""
+TIMEOUT=""
 EVFILE=""
 EVIDENCE_FORMS=()
 SAVE_CIRCUIT=""
@@ -321,6 +336,7 @@ while [[ $# -gt 0 ]]; do
     --decot)          [[ $# -ge 2 ]] || die "--decot needs an argument"; DECOT="$2"; shift 2 ;;
     --cache-mb)       [[ $# -ge 2 ]] || die "--cache-mb needs an argument"; CACHE_MB="$2"; shift 2 ;;
     --jobs)           [[ $# -ge 2 ]] || die "--jobs needs an argument"; JOBS="$2"; shift 2 ;;
+    --timeout)        [[ $# -ge 2 ]] || die "--timeout needs an argument"; TIMEOUT="$2"; shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || die "--evidence needs an argument"; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || die "--evidence-file needs an argument"; EVFILE="$2"; shift 2 ;;
     # --save-circuit / --circuit imply a circuit back end only when no --solver
@@ -424,6 +440,17 @@ if [[ -n "$INIT_CUTOFF" && ! "$INIT_CUTOFF" =~ ^[0-9]+$ ]]; then die "--init-cut
 if [[ -n "$INIT_TRIES" && ! "$INIT_TRIES" =~ ^[0-9]+$ ]]; then die "--init-tries must be a non-negative integer, got: $INIT_TRIES"; fi
 if [[ -n "$WALK_PROB" && ! "$WALK_PROB" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--walk-prob must be a number in [0,1], got: $WALK_PROB"; fi
 if [[ -n "$TEMP"      && ! "$TEMP"      =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--temp must be a positive number, got: $TEMP"; fi
+[[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"
+# a positive number, or exactly 0 / -1 for no limit: any other negative is a typo
+# (--timeout -300), and silently meaning "no limit" would defeat the cap
+if [[ -n "$TIMEOUT" && ! "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
+  die "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $TIMEOUT"
+fi
+# Set globally, right after FiFO.lisp loads, on every back-end path below: the
+# runs read *solver-timeout* when they start, and wmc--parallel-map hands its
+# value on to its threads.
+TIMEOUT_EVAL="(progn)"
+[[ -n "$TIMEOUT" ]] && TIMEOUT_EVAL="(setf *solver-timeout* (solver-time-limit $TIMEOUT))"
 [[ -z "$EVFILE" || -f "$EVFILE" ]] || die "evidence file not found: $EVFILE"
 [[ -d "$FIFO_LISP" ]] || die "FiFO lisp directory not found: $FIFO_LISP (run 'make install' or set FIFO_LISP)"
 
@@ -497,7 +524,7 @@ else
     mc-sat)   BACKEND_EVAL=( --eval "(load \"$FIFO_LISP/mcsat.lisp\")" ) ;;
   esac
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     ${BACKEND_EVAL[@]+"${BACKEND_EVAL[@]}"} \
     --eval "(load \"$FIFO_LISP/hypotheses.lisp\")" \
     --eval "(handler-case (progn (hypothesis-posterior \"$SCNF\" $KW) (sb-ext:exit :code 0))
@@ -506,7 +533,6 @@ fi
 
 if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   if [[ "$SOLVER" == "d4" ]]; then
-    [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the ddnnf (home) compiler, not d4"
     if ! command -v d4 >/dev/null 2>&1; then
       die "d4 not found on PATH.
   Install it with:  bin/install-solvers.sh --only d4
@@ -530,7 +556,7 @@ if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   NODE_EVAL="(progn)"
   [[ -n "$NODE_LIMIT" ]] && NODE_EVAL="(setf *ddnnf-node-limit* $NODE_LIMIT)"
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" \
     --eval "$NODE_EVAL" \
     --eval "(handler-case (progn (ddnnf-marginals $SCNF_ARG $KW) (sb-ext:exit :code 0))
@@ -591,7 +617,7 @@ if [[ "$SOLVER" == "max-term" ]]; then
   fi
   [[ -n "$PL" ]] && KW="$KW :priors (list $PL)"
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
     --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(load \"$FIFO_LISP/maxterm.lisp\")" \
@@ -634,7 +660,7 @@ if [[ "$SOLVER" == "mc-sat" ]]; then
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
     --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(load \"$FIFO_LISP/mcsat.lisp\")" \
@@ -657,7 +683,7 @@ if [[ "$SOLVER" == "addmc" ]]; then
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
     --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(handler-case (progn (marginals-addmc \"$SCNF\" $KW) (sb-ext:exit :code 0))
@@ -678,7 +704,7 @@ if [[ "$SOLVER" == "sharpsat-td" ]]; then
   [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && KW="$KW :evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
   [[ -n "$EVFILE" ]] && KW="$KW :evidence-file \"$EVFILE\""
   exec sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
     --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(handler-case (progn (marginals-sharpsat \"$SCNF\" $KW) (sb-ext:exit :code 0))
@@ -693,7 +719,7 @@ KW=""
 
 # Load in separate --evals so the call is compiled after marginals is defined.
 exec sbcl --noinform --non-interactive \
-  --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+  --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
   --eval "(load \"$FIFO_LISP/maxent.lisp\")" \
   --eval "(handler-case (progn (marginals \"$SCNF\" $KW) (sb-ext:exit :code 0))
             (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"

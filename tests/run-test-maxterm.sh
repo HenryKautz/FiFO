@@ -144,6 +144,21 @@ if [[ -f "$REPO/Probability/test_marginals_reweighted.scnf" ]]; then
   fi
 fi
 
+# 13. A solve stopped by --timeout gives an upper bound (status :best), and the
+#     closing WARNING must count it: before, it counted only solvers that never
+#     prove optimality, so a short --timeout fed two upper bounds into the
+#     difference with no warning.  A stand-in anytime solver that reports a cost
+#     and then never finishes.
+printf '#!/bin/bash\necho "o 0"\necho "s SATISFIABLE"\nexec sleep 30\n' > stall-maxsat
+chmod +x stall-maxsat
+bash "$M" w.scnf --solver max-term --maxsat-solver ./stall-maxsat --timeout 1 \
+     --query all --scale 1 >o13 2>&1
+if grep -q 'stopped at the time limit' o13 && grep -q 'WARNING: 2 of the 3 solves did not prove' o13; then
+  ok "solves stopped by --timeout are counted in the WARNING"
+else
+  bad "solves stopped by --timeout are counted in the WARNING" "$(grep -E 'time limit|WARNING' o13 | head -2 | tr '\n' ' ')"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]

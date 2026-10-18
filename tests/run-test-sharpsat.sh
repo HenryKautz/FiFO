@@ -310,6 +310,28 @@ if grep -q 'ADDMC timed out after 2 s' <<<"$OUT" && (( SECONDS - T0 < 60 )); the
   ok "a caller's *solver-timeout* reaches the parallel workers"
 else bad "a caller's *solver-timeout* reaches the parallel workers" "$((SECONDS - T0)) s: $(tr '\n' ' ' <<<"$OUT" | tail -c 120)"; fi
 
+# --- 9c'. marginals.sh --timeout sets that limit, on both of its paths ---------
+# A stand-in sharpSAT that never answers.  Under the default 600 s it would run
+# its full 60 s and then fail differently (no count printed), so the message
+# AND the elapsed time are both required.
+mkdir -p stall
+printf '#!/bin/sh\nexec sleep 60\n' > stall/sharpSAT
+chmod +x stall/sharpSAT
+for path in plain hypotheses; do
+  ARGS=(); [[ $path == hypotheses ]] && ARGS=(--hypotheses '(H 1)' --hypotheses '(H 2)' --evidence '(OBS 1)' --baseline per-hypothesis)
+  T0=$SECONDS
+  OUT="$(PATH="$TMP/stall:$PATH" bash "$M" h.scnf --solver sharpsat-td --timeout 2 "${ARGS[@]+"${ARGS[@]}"}" 2>&1)"
+  if grep -q 'SharpSAT-TD timed out after 2 s' <<<"$OUT" && (( SECONDS - T0 < 60 )); then
+    ok "marginals.sh --timeout 2 stops a stalled count ($path, $((SECONDS - T0)) s)"
+  else bad "marginals.sh --timeout 2 stops a stalled count ($path)" "$((SECONDS - T0)) s: $(tr '\n' ' ' <<<"$OUT" | tail -c 120)"; fi
+done
+# 'none' lifts the limit rather than being read as a number: the real counter
+# then answers as it does with no option at all.
+bash "$M" h.scnf --solver sharpsat-td --timeout none 2>/dev/null | split > tn.m
+bash "$M" h.scnf --solver sharpsat-td 2>/dev/null | split > td.m
+if [[ -s tn.m ]] && cmp -s tn.m td.m; then ok "--timeout none = no option"
+else bad "--timeout none = no option" "outputs differ or empty"; fi
+
 # --- 9d. the installer's usability check agrees with sharpSAT's own lookup ------
 # sharpSAT uses $SHARPSAT_FLOWCUTTER whenever it is set, without checking it, so
 # a stale value must make the installer call it NOT usable.
@@ -338,6 +360,9 @@ refused "--decot must be a number" "--decot must be a number of seconds" bash "$
 refused "--decot 0 refused before Lisp loads" "in (0.0001, 10000)" bash "$M" "$F" --solver sharpsat-td --decot 0
 refused "--decot 10000 refused before Lisp loads" "in (0.0001, 10000)" bash "$W" "$F" --counter sharpsat-td --decot 10000
 refused "--jobs must be a positive integer" "--jobs must be a positive integer" bash "$M" "$F" --solver sharpsat-td --jobs 0
+refused "--timeout must be a number of seconds" "--timeout must be a number of seconds" bash "$M" "$F" --solver sharpsat-td --timeout soon
+# a stray dash must not silently mean "no limit" (only 0, -1 and none do)
+refused "--timeout -300 is refused, not read as no limit" "--timeout must be a number of seconds" bash "$M" "$F" --solver sharpsat-td --timeout -300
 refused "--jobs refused for a one-run back end" "--jobs applies to the addmc and sharpsat-td" bash "$M" "$F" --solver ddnnf --jobs 2
 refused "wmc.sh refuses a counter with no Z" "must be addmc or sharpsat-td" bash "$W" "$F" --counter maxent
 refused "wmc.sh --decot needs sharpsat-td" "--decot applies to the sharpsat-td" bash "$W" "$F" --decot 2

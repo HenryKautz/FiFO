@@ -74,8 +74,11 @@ run_one() {
     form="(solve \"$wff\" :solnfile \"$outfile\")"
   fi
 
-  $TIMEOUT sbcl --noinform --non-interactive \
-    --eval "(load \"$FIFO\")" --eval "$form" >"$log" 2>&1
+  # run inside $TMP: solve writes its intermediate files (scratch-*.scnf/.cnf/
+  # .map/.satout/.soln) to the current directory, which would otherwise be
+  # wherever the suite was started from
+  (cd "$TMP" && $TIMEOUT sbcl --noinform --non-interactive \
+    --eval "(load \"$FIFO\")" --eval "$form") >"$log" 2>&1
   local rc=$?
 
   if [[ $rc -eq 124 ]]; then

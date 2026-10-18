@@ -28,7 +28,7 @@
 # Usage:
 #   recognize.sh <costs-domain.pddl> <problem.pddl> <evidence-file> \
 #        [--horizon H] [--beta B] [--out DIR] [--solver NAME] [--counter NAME] \
-#        [--baseline B] [--maxsat-solver NAME] [--method M] \
+#        [--baseline B] [--maxsat-solver NAME] [--method M] [--timeout SECS] \
 #        [--prior H=W ...] [--priors FILE] [--priors-from-preferences] \
 #        [--create-hypothesis-atoms]
 #
@@ -109,6 +109,11 @@
 #                 implementation -- 2n full planner.sh runs -- kept as the
 #                 reference the fast path is tested against.  It always computes
 #                 R&G's difference, so --counter and --baseline are refused with it.
+#   --timeout S   (fast method) limit on EACH solver run inside the inference --
+#                 every exact count, every MaxSAT solve -- passed to marginals.sh
+#                 --timeout; 0, -1 or none for no limit.  Default: FiFO's
+#                 *solver-timeout*, 600 s, so one SharpSAT-TD count over 10
+#                 minutes fails the run however long the run itself may take.
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -139,7 +144,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
 HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
 COUNTER="max-term"; BASELINE="per-hypothesis"; METHOD="fast"; MAXSAT_SOLVER=""
-PRIORS_KV=(); PRIORS_FROM_PREFS=0; CREATE_ATOMS=0
+PRIORS_KV=(); PRIORS_FROM_PREFS=0; CREATE_ATOMS=0; SOLVER_TIMEOUT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -152,7 +157,8 @@ while [[ $# -gt 0 ]]; do
     --baseline) BASELINE="$2"; shift 2;;
     --method)  METHOD="$2"; shift 2;;
     --maxsat-solver) MAXSAT_SOLVER="$2"; shift 2;;
-    --prior)   PRIORS_KV+=("$2"); shift 2;;
+    --timeout) SOLVER_TIMEOUT="$2"; shift 2;;
+    --prior)  PRIORS_KV+=("$2"); shift 2;;
     --priors-from-preferences) PRIORS_FROM_PREFS=1; shift;;
     --create-hypothesis-atoms) CREATE_ATOMS=1; shift;;
     -h|--help) usage 0;;
@@ -174,7 +180,15 @@ esac
 if [[ "$METHOD" == "plan-runs" ]]; then
   [[ "$COUNTER" == "max-term" ]] || { echo "--counter has no meaning with --method plan-runs (it always computes R&G's cheapest-plan difference); drop one of them" >&2; exit 2; }
   [[ "$BASELINE" == "per-hypothesis" ]] || { echo "--baseline has no meaning with --method plan-runs (it is always per-hypothesis); drop one of them" >&2; exit 2; }
+  [[ -z "$SOLVER_TIMEOUT" ]] || { echo "--timeout applies to --method fast only (planner.sh has no per-solver limit to pass it to); drop one of them" >&2; exit 2; }
 fi
+# Checked here, not left to marginals.sh: that runs only after the horizon search
+# and the instantiation, which can take minutes.
+# the same rule as marginals.sh's: a positive number, or exactly 0 / -1 / none
+if [[ -n "$SOLVER_TIMEOUT" && "$SOLVER_TIMEOUT" != "none" && ! "$SOLVER_TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
+  echo "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $SOLVER_TIMEOUT" >&2; exit 2
+fi
+TIMEOUT_MARG=(); [[ -n "$SOLVER_TIMEOUT" ]] && TIMEOUT_MARG=(--timeout "$SOLVER_TIMEOUT")
 case "$BASELINE" in
   per-hypothesis|best-rival) ;;
   *) echo "--baseline must be 'per-hypothesis' or 'best-rival', got: $BASELINE" >&2; exit 2;;
@@ -552,6 +566,7 @@ if [[ "$METHOD" == "fast" ]]; then
   bash "$SELF/marginals.sh" "$SCNF" ${HYP_ARGS[@]+"${HYP_ARGS[@]}"} \
        --baseline "$BASELINE" --solver "$COUNTER" --beta "$BETA" \
        ${MT_ARG[@]+"${MT_ARG[@]}"} ${PRIOR_MARG[@]+"${PRIOR_MARG[@]}"} \
+       ${TIMEOUT_MARG[@]+"${TIMEOUT_MARG[@]}"} \
        ${EV_MARG[@]+"${EV_MARG[@]}"} > "$OUT/hypotheses.txt" 2>"$OUT/hypotheses.err" || {
     echo "recognize.sh: the hypothesis posterior failed:" >&2; cat "$OUT/hypotheses.err" >&2; exit 2; }
   grep '^;' "$OUT/hypotheses.txt" >&2 || true
