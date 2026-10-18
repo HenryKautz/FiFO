@@ -2,7 +2,8 @@
 #
 #   make install
 #
-# copies the shell scripts in bin/ into BINDIR and the lisp library in lisp/ into
+# copies the shell scripts in bin/ (all but install-solvers.sh, which is run from
+# the checkout) into BINDIR and the lisp library in lisp/ into
 # LISPDIR, creating the directories as needed.  Defaults install the scripts to
 # ~/bin and the lisp (FiFO.lisp, pddl2fifo.lisp, planner.lisp, reweight.lisp,
 # maxent.lisp, hypotheses.lisp, ..., plus the data files satplan.wff and
@@ -32,10 +33,14 @@ LISPDIR ?= $(HOME)/lib/fifo/lisp
 # it was loaded, and the scripts as $FIFO_LISP/../pddl.
 PDDLDIR := $(LISPDIR)/../pddl
 
+# install-solvers.sh is run from the checkout, not installed: it clones the
+# solvers beside the FiFO checkout it finds above itself.
+BINFILES := $(filter-out bin/install-solvers.sh,$(wildcard bin/*))
+
 .PHONY: install
 install:
 	mkdir -p $(BINDIR) $(LISPDIR)
-	cp bin/*  $(BINDIR)/
+	cp $(BINFILES) $(BINDIR)/
 	cp lisp/* $(LISPDIR)/
 	cp SatPlan/ppgen.sh SatPlan/evgen.sh     $(BINDIR)/
 	cp SatPlan/ppgen.lisp SatPlan/evgen.lisp $(LISPDIR)/

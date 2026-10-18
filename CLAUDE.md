@@ -30,8 +30,10 @@ rules and the traps.
 - `README.md` — language reference. `software-components.md` — every script's full
   option table, Lisp modules, external solver catalog. It is the REFERENCE for
   ppgen/evgen flags; `satplan.md` explains and links to it.
-- `Makefile` — `make install`: `bin/` → `~/bin`, `lisp/` → `~/lib/fifo/lisp`,
-  `pddl/` → `~/lib/fifo/pddl`, plus ppgen/evgen. `BINDIR`/`LISPDIR` overridable.
+- `Makefile` — `make install`: `bin/` → `~/bin` (except `install-solvers.sh`,
+  run from the checkout; it clones solvers into `<FiFO>/..`), `lisp/` →
+  `~/lib/fifo/lisp`, `pddl/` → `~/lib/fifo/pddl`, plus ppgen/evgen.
+  `BINDIR`/`LISPDIR` overridable.
 
 ## Key APIs (lisp/FiFO.lisp)
 

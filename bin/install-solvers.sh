@@ -23,9 +23,9 @@ FIFO_ROOT="$(cd "$SELF/.." && pwd)"
 # Checkouts live OUTSIDE the FiFO repository, each in its own directory beside
 # it (<FiFO>/../d4v2, <FiFO>/../ADDMC, ...), so they are ordinary sibling
 # repositories rather than untracked trees inside FiFO.  --clone-to DIR wins,
-# then FIFO_SOLVERS, then that default.  When this script is run from an
-# INSTALLED copy (make install puts it in ~/bin) there is no FiFO directory
-# above it, so the default falls back to ~/Solvers.  SRC_ROOT is settled after
+# then FIFO_SOLVERS, then that default.  make install does NOT copy this script
+# to ~/bin; a copy run from outside a checkout has no FiFO directory above it,
+# so the default falls back to ~/Solvers.  SRC_ROOT is settled after
 # the options are parsed.  The build trees are large and regenerable; if FiFO
 # sits in a synced folder, --clone-to / FIFO_SOLVERS can keep them out of it.
 if [[ -f "$FIFO_ROOT/lisp/FiFO.lisp" ]]; then

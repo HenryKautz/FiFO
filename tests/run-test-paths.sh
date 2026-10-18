@@ -82,6 +82,10 @@ name "make install installs ppgen and evgen with their lisp"
 if [[ -x "$H/bin/ppgen.sh" && -x "$H/bin/evgen.sh" && -f "$H/lib/fifo/lisp/ppgen.lisp" \
       && -f "$H/lib/fifo/lisp/evgen.lisp" ]]; then pass; else fail "missing files"; fi
 
+name "make install leaves out install-solvers.sh (run from the checkout)"
+if [[ $INSTALLED -eq 1 && -x "$H/bin/marginals.sh" && ! -e "$H/bin/install-solvers.sh" ]]; then pass
+else fail "install-solvers.sh was installed, or the install failed"; fi
+
 name "an installed script, FIFO_LISP unset: ~/lib/fifo/lisp"
 GOT="$(env -u FIFO_LISP HOME="$H" /bin/bash -c "source '$H/bin/fifo-lisp.sh'; echo \"\$FIFO_LISP\"")"
 [[ "$GOT" == "$H/lib/fifo/lisp" ]] && pass || fail "got $GOT"

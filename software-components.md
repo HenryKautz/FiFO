@@ -143,7 +143,8 @@ by one rule:
    from a checkout uses that checkout's `lisp/`, with no setup;
 3. otherwise `~/lib/fifo/lisp`, the install location.
 
-`make install` copies `bin/` → `~/bin` and `lisp/` → `~/lib/fifo/lisp` (override
+`make install` copies `bin/` → `~/bin` (all but `install-solvers.sh`, which is
+run from the checkout so it can clone beside it) and `lisp/` → `~/lib/fifo/lisp` (override
 with `make install BINDIR=... LISPDIR=...`). It also installs `SatPlan/ppgen.sh`
 and `SatPlan/evgen.sh` into `BINDIR` and their `ppgen.lisp`/`evgen.lisp` into
 `LISPDIR`; those two scripts load their `.lisp` from beside themselves when it is
@@ -226,9 +227,10 @@ repository that later moves its work to another branch does not leave stale
 checkouts building the wrong source.
 
 **Where checkouts go**, first match wins: `--clone-to <dir>`, then the
-`FIFO_SOLVERS` environment variable, then `<FiFO>/..`. When the script runs
-from an installed copy in `~/bin`, there is no FiFO checkout above it, so the
-default is `~/Solvers`. The default is the folder FiFO itself sits in, where a
+`FIFO_SOLVERS` environment variable, then `<FiFO>/..`. Run it from the
+checkout: `make install` deliberately does not copy it to `~/bin`. A copy run
+from somewhere with no FiFO checkout above it defaults to `~/Solvers`. The
+default is the folder FiFO itself sits in, where a
 same-named directory may be one of your own repositories. So an existing
 checkout is used only if **one of its remotes is the solver's repository**:
 https and ssh spellings and letter case don't matter, and a fork with the
