@@ -79,7 +79,7 @@ To fetch and build the solvers, run
 bin/install-solvers.sh          # add --all to rebuild ones you already have
 ```
 
-which clones each repository into `Solvers/`, builds it, and installs the binary into `~/bin`, skipping whatever is already usable and printing a summary of what succeeded and what failed. For information about installing other solvers for logical or probabilistic reasoning see [software-components.md](software-components.md#solvers-and-external-tools).
+which clones each repository into its own directory beside the FiFO checkout (`../d4v2`, `../ADDMC`, …; `--clone-to DIR` or `FIFO_SOLVERS` puts them elsewhere), builds it, and installs the binary into `~/bin`, skipping whatever is already usable and printing a summary of what succeeded and what failed. For information about installing other solvers for logical or probabilistic reasoning see [software-components.md](software-components.md#solvers-and-external-tools).
 
 Common Lisp API
 ------------

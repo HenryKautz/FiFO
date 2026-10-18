@@ -3,12 +3,14 @@
 # install-solvers.sh -- clone, build, and install the external solvers FiFO uses.
 #
 # For each solver: if a usable copy is already on PATH it is left alone (pass
-# --all to rebuild it anyway); otherwise the repository is cloned into
-# <FiFO>/Solvers/, built, and the resulting binary is copied into ~/bin.
+# --all to rebuild it anyway); otherwise the repository is cloned beside the
+# FiFO checkout (<FiFO>/../<repo>, or --clone-to / FIFO_SOLVERS), built, and the
+# resulting binary is copied into ~/bin.  An existing checkout there is updated
+# and built rather than cloned again.
 #
 # A failure in one solver never stops the others -- each is attempted in turn and
 # a summary of what was installed, skipped, and what failed is printed at the end.
-# Build output goes to <FiFO>/Solvers/logs/<solver>.log.
+# Build output goes to <clone dir>/install-solvers-logs/<solver>.log.
 #
 # See software-components.md for what each solver does and why FiFO needs it.
 
@@ -18,18 +20,20 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIFO_ROOT="$(cd "$SELF/.." && pwd)"
-# Checkouts live in <FiFO>/Solvers by default.  FIFO_SOLVERS moves them, which
-# is worth doing if the FiFO directory is inside a synced folder (Dropbox, etc.):
-# these build trees run to hundreds of megabytes and are entirely regenerable.
-# When this script is run from an INSTALLED copy (make install puts it in ~/bin)
-# there is no FiFO directory above it, so fall back to ~/Solvers.
+# Checkouts live OUTSIDE the FiFO repository, each in its own directory beside
+# it (<FiFO>/../d4v2, <FiFO>/../ADDMC, ...), so they are ordinary sibling
+# repositories rather than untracked trees inside FiFO.  --clone-to DIR wins,
+# then FIFO_SOLVERS, then that default.  When this script is run from an
+# INSTALLED copy (make install puts it in ~/bin) there is no FiFO directory
+# above it, so the default falls back to ~/Solvers.  SRC_ROOT is settled after
+# the options are parsed.  The build trees are large and regenerable; if FiFO
+# sits in a synced folder, --clone-to / FIFO_SOLVERS can keep them out of it.
 if [[ -f "$FIFO_ROOT/lisp/FiFO.lisp" ]]; then
-  DEFAULT_SRC="$FIFO_ROOT/Solvers"
+  DEFAULT_SRC="$(cd "$FIFO_ROOT/.." && pwd)"
 else
   DEFAULT_SRC="$HOME/Solvers"
 fi
-SRC_ROOT="${FIFO_SOLVERS:-$DEFAULT_SRC}"
-LOG_DIR="$SRC_ROOT/logs"
+CLONE_TO=""
 BINDIR="$HOME/bin"
 
 ALL_SOLVERS=(kissat tt-open-wbo-inc nuwls-c evalmaxsat wmaxcdcl rc2 addmc sharpsat-td d4 walksat maxpre)
@@ -51,23 +55,33 @@ warn() { printf '    %s%s%s\n' "$Y" "$*" "$N" >&2; }
 
 print_usage() {
   cat <<EOF
-usage: install-solvers.sh [--all] [--only <solver>]... [--bindir <dir>] [--dry-run] [--list]
+usage: install-solvers.sh [--all] [--only <solver>]... [--clone-to <dir>] [--bindir <dir>]
+                          [--dry-run] [--list]
 
-Clone, build, and install the external solvers FiFO can use.  Repositories are
-cloned into $SRC_ROOT and binaries installed into
-$BINDIR.  Solvers already available are skipped unless --all is given, and a
-failed build is reported but does not stop the remaining solvers.
+Clone, build, and install the external solvers FiFO can use.  Each repository
+is cloned into its own directory under the clone directory (default
+$DEFAULT_SRC, i.e. beside the FiFO checkout) and binaries are
+installed into $BINDIR.  A checkout already there is updated (git pull
+--ff-only) and built instead of cloned again.  Solvers already available are
+skipped unless --all is given, and a failed build is reported but does not stop
+the remaining solvers.
 
   --all             (re)install every solver even if it is already available
   --only <solver>   install just this one; repeatable.  Names: ${ALL_SOLVERS[*]}
+  --clone-to <dir>  clone (or find existing checkouts) under <dir>; overrides
+                    FIFO_SOLVERS, which in turn overrides the default
   --bindir <dir>    install binaries here instead of $BINDIR
   --dry-run         print what would be done without cloning or building
   --list            list the solvers, their repositories, and their status
   -h, --help        show this help
 
-Set FIFO_SOLVERS to clone somewhere other than <FiFO>/Solvers -- worth doing when
-the FiFO directory is inside a synced folder, since these build trees are large
-and entirely regenerable.
+Checkout directory names: $(for s in "${ALL_SOLVERS[@]}"; do solver_dir "$s"; done | xargs).
+A same-named directory already in the clone directory is used only if one of
+its remotes is the solver's repository (see --list); otherwise that solver
+fails rather than building an unrelated repository.  Build logs go to
+<clone dir>/install-solvers-logs/.  The build trees run to hundreds of
+megabytes and are entirely regenerable, so if the FiFO checkout sits in a
+synced folder (Dropbox, etc.) consider --clone-to or FIFO_SOLVERS outside it.
 
 Prerequisites: git, make, and a C/C++ compiler for all of them; cmake for addmc,
 sharpsat-td and d4; GMP and MPFR for sharpsat-td.  On macOS, d4 additionally
@@ -136,7 +150,7 @@ solver_branch() {
   esac
 }
 
-# Directory name under Solvers/ for the checkout.
+# Directory name, under the clone directory, of the checkout.
 solver_dir() {
   case "$1" in
     kissat)           echo "kissat" ;;
@@ -316,7 +330,7 @@ solver_build() {
         ev_cc=(-DCMAKE_CXX_COMPILER="$gxx" -DCMAKE_C_COMPILER="${gxx/g++-/gcc-}")
       fi
       ( cd "$dir" && mkdir -p build && cd build \
-        && brew_env cmake .. "${ev_cc[@]}" && brew_env make -j ) || return 1
+        && brew_env cmake .. ${ev_cc[@]+"${ev_cc[@]}"} && brew_env make -j ) || return 1
       install_bin "$dir/build/main/EvalMaxSAT_bin" EvalMaxSAT_bin ;;
 
     rc2)
@@ -429,15 +443,47 @@ brew_env() {  # brew_env <cmd>... : run CMD with the Homebrew prefix on the head
   fi
 }
 
+# A repository URL reduced to host/owner/repo, lowercased, so the https and ssh
+# spellings of one repository compare equal:
+#   https://github.com/A/B.git, git@github.com:A/B.git -> github.com/a/b
+repo_key() {
+  printf '%s\n' "$1" \
+    | sed -E 's#^[a-zA-Z+]+://##; s#^[^@/]+@##; s#^([^/:]+):#\1/#; s#/+$##; s#\.git$##' \
+    | tr '[:upper:]' '[:lower:]'
+}
+
 clone_or_update() {  # clone_or_update <repo-url> <dir> [branch]
   local url="$1" dir="$2" branch="${3:-}"
   if [[ -d "$dir/.git" ]]; then
+    # The clone directory is by default the folder FiFO itself sits in, where a
+    # same-named directory may be the user's own repository -- possibly a
+    # different one.  Build it only if one of its remotes IS the expected
+    # repository (a fork with the original as `upstream` qualifies).
+    local want r ok=0
+    want="$(repo_key "$url")"
+    for r in $(git -C "$dir" remote 2>/dev/null); do
+      [[ "$(repo_key "$(git -C "$dir" remote get-url "$r" 2>/dev/null)")" == "$want" ]] && ok=1
+    done
+    if [[ "$ok" -eq 0 ]]; then
+      echo "$dir is a git checkout, but none of its remotes is $url;" \
+           "move it aside or pass --clone-to <dir>" >&2
+      return 1
+    fi
     info "updating existing checkout $dir"
+    # Tracked edits are built as they are -- the checkout may be the user's own
+    # working copy -- but never silently.
+    if [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+      warn "$dir has uncommitted changes to tracked files; building them as they are"
+    fi
     # An existing checkout may sit on the wrong branch (or predate our learning
     # that a non-default branch is the one we want), so re-point it first.
     if [[ -n "$branch" ]]; then
-      run git -C "$dir" checkout "$branch" >/dev/null 2>&1 || \
-        warn "could not switch $dir to branch $branch"
+      local cur; cur="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      if [[ "$cur" != "$branch" ]]; then
+        info "switching $dir from branch $cur to $branch"
+        run git -C "$dir" checkout "$branch" >/dev/null 2>&1 || \
+          warn "could not switch $dir to branch $branch"
+      fi
     fi
     # A pull failure (local edits, no network) is not fatal -- build what we have.
     run git -C "$dir" pull --ff-only >/dev/null 2>&1 || \
@@ -467,6 +513,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --all)      FORCE=1; shift ;;
     --only)     [[ $# -ge 2 ]] || die "--only needs a solver name"; SELECTED+=("$2"); shift 2 ;;
+    --clone-to) [[ $# -ge 2 && -n "$2" ]] || die "--clone-to needs a directory"; CLONE_TO="$2"; shift 2 ;;
     --bindir)   [[ $# -ge 2 ]] || die "--bindir needs a directory"; BINDIR="$2"; shift 2 ;;
     --dry-run)  DRY=1; shift ;;
     --list)     LIST=1; shift ;;
@@ -475,6 +522,11 @@ while [[ $# -gt 0 ]]; do
     *)          die "unexpected argument: $1" ;;
   esac
 done
+
+if [[ -n "$CLONE_TO" ]]; then SRC_ROOT="$CLONE_TO"
+elif [[ -n "${FIFO_SOLVERS:-}" ]]; then SRC_ROOT="$FIFO_SOLVERS"
+else SRC_ROOT="$DEFAULT_SRC"
+fi
 
 if [[ ${#SELECTED[@]} -eq 0 ]]; then
   SELECTED=("${ALL_SOLVERS[@]}")
@@ -499,6 +551,20 @@ if [[ "$LIST" -eq 1 ]]; then
 fi
 
 # --- run --------------------------------------------------------------------
+# Make SRC_ROOT absolute so messages and the build steps, which cd into each
+# checkout, all name the same place.  A dry run creates nothing, so a directory
+# that does not exist yet is made absolute textually.  CDPATH is cleared: with
+# it set, cd prints the directory it chose, which would end up in the path.
+[[ "$DRY" -eq 0 ]] && { mkdir -p "$SRC_ROOT" || { echo "cannot create $SRC_ROOT" >&2; exit 1; }; }
+if [[ -d "$SRC_ROOT" ]]; then
+  abs="$(CDPATH= cd -- "$SRC_ROOT" 2>/dev/null && pwd)"
+  [[ -n "$abs" ]] || { echo "cannot enter clone directory $SRC_ROOT" >&2; exit 1; }
+  SRC_ROOT="$abs"
+elif [[ "$SRC_ROOT" != /* ]]; then
+  SRC_ROOT="$PWD/$SRC_ROOT"
+fi
+LOG_DIR="$SRC_ROOT/install-solvers-logs"
+
 say "FiFO solver installer"
 say "  sources -> $SRC_ROOT"
 say "  binaries -> $BINDIR"
@@ -506,7 +572,7 @@ say "  binaries -> $BINDIR"
 say ""
 
 if [[ "$DRY" -eq 0 ]]; then
-  mkdir -p "$SRC_ROOT" "$LOG_DIR" || { echo "cannot create $SRC_ROOT" >&2; exit 1; }
+  mkdir -p "$LOG_DIR" || { echo "cannot create $LOG_DIR" >&2; exit 1; }
 fi
 
 # Every solver here but rc2 is a C++ build, so check the toolchain once rather

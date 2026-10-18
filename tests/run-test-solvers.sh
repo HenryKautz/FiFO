@@ -150,5 +150,51 @@ says "planner.sh's numeric error path works under bash 3.2" "must be a non-negat
      /bin/bash "$BIN/planner.sh" "$TMP/pl/switchprob.pddl" --domain "$TMP/pl/switches.pddl" --minslices xyz
 
 echo
+echo "=== install-solvers.sh: where checkouts go ==="
+
+# --- 10. clone directory: --clone-to > FIFO_SOLVERS > <FiFO>/.. -------------
+# Dry runs only (nothing cloned or built), against a copy of the script in a
+# fake checkout so the default parent is a temp directory.  kissat is used
+# because its prerequisites (git, make, cc) are the ones every machine has; a
+# missing prerequisite would stop before the clone step these cases look at.
+mkdir -p "$TMP/proj/FiFO/bin" "$TMP/proj/FiFO/lisp" "$TMP/inst/bin" "$TMP/wrong" "$TMP/dirty"
+: > "$TMP/proj/FiFO/lisp/FiFO.lisp"
+# Existing sibling checkouts: the right repository under its ssh spelling (the
+# table has https), an unrelated repository of the same name, and the right one
+# with an edited tracked file.
+git init -q "$TMP/proj/kissat"
+git -C "$TMP/proj/kissat" remote add origin git@github.com:ArminBiere/kissat.git
+git init -q "$TMP/wrong/kissat"
+git -C "$TMP/wrong/kissat" remote add origin https://github.com/someone-else/kissat.git
+git init -q "$TMP/dirty/kissat"
+git -C "$TMP/dirty/kissat" remote add origin https://github.com/arminbiere/kissat.git
+echo a > "$TMP/dirty/kissat/f"
+git -C "$TMP/dirty/kissat" add f
+git -C "$TMP/dirty/kissat" -c user.name=t -c user.email=t@t commit -q -m f
+echo b > "$TMP/dirty/kissat/f"
+cp "$BIN/install-solvers.sh" "$TMP/proj/FiFO/bin/"
+cp "$BIN/install-solvers.sh" "$TMP/inst/bin/"
+INST="$TMP/proj/FiFO/bin/install-solvers.sh"
+says "default: an existing checkout beside FiFO is reused" "updating existing checkout .*/proj/kissat" \
+     env -u FIFO_SOLVERS bash "$INST" --dry-run --all --only kissat
+says "a same-named checkout of ANOTHER repository is refused" "none of its remotes is" \
+     bash "$INST" --dry-run --all --only kissat --clone-to "$TMP/wrong"
+says "and is reported as a failure, not built" "kissat .*failed" \
+     bash "$INST" --dry-run --all --only kissat --clone-to "$TMP/wrong"
+says "tracked edits in a reused checkout are warned about" "uncommitted changes" \
+     bash "$INST" --dry-run --all --only kissat --clone-to "$TMP/dirty"
+says "FIFO_SOLVERS overrides the default" "git clone .*/envdir/kissat" \
+     env FIFO_SOLVERS="$TMP/envdir" bash "$INST" --dry-run --all --only kissat
+says "--clone-to overrides FIFO_SOLVERS" "git clone .*/ct/kissat" \
+     env FIFO_SOLVERS="$TMP/envdir" bash "$INST" --dry-run --all --only kissat --clone-to "$TMP/ct"
+says "an installed copy (no FiFO above it) uses ~/Solvers" "git clone .*/home/Solvers/kissat" \
+     env -u FIFO_SOLVERS HOME="$TMP/home" bash "$TMP/inst/bin/install-solvers.sh" --dry-run --all --only kissat
+[[ ! -e "$TMP/envdir" && ! -e "$TMP/ct" && ! -e "$TMP/proj/install-solvers-logs" ]] \
+  && ok "a dry run creates no clone or log directory" \
+  || bad "a dry run creates no clone or log directory" "$(ls -d "$TMP"/envdir "$TMP"/ct "$TMP"/proj/install-solvers-logs 2>/dev/null)"
+says "--clone-to with no directory is refused" "needs a directory" \
+     bash "$INST" --clone-to
+
+echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]

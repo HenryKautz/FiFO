@@ -120,7 +120,7 @@ numbers on the clauses, never the shape of the pipeline.
 | [`wmc.sh`](#wmcsh) | reads the `.scnf` → MCC weighted CNF → ADDMC (or SharpSAT-TD with `--counter sharpsat-td`) | `(WMC <Z>)`, the partition function |
 | [`learn.sh`](#learnsh) | reads a `.scnf` carrying `(PROBABILITY ...)` targets → fits weights | a reweighted `.scnf` with integer `(WEIGHT ...)` costs; with `--wff`, also a weighted copy of the source `.wff` |
 | [`learn-pddl.sh`](#learn-pddlsh) | pddl2fifo → instantiate → learn → rewrite the domain | a `.pddl` domain with each `:probability` replaced by the learned `:cost` (and a problem file when preferences or fluent costs carry targets) |
-| [`install-solvers.sh`](#install-solverssh) | none — bootstrap | solver binaries in `~/bin`; checkouts under `Solvers/` |
+| [`install-solvers.sh`](#install-solverssh) | none — bootstrap | solver binaries in `~/bin`; checkouts beside the FiFO checkout (`<FiFO>/../<repo>`) |
 | [`cleanupfifo.sh`](#cleanupfifosh) | none — housekeeping | deletes `.scnf .cnf .wcnf .map .satout .soln .answer` from the current directory and the whole checkout, skipping git-tracked files, `tests/` and `Solvers/sharpsat-td/examples/` |
 
 Three questions, three solver families: **satisfiability** (SAT), **the most
@@ -194,12 +194,13 @@ produces a clear message rather than a confusing failure downstream.
 ### `install-solvers.sh`
 
 Bootstrap: clone, build, and install the external solvers of the
-[Solvers](#solvers-and-external-tools) section. Repositories are cloned into
-`<FiFO>/Solvers/`, binaries are installed into `~/bin`, and build output goes to
-`<FiFO>/Solvers/logs/<solver>.log`.
+[Solvers](#solvers-and-external-tools) section. Each repository is cloned into
+its own directory **beside the FiFO checkout**, outside the FiFO repository
+(`<FiFO>/../d4v2`, `<FiFO>/../ADDMC`, …). Binaries are installed into `~/bin`,
+and build output goes to `<clone dir>/install-solvers-logs/<solver>.log`.
 
 ```sh
-bin/install-solvers.sh [--all] [--only <solver>]... [--bindir <dir>] [--dry-run] [--list]
+bin/install-solvers.sh [--all] [--only <solver>]... [--clone-to <dir>] [--bindir <dir>] [--dry-run] [--list]
 ```
 
 A solver that is already usable is skipped. **Usable** is checked per solver
@@ -213,6 +214,7 @@ resolved), since that is where `sharpSAT` looks for it.
 |---|---|
 | `--all` | (Re)install every solver even if one is already available. |
 | `--only <solver>` | Install just this one. Repeatable. Names: `kissat`, `tt-open-wbo-inc`, `nuwls-c`, `evalmaxsat`, `wmaxcdcl`, `rc2`, `addmc`, `sharpsat-td`, `d4`, `walksat`, `maxpre`. |
+| `--clone-to <dir>` | Clone into, or find existing checkouts under, `<dir>` instead of `<FiFO>/..`. Overrides `FIFO_SOLVERS`. |
 | `--bindir <dir>` | Install binaries here instead of `~/bin`. |
 | `--dry-run` | Print what would be cloned and built, without doing it. |
 | `--list` | List the solvers, their repositories, and whether each is already present. |
@@ -223,10 +225,29 @@ checkout sitting on a different branch is re-pointed before the pull, so a
 repository that later moves its work to another branch does not leave stale
 checkouts building the wrong source.
 
-Set `FIFO_SOLVERS` to clone somewhere other than `<FiFO>/Solvers` — worth doing
-when the FiFO directory sits inside a synced folder, since these build trees run
-to hundreds of megabytes and are entirely regenerable. (`Solvers/` is in
-`.gitignore`.)
+**Where checkouts go**, first match wins: `--clone-to <dir>`, then the
+`FIFO_SOLVERS` environment variable, then `<FiFO>/..`. When the script runs
+from an installed copy in `~/bin`, there is no FiFO checkout above it, so the
+default is `~/Solvers`. The default is the folder FiFO itself sits in, where a
+same-named directory may be one of your own repositories. So an existing
+checkout is used only if **one of its remotes is the solver's repository**:
+https and ssh spellings and letter case don't matter, and a fork with the
+original as `upstream` qualifies. Otherwise that solver fails with a message
+saying so, rather than building an unrelated repository into `~/bin`. A
+checkout that passes is updated with `git pull --ff-only` and built in place,
+not cloned again. Uncommitted changes to tracked files are built as they are,
+with a warning. A pull failure, such as from local edits, also only warns, and
+the existing source is built. A switch to the pinned branch is announced. The
+builds clean their own outputs (for example `make clean`, or `rm -rf build`
+for sharpsat-td) inside the checkout. The build trees run to hundreds of
+megabytes, so if FiFO sits in a synced folder, `--clone-to` or `FIFO_SOLVERS`
+can keep them out of it. The first `git status` in a checkout whose files a
+sync client has touched can take a minute while git re-reads every file. The directory names are
+`kissat`, `tt-open-wbo-inc`, `NuWLS-c`, `EvalMaxSAT`, `WMaxCDCL`, `maxpre2`,
+`ADDMC`, `sharpsat-td`, `d4v2` and `Walksat`. A same-named directory that is
+not a git checkout fails that solver rather than being overwritten. Earlier
+versions cloned into `<FiFO>/Solvers/`. That directory is still in
+`.gitignore`, but nothing creates it any more.
 
 **A failed build never stops the run.** Each solver is attempted in turn; a
 failure prints the last lines of its log and is recorded, and the script moves on.
@@ -1017,7 +1038,7 @@ all default `FIFO_LISP` to the checkout's `lisp/`.
 | `tests/run-test-maxterm.sh` | The max-term back end: the hand-computable weighted case, the deliberately-pinned unweighted blind spot (0.5 everywhere), exclusive groups detected from the theory recovering the exact 1/3, backbone atoms flagged `[proved]`, and that a post-hoc prior equals the same weight compiled into the theory for its own atom but not for others. Skips without a MaxSAT solver. |
 | `tests/run-test-hypotheses.sh` | `--hypotheses` and the two baselines, against a fixture counted by hand: h1 has four times the models of h2 but the evidence supports them equally, so best-rival gives 4/5 vs 1/5 while per-hypothesis gives 1/2 vs 1/2. Carries the identity's anchor (P(O\|h) recomputed a different way, by conditioning on h and reading the evidence atom's marginal), a positive control on a symmetric fixture where the two baselines must agree exactly, cross-back-end agreement, the max-term delta, and the error paths. The maxent/ddnnf cases need no binary; addmc/d4/max-term skip cleanly. |
 | `tests/run-test-sharpsat.sh` | The SharpSAT-TD counter at every entry point, each number against an **independent** oracle: marginals against maxent enumeration on the `Probability/` fixtures and against the ddnnf compiler on a SatPlan theory (Switch at 4 slices — **not** the tracked scnf, whose marginals are all 0/1, so a comparison there is vacuous, and the suite refuses to pass on such one), `--evidence` against ddnnf's, `Z = 2e⁻¹+1` by hand through `wmc.sh`, the hand-counted hypotheses fixture, and `planner.sh --counter sharpsat-td` against `--counter maxent`. The load-bearing case is **underflow**: forty atoms forced true at cost 20 plus a free one at cost 1 give `Z ≈ 1e-348`, below double range, yet `P(B)` must still be exactly `σ(−1)` — and `wmc.sh` must refuse to print that `Z` rather than print 0 — with ADDMC failing on the same file as the control. Mutation-checked: reading the count as a double instead of an exact rational turns that case into "partition function is 0". Also the 2024 dialect reaching the binary, a missing `flow_cutter_pace17` reported by name, and the option guards. Skips cleanly (exit 0) with no `sharpSAT` on `PATH`. |
-| `tests/run-test-solvers.sh` | The shared `lisp/solvers.dat` table and the validation every CLI does against it. The load-bearing case proves the *mechanism*: a solver and a counter appended to a copy of the table are picked up by **both** the shell and the Lisp with no code change. Also every entry point refusing an unknown name, the wrong kind and a missing binary; `planner.sh` failing before writing a `.wff`; `recognize.sh` failing up front rather than in 3n runs; the `no-planner` asymmetry; counter abbreviations; paths exempt from the name check; the bundled `rc2` resolving to `bin/`; a missing table naming the file from both sides; and bash 3.2. Needs no solver installed. |
+| `tests/run-test-solvers.sh` | The shared `lisp/solvers.dat` table and the validation every CLI does against it. The load-bearing case proves the *mechanism*: a solver and a counter appended to a copy of the table are picked up by **both** the shell and the Lisp with no code change. Also every entry point refusing an unknown name, the wrong kind and a missing binary; `planner.sh` failing before writing a `.wff`; `recognize.sh` failing up front rather than in 3n runs; the `no-planner` asymmetry; counter abbreviations; paths exempt from the name check; the bundled `rc2` resolving to `bin/`; a missing table naming the file from both sides; bash 3.2; and, by dry run in a fake checkout, `install-solvers.sh`'s clone directory (`--clone-to` > `FIFO_SOLVERS` > `<FiFO>/..`, `~/Solvers` from an installed copy, an existing sibling checkout reused under its ssh spelling, a same-named checkout of another repository refused, tracked edits warned about, nothing created by a dry run). Needs no solver installed. |
 | `tests/run-test-recognize.sh` | `recognize.sh`'s merged fast path. The load-bearing case checks `--method fast` against `--method plan-runs` — an *independent oracle*, not numbers recorded in the test — so it tests the `T∨ ∧ hypI ≡ Tᵢ` identity rather than the arithmetic. Also count-neutrality of the monitor axioms directly (everything else rests on it), that the assertion literal is resolved rather than carrying `NUMSLICES`, that the negated form flips only the assertion, that `c(O)`/`c(¬O)` survive into `summary.tsv`, the flags, and slice-pinned FiFO evidence through the same path. For hypothesis discovery and priors: a `(hypN)` in a *comment* is not a hypothesis (the case the old grep failed), the same weights in a different order give an identical summary (the point of naming them), a non-nullary disjunct and an unknown prior name are refused, and the old positional file is refused with the new spelling. `--priors-from-preferences` is pinned *exactly*: `(preference h0 (hyp0) ln 2)` must give the same posteriors as `--prior hyp0=2` with no preference, which fixes π ∝ exp(w) rather than any nearby formula, and the costs must match the preference-free problem, proving the strip. The best-rival case requires the posterior to **vary**, not merely sum to 1 — a flat 0.1 across ten hypotheses sums to 1 too, and is what a broken run returns. Hypotheses read from the goal, on a 3×3 road-only grid whose evidence favours one of two goal literals (so no comparison is between uniform results): ground literals as hypotheses; fast == plan-runs exactly; `--create-hypothesis-atoms` identical; ordering evidence; exclusivity clauses dropped from the scored problem; a complex disjunct given a derived atom with a warning, scoring as its literal equivalent; a goal preference counted on both methods (it was dropped by plan-runs); a preference on a literal as its prior; and refusals for two sets, a plain conjunction, a hard goal beside the set, an exclusivity clause outside it and a free variable. Mutation-checked: plan-runs dropping preferences, and exclusivity clauses kept, each fail a case. Skips cleanly without a MaxSAT solver. |
 | `tests/run-test-evgen.sh` | `SatPlan/evgen.sh`, the evidence generator: behavioral, against a ppgen fixture solved by `planner.sh`. Emitted positives are exactly the solution's true literals at the requested slices; `--observe` restricts (including a mixed fluent+action list); positives and negatives partition the restricted universe; the settings header replays byte for byte; fifteen error paths fire. The two load-bearing cases: the true observations reproduce the plan's cost while a shifted observation costs more (so the evidence really binds), and the last slice carries no actions under `--negative-evidence` — checked there because the positives-only form of that assertion passes vacuously. Skips cleanly without a MaxSAT solver. Also the `--recognition` mode and the recognize.sh guards: one `(and ...)` form carrying the same literals as the default mode, `--negative-evidence` refused with it, a multi-form file rejected by recognize.sh with the fix named, and the horizon raised to the largest slice observed. `--export-dataset` gets a full round trip against a real benchmark: export from IntrusionDetectionCosts, diff `hyps.dat` against the published source dataset, re-import through make-recognition-instance.lisp, and solve the result under its own `obs.dat`. `--export-constraints` is verified by SOLVING the export: the constraints must be exactly the solution's literals at the requested slices, the exported problem must hit the source plan's cost, and moving one constraint to another slice must break it; plus the occur-sometime caveat comment appearing iff an action is observed. `--export-ordering-constraints` adds the same-slice refusal, the single spanning constraint, and a solve-and-perturb check, and `--nonstrict-ordering 1` exporting a tie that strict refuses, whose strict form is unsatisfiable at the same horizon. `--ordering-evidence` writes one bare `(occur-in-order …)` equal to the observed actions in slice order, binds (the true order reproduces the plan's cost, the reversed order costs more or is impossible), refuses a tie unless non-strict, refuses negative evidence, and replays byte for byte |
 | `tests/run-test-cleanup.sh` | `bin/cleanupfifo.sh`'s guards, plus the scratch-file root. Every destructive case runs against a throwaway git repository in a temp directory, never the real checkout: byproducts swept, git-tracked fixtures kept, `tests/` and `Solvers/sharpsat-td/examples/` untouched tracked or not (the rest of `Solvers/` still swept), an explicit `tests/` target refused, `--dry-run`, a plain directory outside any repository, `-r`, an installed copy with and without `FIFO_LISP`, and a run under bash 3.2. One case starts four concurrent SBCLs and asserts four distinct scratch roots — before the pid was added they collapsed to one. Needs no solver and no sbcl (the last case skips without it). |
