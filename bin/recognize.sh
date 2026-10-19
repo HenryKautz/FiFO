@@ -110,15 +110,21 @@
 #                 reference the fast path is tested against.  It always computes
 #                 R&G's difference, so --counter and --baseline are refused with it.
 #   --timeout S   (fast method) limit on EACH solver run inside the inference --
-#                 every exact count, every MaxSAT solve -- passed to marginals.sh
+#                 every exact count, every MaxSAT solve, the d4 compilation of
+#                 --counter d4 (a stopped one is an error) -- passed to marginals.sh
 #                 --timeout; 0, -1 or none for no limit.  Default: FiFO's
 #                 *solver-timeout*, 600 s, so one SharpSAT-TD count over 10
 #                 minutes fails the run however long the run itself may take.
 #   --stop-after scnf  (fast method) stop once the theory is instantiated at the
-#                 horizon: DIR/rec-problem.scnf (the problem, evidence-free) and
-#                 DIR/rec-problem-evidence.scnf are written and the horizon is
+#                 horizon: DIR/rec-problem.scnf is written and the horizon is
 #                 printed, but no hypothesis is scored -- for a caller that wants
 #                 the theory itself, e.g. to compile it, without the 2n solves.
+#                 The evidence: with --evidence-kind fifo, apart in
+#                 DIR/rec-problem-evidence.scnf; with pddl (the default), the
+#                 observation monitor's axioms are IN rec-problem.scnf
+#                 (count-neutral, so it still conditions on nothing) and the one
+#                 literal to condition on is in DIR/rec-problem-assertion.txt.
+#                 The MaxSAT solver and counter are not checked (none runs).
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -186,7 +192,7 @@ esac
 if [[ "$METHOD" == "plan-runs" ]]; then
   [[ "$COUNTER" == "max-term" ]] || { echo "--counter has no meaning with --method plan-runs (it always computes R&G's cheapest-plan difference); drop one of them" >&2; exit 2; }
   [[ "$BASELINE" == "per-hypothesis" ]] || { echo "--baseline has no meaning with --method plan-runs (it is always per-hypothesis); drop one of them" >&2; exit 2; }
-  [[ -z "$SOLVER_TIMEOUT" ]] || { echo "--timeout applies to --method fast only (planner.sh has no per-solver limit to pass it to); drop one of them" >&2; exit 2; }
+  [[ -z "$SOLVER_TIMEOUT" ]] || { echo "--timeout applies to --method fast only (plan-runs bounds each planner.sh run as a whole, and a MaxSAT solve stopped early would put an upper bound into the cost difference); drop one of them" >&2; exit 2; }
   [[ -z "$STOP_AFTER" ]] || { echo "--stop-after applies to --method fast only (plan-runs instantiates no single theory); drop one of them" >&2; exit 2; }
 fi
 [[ -z "$STOP_AFTER" || "$STOP_AFTER" == "scnf" ]] || { echo "--stop-after must be 'scnf', got: $STOP_AFTER" >&2; exit 2; }
@@ -219,31 +225,35 @@ if [[ -n "$SOLVER" ]]; then
   SOLVER="$(_fifo_require_solver "$SOLVER" sat recognize.sh)" || exit 2
   SOLVER_ARG=(--solver "$SOLVER")
 fi
-# The counter too, before anything is translated or instantiated.
-COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh)" || exit 2
+# --stop-after scnf runs neither the counter nor the MaxSAT solver, so it must not
+# be refused for a missing one (CLARA's compile-d4.py needs no python-sat).
+if [[ -z "$STOP_AFTER" ]]; then
+  # The counter too, before anything is translated or instantiated.
+  COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh)" || exit 2
 
-# The MaxSAT solver that produces the COSTS.  It must be EXACT by default, and
-# the same one on both paths.  R&G's score is c(~O) - c(O), a DIFFERENCE of two
-# minima: with an anytime solver those are two upper bounds, which do not cancel
-# -- the hazard maxterm.lisp documents, and which the plan-runs path silently had
-# because planner.sh's default weighted solver is anytime.  It also made the two
-# paths disagree run to run, since an anytime solver need not return the same
-# cost twice.
-MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
-MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh)" || exit 2
-# A path is only checked for executability, and bin/rc2-maxsat.py always is --
-# so without python-sat every solve fails, every cost comes back NA, and the run
-# would report a confident table of zeros.  Check it can actually run.
-case "$MAXSAT_SOLVER" in
-  *rc2-maxsat.py)
-    python3 -c "import pysat" >/dev/null 2>&1 || {
-      echo "recognize.sh: $MAXSAT_SOLVER needs python-sat, which is not installed." >&2
-      echo "  It is the default because R&G's score is a DIFFERENCE of two minima: an" >&2
-      echo "  anytime solver returns upper bounds, and two of those do not cancel." >&2
-      echo "  Install it:            bin/install-solvers.sh --only rc2" >&2
-      echo "  or name another EXACT solver:  --maxsat-solver wmaxcdcl" >&2
-      exit 2; } ;;
-esac
+  # The MaxSAT solver that produces the COSTS.  It must be EXACT by default, and
+  # the same one on both paths.  R&G's score is c(~O) - c(O), a DIFFERENCE of two
+  # minima: with an anytime solver those are two upper bounds, which do not cancel
+  # -- the hazard maxterm.lisp documents, and which the plan-runs path silently had
+  # because planner.sh's default weighted solver is anytime.  It also made the two
+  # paths disagree run to run, since an anytime solver need not return the same
+  # cost twice.
+  MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
+  MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh)" || exit 2
+  # A path is only checked for executability, and bin/rc2-maxsat.py always is --
+  # so without python-sat every solve fails, every cost comes back NA, and the run
+  # would report a confident table of zeros.  Check it can actually run.
+  case "$MAXSAT_SOLVER" in
+    *rc2-maxsat.py)
+      python3 -c "import pysat" >/dev/null 2>&1 || {
+        echo "recognize.sh: $MAXSAT_SOLVER needs python-sat, which is not installed." >&2
+        echo "  It is the default because R&G's score is a DIFFERENCE of two minima: an" >&2
+        echo "  anytime solver returns upper bounds, and two of those do not cancel." >&2
+        echo "  Install it:            bin/install-solvers.sh --only rc2" >&2
+        echo "  or name another EXACT solver:  --maxsat-solver wmaxcdcl" >&2
+        exit 2; } ;;
+  esac
+fi
 
 # --- run a planner.sh invocation in its own process group with a timeout ------
 TIMEOUT=900
@@ -517,8 +527,10 @@ if [[ "$METHOD" == "fast" ]]; then
   # earlier, different run would satisfy it and this run would silently report
   # the previous run's numbers.  The assertion file too: its guard below is
   # "does it exist", so a stale one would condition on the PREVIOUS evidence.
+  # And the last run's posteriors, which --stop-after would otherwise leave
+  # beside a theory they were not computed from.
   rm -f "$OUT"/rec-problem.* "$OUT"/rec-problem-assertion.txt \
-        "$OUT"/rec-problem-evidence.scnf 2>/dev/null
+        "$OUT"/rec-problem-evidence.scnf "$OUT"/hypotheses.txt "$OUT"/hypotheses.err 2>/dev/null
   P1="$OUT/rec-problem.pddl"; cp "$PROBLEM" "$P1"
   SPLIT_ARG=()
   if [[ "$EVKIND" == "pddl" ]]; then
@@ -538,12 +550,8 @@ if [[ "$METHOD" == "fast" ]]; then
     tail -3 "$OUT/instantiate.log" >&2
     exit 2
   fi
-  if [[ "$STOP_AFTER" == "scnf" ]]; then
-    # no summary.tsv: a header with no rows must not pass for a result
-    rm -f "$SUM"
-    echo "Stopped after instantiation (--stop-after scnf): $SCNF" >&2
-    exit 0
-  fi
+  # Checked before --stop-after returns: evidence a full run refuses must not
+  # pass for a usable theory.
   if [[ "$EVKIND" == "pddl" ]]; then
     ASSERT_FILE="$OUT/rec-problem-assertion.txt"
     [[ -f "$ASSERT_FILE" ]] || { echo "recognize.sh: no assertion literal was written --" >&2
@@ -552,6 +560,17 @@ if [[ "$METHOD" == "fast" ]]; then
     EV_MARG=(--evidence "$(cat "$ASSERT_FILE")")
   else
     EV_MARG=(--evidence-file "$EVIDENCE")
+  fi
+  if [[ "$STOP_AFTER" == "scnf" ]]; then
+    # no summary.tsv: a header with no rows must not pass for a result
+    rm -f "$SUM"
+    echo "Stopped after instantiation (--stop-after scnf): $SCNF" >&2
+    if [[ "$EVKIND" == "pddl" ]]; then
+      echo "  the observation monitor's axioms are in it; condition on the literal in $ASSERT_FILE" >&2
+    else
+      echo "  the evidence is apart, in $OUT/rec-problem-evidence.scnf" >&2
+    fi
+    exit 0
   fi
 
   HYP_ARGS=()

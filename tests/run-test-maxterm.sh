@@ -159,6 +159,23 @@ else
   bad "solves stopped by --timeout are counted in the WARNING" "$(grep -E 'time limit|WARNING' o13 | head -2 | tr '\n' ' ')"
 fi
 
+# 14. The SIGTERM grace period covers a solver behind a wrapper that does not
+#     exec.  The wrapper dies of the SIGTERM at once; the solver takes a second
+#     to print its best cost.  The grace loop used to wait for the wrapper only,
+#     then SIGKILL the group -- the solver died mid-answer and every solve
+#     failed with "produced no objective".
+printf '#!/bin/bash\ntrap '"'"'sleep 1; echo "o 0"; echo "s SATISFIABLE"; exit 0'"'"' TERM\nsleep 30 &\nwait\n' > slow-term
+printf '#!/bin/bash\n"%s/slow-term" "$@"\n' "$TMP" > wrapped-maxsat
+chmod +x slow-term wrapped-maxsat
+bash "$M" w.scnf --solver max-term --maxsat-solver ./wrapped-maxsat --timeout 1 \
+     --query all --scale 1 >o14 2>&1
+if grep -q 'stopped at the time limit' o14 && grep -q 'MAXTERM-MARGINAL' o14 \
+   && ! grep -q 'produced no objective' o14; then
+  ok "a wrapped solver gets its SIGTERM grace period"
+else
+  bad "a wrapped solver gets its SIGTERM grace period" "$(grep -E 'objective|time limit|rror' o14 | head -2 | tr '\n' ' ')"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]

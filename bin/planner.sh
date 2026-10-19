@@ -32,7 +32,7 @@ WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-tt-open-wbo-inc-Glucose4_1}"
 
 usage() {
   echo "usage: planner.sh <problem.pddl|problem.wff> [--domain <domain.pddl>] [--minslices <int>] [--maxslices <int>] [--solver <name>] [--stop-after <wff|scnf>]" >&2
-  echo "                  [--evidence <formula>]... [--evidence-file <file>] [--marginals [--counter <name>]]" >&2
+  echo "                  [--evidence <formula>]... [--evidence-file <file>] [--marginals [--counter <name>]] [--timeout <secs>]" >&2
   echo "  A .pddl problem is translated with pddl2fifo; a .wff is used as-is." >&2
   echo "  --domain <f>  the domain; a bare name not in the current directory is looked" >&2
   echo "               for in the domain library (\$FIFO_LISP/../pddl).  Default: the" >&2
@@ -82,6 +82,13 @@ usage() {
   echo "               actions, the final-slice goal atoms and the weighted atoms, after a" >&2
   echo "               SAT check that it is exact; only those atoms are reported" >&2
   echo "               (see marginals.sh --project)." >&2
+  echo "  --timeout <secs>  wall-clock limit on EACH external solver run: every SAT and" >&2
+  echo "               MaxSAT solve, and with --marginals every count and the d4" >&2
+  echo "               compilation (SIGTERM, then SIGKILL, to the solver's process group)." >&2
+  echo "               0, -1 or none: no limit.  Default: FiFO's *solver-timeout*, 600 s," >&2
+  echo "               so a d4 compilation that may run longer needs a larger value.  A" >&2
+  echo "               stopped count or compilation is an error; a stopped MaxSAT solve" >&2
+  echo "               gives the best plan found so far." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -101,6 +108,7 @@ SPLIT_EVIDENCE=0  # --split-evidence: monitor axioms into the theory, assertion 
 MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (a name from solvers.dat)
 PROJECT=0      # --project: projected compilation (--marginals --counter d4 only)
+TIMEOUT=""     # --timeout: *solver-timeout* for every solver run; empty = FiFO's default
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
@@ -127,6 +135,7 @@ while [[ $# -gt 0 ]]; do
     --marginals) MARGINALS=1; shift ;;
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     --project)   PROJECT=1; shift ;;
+    --timeout)   [[ $# -ge 2 ]] || usage; TIMEOUT="$2"; shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -155,6 +164,12 @@ for v in MINSLICES MAXSLICES; do
     echo "--$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]') must be a non-negative integer, got: ${!v}" >&2; exit 2
   fi
 done
+[[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"
+# the same rule as marginals.sh's: a positive number, or exactly 0 / -1 for no
+# limit -- any other negative is a typo, and "no limit" would defeat the cap
+if [[ -n "$TIMEOUT" && ! "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
+  echo "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $TIMEOUT" >&2; exit 2
+fi
 if [[ -n "$MINSLICES" && -n "$MAXSLICES" ]] && (( MINSLICES > MAXSLICES )); then
   echo "--minslices ($MINSLICES) must not exceed --maxslices ($MAXSLICES)" >&2; exit 2
 fi
@@ -248,6 +263,9 @@ PROJECT_KW=""
 
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
+# Set globally, right after FiFO.lisp loads: every solver run reads
+# *solver-timeout* when it starts (a wff may not set it).
+[[ -n "$TIMEOUT" ]] && EVALS+=( --eval "(setf *solver-timeout* (solver-time-limit $TIMEOUT))" )
 [[ "$MARGINALS" -eq 1 ]] && EVALS+=( --eval "(load \"$MAXENT\")" --eval "(load \"$WMC\")" \
                                      --eval "(load \"$MCSAT\")" --eval "(load \"$DDNNF\")" )
 EVALS+=( --eval "(load \"$PLANNER\")" )

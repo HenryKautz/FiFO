@@ -123,13 +123,47 @@ fi
 # --- 4a. --stop-after scnf: the same theory, no scoring ----------------------
 # For a caller that compiles the theory (CLARA's compile-d4.py), which used to
 # run a full max-term recognition just to get rec-problem.scnf.
+# The out dir holds an earlier run's posteriors: they must not survive beside a
+# theory they were not computed from.
+mkdir -p r-stop && echo stale > r-stop/hypotheses.txt && echo stale > r-stop/hypotheses.err
 bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
      --horizon 6 --out r-stop --stop-after scnf > r-stop.log 2>&1; RC=$?
 if [[ $RC == 0 && -s r-fast/rec-problem.scnf ]] && cmp -s r-fast/rec-problem.scnf r-stop/rec-problem.scnf \
-   && [[ ! -e r-stop/summary.tsv && ! -e r-stop/hypotheses.txt ]] && grep -q '^Horizon H = 6' r-stop.log; then
+   && [[ ! -e r-stop/summary.tsv && ! -e r-stop/hypotheses.txt && ! -e r-stop/hypotheses.err ]] \
+   && grep -q '^Horizon H = 6' r-stop.log; then
   ok "--stop-after scnf writes the same theory and scores nothing"
 else bad "--stop-after scnf writes the same theory and scores nothing" \
   "rc=$RC $(ls r-stop 2>&1 | tr '\n' ' ')"; fi
+# What it says it wrote is what it wrote.  pddl evidence: the monitor axioms are
+# in the theory, the literal to condition on apart -- no evidence scnf.
+if [[ -s r-stop/rec-problem-assertion.txt && ! -e r-stop/rec-problem-evidence.scnf ]] \
+   && grep -q "condition on the literal in .*rec-problem-assertion.txt" r-stop.log; then
+  ok "--stop-after, pddl evidence: the assertion file, named"
+else bad "--stop-after, pddl evidence: the assertion file, named" "$(ls r-stop | tr '\n' ' ')"; fi
+printf '(occurs (recon taurus) 1)\n' > fifoev1.txt
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl fifoev1.txt --evidence-kind fifo \
+     --horizon 6 --out r-stopf --stop-after scnf > r-stopf.log 2>&1; RC=$?
+if [[ $RC == 0 && -s r-stopf/rec-problem-evidence.scnf && ! -e r-stopf/rec-problem-assertion.txt ]] \
+   && grep -q "evidence is apart, in .*rec-problem-evidence.scnf" r-stopf.log; then
+  ok "--stop-after, fifo evidence: the evidence scnf, named"
+else bad "--stop-after, fifo evidence: the evidence scnf, named" "rc=$RC $(ls r-stopf 2>&1 | tr '\n' ' ')"; fi
+# Evidence a full run refuses is refused here too, not handed back as a theory.
+printf '(and (occur-in-order (recon taurus) (recon leo)) (occur-in-order (recon leo) (recon virgo)))\n' > two-ooo.txt
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl two-ooo.txt \
+     --horizon 6 --out r-stop2 --stop-after scnf > r-stop2.log 2>&1; RC=$?
+if [[ $RC == 2 ]] && grep -q "no assertion literal was written" r-stop2.log; then
+  ok "--stop-after refuses evidence a full run refuses"
+else bad "--stop-after refuses evidence a full run refuses" "rc=$RC $(tail -1 r-stop2.log)"; fi
+# No MaxSAT solve runs, so a missing python-sat (rc2) must not stop it.  The
+# control, without --stop-after, shows the stand-in python3 does hide pysat.
+mkdir -p nopy && printf '#!/bin/sh\nexit 1\n' > nopy/python3 && chmod +x nopy/python3
+PATH="$TMP/nopy:$PATH" bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --out r-nopy --stop-after scnf > r-nopy.log 2>&1; RC=$?
+CTL="$(PATH="$TMP/nopy:$PATH" bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl \
+         evidence-3.txt --horizon 6 --out r-nopy2 2>&1)"
+if [[ $RC == 0 && -s r-nopy/rec-problem.scnf ]] && grep -q "needs python-sat" <<<"$CTL"; then
+  ok "--stop-after does not need python-sat"
+else bad "--stop-after does not need python-sat" "rc=$RC $(tail -1 r-nopy.log) / $(tail -1 <<<"$CTL")"; fi
 
 # --- 5. flags ---------------------------------------------------------------
 errs() { local out; out="$(bash "$BIN/recognize.sh" "$@" 2>&1)"; printf '%s' "$out"; }

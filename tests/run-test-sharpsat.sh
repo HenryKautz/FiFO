@@ -254,12 +254,20 @@ if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$ZDEAF")" 
 else bad "a flowcutter that ignores SIGTERM still gives the exact Z" "ref=$ZREF got=$(tr '\n' ' ' <<<"$ZDEAF" | tail -c 120)"; fi
 # ... and the real flowcutter answers SIGALRM, sharpSAT's backstop, like SIGTERM:
 # its best decomposition, exit 0 (it used to be killed by the alarm).
-FC="$(dirname "$(command -v sharpSAT)")/flow_cutter_pace17"
-{ echo "p tw 30 60"; for i in $(seq 1 30); do echo "$i $(( i % 30 + 1 ))"; echo "$i $(( (i + 6) % 30 + 1 ))"; done; } > ring.gr
-"$FC" < ring.gr > ring.td 2>/dev/null & FCPID=$!
-sleep 1; kill -ALRM "$FCPID"; wait "$FCPID"; RC=$?
-if [[ "$RC" == 0 ]] && grep -q '^s td ' ring.td; then ok "flow_cutter_pace17 stops on SIGALRM with a decomposition"
-else bad "flow_cutter_pace17 stops on SIGALRM with a decomposition" "exit $RC, $(grep -c '^s td' ring.td) td lines"; fi
+# The flowcutter sharpSAT itself would run: $SHARPSAT_FLOWCUTTER when set, else
+# the one beside sharpSAT's resolved path (treewidth.cpp; install-solvers.sh
+# --list resolves it the same way).
+if [[ -n "${SHARPSAT_FLOWCUTTER:-}" ]]; then FC="$SHARPSAT_FLOWCUTTER"
+else FC="$(dirname "$(perl -MCwd -e 'print Cwd::abs_path(shift)' "$(command -v sharpSAT)")")/flow_cutter_pace17"; fi
+if [[ ! -x "$FC" ]]; then
+  printf '  %-60s ... SKIP  (%s)\n' "flow_cutter_pace17 stops on SIGALRM with a decomposition" "no executable $FC"
+else
+  { echo "p tw 30 60"; for i in $(seq 1 30); do echo "$i $(( i % 30 + 1 ))"; echo "$i $(( (i + 6) % 30 + 1 ))"; done; } > ring.gr
+  "$FC" < ring.gr > ring.td 2>/dev/null & FCPID=$!
+  sleep 1; kill -ALRM "$FCPID"; wait "$FCPID"; RC=$?
+  if [[ "$RC" == 0 ]] && grep -q '^s td ' ring.td; then ok "flow_cutter_pace17 stops on SIGALRM with a decomposition"
+  else bad "flow_cutter_pace17 stops on SIGALRM with a decomposition" "exit $RC, $(grep -c '^s td' ring.td) td lines ($FC)"; fi
+fi
 
 # --- 9b. --hypotheses counts only the hypotheses -----------------------------
 # A sharpSAT wrapper earlier on PATH logs each invocation.  The fixture has 6

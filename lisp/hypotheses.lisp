@@ -350,7 +350,7 @@ marginals.sh already does."
            ;; The ratio divides two estimates, so a small denominator amplifies
            ;; whatever error the back end has.  Exact counters do not care;
            ;; a sampler does, and silently.
-           (when (and (string-equal counter "mc-sat")
+           (when (and (counter-approx-p counter)
                       (some (lambda (u) (and (> u 0d0) (< u 0.02d0))) us))
              (format t "; WARNING: P(h|T) below 0.02 for some hypothesis, and this baseline~%~
                         ; DIVIDES by it -- with a sampled counter that magnifies the Monte~%~
@@ -362,11 +362,17 @@ marginals.sh already does."
            ;; posterior zero on the TwoPackage 5x5 runs: the two chains stayed in
            ;; different modes (one package's goals each), so every hypothesis had
            ;; c = 0 or u = 0, and recognize.sh reported "no finite complying cost".
-           (when (string-equal counter "mc-sat")
+           ;; The reverse, visited without the evidence but never under it, gives
+           ;; a well-defined ratio of 0 -- right if the evidence rules the
+           ;; hypothesis out, a mixing failure if the conditioned chain merely
+           ;; sat elsewhere.  The sampler cannot tell which, so it says so.
+           (when (counter-approx-p counter)
              (let ((unseen (loop for h in hyps for c in cs for u in us
                                  when (and (<= u 0d0) (> c 0d0)) collect h))
                    (never (loop for h in hyps for c in cs for u in us
-                                when (and (<= u 0d0) (<= c 0d0)) collect h)))
+                                when (and (<= u 0d0) (<= c 0d0)) collect h))
+                   (unseen-cond (loop for h in hyps for c in cs for u in us
+                                      when (and (> u 0d0) (<= c 0d0)) collect h)))
                (when unseen
                  (error "MC-SAT sampled ~{~S~^, ~} under the evidence but never without it, so ~
 P(h|T) is estimated as 0 and the likelihood ratio P(h|T,O) / P(h|T) is undefined.~%  ~
@@ -376,7 +382,13 @@ impossible hypothesis.  Raise --samples, try --unitprop, or use an exact counter
                (when never
                  (format t "; WARNING: MC-SAT never sampled ~{~S~^, ~}, with or without the~%~
                             ; evidence: its posterior 0 is the sampler's, not the theory's.~%"
-                         never))))
+                         never))
+               (when unseen-cond
+                 (format t "; WARNING: MC-SAT sampled ~{~S~^, ~} without the evidence but never~%~
+                            ; under it, so its posterior is 0.  That is right only if the~%~
+                            ; evidence rules it out; otherwise the conditioned chain did not~%~
+                            ; mix.  Check with an exact counter, or raise --samples.~%"
+                         unseen-cond))))
            (mapcar (lambda (h p pr c u r)
                      (list h p pr (list :cond c :uncond u :lik-ratio r)))
                    hyps post prior-v cs us ratios)))))))

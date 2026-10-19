@@ -79,6 +79,15 @@ which for it would be 1+n MaxSAT solves."
               return (getf e :name))
       name))
 
+(defun counter-approx-p (name)
+  "True when solvers.dat gives counter NAME (or an abbreviation of it) the kind
+approx: its marginals are estimates, so a 0 means \"never seen\", not
+\"impossible\"."
+  (let* ((full (resolve-table-name name "counter"))
+         (e (find full (solver-table-entries "counter")
+                  :key (lambda (e) (getf e :name)) :test #'string-equal)))
+    (and e (string-equal (getf e :kind) "approx"))))
+
 ;; Abbreviations for solver names: a list of (abbreviation full-name) pairs
 ;; (binary lists, not an association list), derived from the table above.  SOLVE's
 ;; :solver keyword resolves an abbreviation through this; a .wff cannot set either
@@ -355,6 +364,12 @@ share a root and overwrite -- or delete -- each other's .cnf/.satout files."
 ;; File-based API: instantiate, propositionalize, interpret, satisfy, solve
 ;; 
 
+(defun process-group-alive-p (proc)
+  "True while any member of PROC's process group exists: signal 0 to the group
+fails (ESRCH) only once it is empty.  PROC itself must have been reaped
+(PROCESS-ALIVE-P false), or its zombie keeps the group alive."
+  (values (sb-ext:process-kill proc 0 :process-group)))
+
 (defun run-program-to-file (program args outfile &key timeout error-file)
   "Run PROGRAM with ARGS, sending stdout to OUTFILE (and stderr to ERROR-FILE if
 given, else discarding it).  When TIMEOUT (seconds) is a
@@ -383,11 +398,15 @@ Returns (values exit-code timed-out-p)."
                      (let ((grace (+ (get-internal-real-time)
                                      (* *solver-kill-grace*
                                         internal-time-units-per-second))))
-                       (loop while (and (sb-ext:process-alive-p proc)
+                       ;; Wait for the GROUP, not just the leader: a wrapper
+                       ;; dies of the SIGTERM at once while its solver is
+                       ;; still printing the best model it has.
+                       (loop while (and (or (sb-ext:process-alive-p proc)
+                                            (process-group-alive-p proc))
                                         (< (get-internal-real-time) grace))
                              do (sleep 0.05)))
-                     ;; the group, even if the leader has exited: a wrapper that
-                     ;; died of the SIGTERM can leave its solver behind
+                     ;; the group, even if the leader has exited: whatever of
+                     ;; it outlived the grace period
                      (sb-ext:process-kill proc 9 :process-group) ; SIGKILL
                      (return))
                    (sleep 0.05)))))

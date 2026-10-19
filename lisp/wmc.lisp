@@ -364,11 +364,13 @@ error messages.  ADDMC prints one solution line 's wmc <value>' (or 's mc
   "The contents of PATH as a string, or \"\" if it does not exist."
   (or (ignore-errors (uiop:read-file-string path)) ""))
 
-(defun wmc--run-counter (name program args install)
+(defun wmc--run-counter (name program args install &key (result "an exact count"))
   "Run a counter PROGRAM with ARGS through RUN-PROGRAM-TO-FILE, so it is bounded by
 *SOLVER-TIMEOUT* like every other solver run, and return (values stdout stderr).
 NAME is for messages and INSTALL the install-solvers.sh name.  An exact counter
-has no partial answer, so a timeout or a non-zero exit is an error."
+has no partial answer, so a timeout or a non-zero exit is an error; RESULT names
+what was being computed, for the timeout message.  The d4 compiler runs through
+this too (ddnnf--run-d4)."
   (let* ((root (wmc--scratch-root))
          (out-file (format nil "~A.counter-out" root))
          (err-file (format nil "~A.counter-err" root)))
@@ -383,8 +385,8 @@ has no partial answer, so a timeout or a non-zero exit is an error."
            (let ((out (wmc--read-file-string out-file))
                  (err (wmc--read-file-string err-file)))
              (when timed-out
-               (error "~A timed out after ~A s (*solver-timeout*); an exact count has no partial answer"
-                      name *solver-timeout*))
+               (error "~A timed out after ~A s (*solver-timeout*); ~A has no partial answer"
+                      name (solver-time-limit *solver-timeout*) result))
              (when (and code (not (zerop code)))
                (error "~A (~A) exited with code ~A.~%--- stdout ---~%~A~%--- stderr ---~%~A"
                       name program code out err))

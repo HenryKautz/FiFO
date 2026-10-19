@@ -305,6 +305,7 @@ stub() {   # stub <counter> <cond alist> <uncond alist>
   sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
     --eval "(load \"$FIFO_LISP/maxent.lisp\")" --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
     --eval "(load \"$FIFO_LISP/hypotheses.lisp\")" \
+    --eval "(push (list :type \"counter\" :name \"fake-sampler\" :kind \"approx\") *solver-table*)" \
     --eval "(defun hp--marginals (file counter opts &optional atoms)
               (declare (ignore counter opts atoms))
               (if (search \"hypev\" file) (quote $2) (quote $3)))" \
@@ -318,14 +319,29 @@ r="$(stub mc-sat '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2
 if grep -q "^ERR MC-SAT sampled (H 1) under the evidence but never without it" <<<"$r"; then
   ok "mc-sat: a hypothesis seen only under evidence is an error"
 else bad "mc-sat: a hypothesis seen only under evidence is an error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
+# The rule follows the counter's KIND in solvers.dat, not the name "mc-sat": the
+# abbreviation, and an approx counter added to the table, get it too.
+for c in mcsat fake-sampler; do
+  r="$(stub "$c" '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
+  if grep -q "^ERR MC-SAT sampled (H 1) under the evidence" <<<"$r"; then
+    ok "$c (approx in solvers.dat): the same error"
+  else bad "$c (approx in solvers.dat): the same error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
+done
 r="$(stub mc-sat '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))' '(((H 1) . 0.5) ((H 2) . 0.5) ((H 3) . 0))')"
 if grep -q "never sampled (H 3), with or without" <<<"$r" && grep -q "^ROW (H 2) 1.000" <<<"$r" \
    && ! grep -q "^ERR" <<<"$r"; then
   ok "mc-sat: a hypothesis never sampled is warned about"
 else bad "mc-sat: a hypothesis never sampled is warned about" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
+# The reverse of the error case: seen without the evidence, never under it.  The
+# ratio 0 is defined, and right if the evidence rules (H 1) out -- but the
+# sampler cannot tell that from a conditioned chain stuck elsewhere.
+if grep -q "sampled (H 1) without the evidence but never" <<<"$r" \
+   && ! grep -q "sampled (H 2) without the evidence but never" <<<"$r"; then
+  ok "mc-sat: one seen only without evidence is warned about"
+else bad "mc-sat: one seen only without evidence is warned about" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
 # An exact counter's 0 IS impossibility: the same numbers, no error, ratio 0.
 r="$(stub maxent '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
-if grep -q "^ROW (H 2) 1.000" <<<"$r" && ! grep -q "^ERR\|never sampled" <<<"$r"; then
+if grep -q "^ROW (H 2) 1.000" <<<"$r" && ! grep -q "^ERR\|never sampled\|but never" <<<"$r"; then
   ok "an exact counter's P(h|T) = 0 still means impossible"
 else bad "an exact counter's P(h|T) = 0 still means impossible" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
 

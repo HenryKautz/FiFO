@@ -223,6 +223,32 @@ if [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then
 else bad "the stalled d4 wrapper's child is killed with it" "child pid ${child:-none} still alive"
   [[ -n "$child" ]] && kill "$child" 2>/dev/null; fi
 
+# A d4 that writes a well-formed dump and then exits non-zero: a crashed d4 can
+# leave a partial dump, and importing it would be a wrong circuit, not an error.
+mkdir -p crashd4
+printf '#!/bin/bash\nwhile [ $# -gt 0 ]; do [ "$1" = --dump-file ] && f="$2"; shift; done\nprintf "o 1 0\\nt 2 0\\n1 2 0\\n" > "$f"\nexit 3\n' > crashd4/d4
+chmod +x crashd4/d4
+r="$(PATH="$TMP/crashd4:$PATH" bash "$REPO/bin/marginals.sh" "$REPO/Probability/test_marginals.scnf" \
+       --solver d4 2>&1)"
+if grep -q 'd4 (d4) exited with code 3' <<<"$r" && ! grep -q '^(MARGINAL' <<<"$r"; then
+  ok "a d4 that exits non-zero is refused, its dump unused"
+else bad "a d4 that exits non-zero is refused, its dump unused" "$(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+
+# planner.sh --marginals --counter d4 runs the same compilation, so it needs the
+# same option: without it the limit was a fixed 600 s.
+mkdir -p sw && cp "$REPO"/SatPlan/Examples/Switch/*.pddl sw/
+T0=$SECONDS
+r="$(PATH="$TMP/slowd4:$PATH" bash "$REPO/bin/planner.sh" sw/switchprob.pddl --domain sw/switches.pddl \
+       --numslices 4 --marginals --counter d4 --timeout 2 2>&1)"
+el=$((SECONDS - T0))
+if grep -q 'd4 timed out after 2 s' <<<"$r" && (( el < 60 )); then
+  ok "planner.sh --timeout 2 stops a stalled d4 ($el s)"
+else bad "planner.sh --timeout 2 stops a stalled d4" "$el s: $(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+r="$(bash "$REPO/bin/planner.sh" sw/switchprob.pddl --timeout -300 2>&1)"
+if grep -q 'timeout must be a number of seconds' <<<"$r"; then
+  ok "planner.sh refuses --timeout -300"
+else bad "planner.sh refuses --timeout -300" "$(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
