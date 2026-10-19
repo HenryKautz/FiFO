@@ -93,13 +93,15 @@ reach of exact counting.
                       run at once (default 4).  They are independent, so this
                       divides the wall-clock time; 1 runs them in turn
   --timeout <secs>    wall-clock limit on EACH external solver run: every
-                      sharpsat-td/addmc count, every max-term MaxSAT solve, and
-                      the kissat checks (SIGTERM, then SIGKILL).  0, -1 or none:
-                      no limit.  Default: FiFO's *solver-timeout*, 600 s.  An
-                      exact count stopped this way is an error, not a partial
-                      answer; a max-term solve stopped this way gives an upper
-                      bound, flagged in a WARNING.  It does not bound mc-sat's
-                      walksat or d4
+                      sharpsat-td/addmc count, every max-term MaxSAT solve, the
+                      d4 compilation, and the kissat checks (SIGTERM, then
+                      SIGKILL, to the solver's whole process group).  0, -1 or
+                      none: no limit.  Default: FiFO's *solver-timeout*, 600 s,
+                      so a d4 compilation that may run longer needs a larger
+                      value.  An exact count or a compilation stopped this way
+                      is an error, not a partial answer; a max-term solve
+                      stopped this way gives an upper bound, flagged in a
+                      WARNING.  It does not bound mc-sat's walksat
   --samples <n>       (mc-sat only) number of retained samples (default 10000).
                       Monte-Carlo error falls as 1/sqrt(n)
   --burnin <n>        (mc-sat only) discarded warm-up samples (default 100)

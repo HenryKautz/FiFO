@@ -8,6 +8,12 @@
 ;;;; action -- are recomputed here from the source files, so each learned weight is
 ;;;; mapped back onto the construct it came from.
 
+;; Defined in the files loaded alongside this one (pddl2fifo.lisp, reweight.lisp,
+;; maxent.lisp); declared so this file compiles without undefined-function
+;; warnings whatever the load order.
+(declaim (ftype function find-define get-section read-pddl-file resolve-domain-file
+                pddl-library-file-p pddl2fifo reweight maxent-reweight))
+
 ;;; ---- spec -> integer cost --------------------------------------------------
 
 (defun pl--spec->cost (spec scale what)

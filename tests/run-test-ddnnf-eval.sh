@@ -201,6 +201,28 @@ r="$(lisp --eval '(let* ((c (ddnnf-load "c.dnnfb")) (d (ddnnf-nodes c))
 case "$r" in *"does not precede it"*) ok "a binary circuit with a forward child is refused" ;;
   *) bad "a binary circuit with a forward child is refused" "$r" ;; esac
 
+echo "=== d4 is bounded by *solver-timeout* ==="
+
+# A stand-in d4 that never finishes, and is a WRAPPER that does not exec: the
+# "solver" is its child, as with a logging shim.  marginals.sh --timeout 2 must
+# stop it with an error naming the limit, and the child must die too -- the
+# signals go to the whole process group, not just the wrapper.
+mkdir -p slowd4
+printf '#!/bin/bash\nsleep 60 &\necho $! > %s/d4child.pid\nwait\n' "$TMP" > slowd4/d4
+chmod +x slowd4/d4
+T0=$SECONDS
+r="$(PATH="$TMP/slowd4:$PATH" bash "$REPO/bin/marginals.sh" "$REPO/Probability/test_marginals.scnf" \
+       --solver d4 --timeout 2 2>&1)"
+el=$((SECONDS - T0))
+child="$(cat d4child.pid 2>/dev/null)"
+if grep -q 'd4 timed out after 2 s' <<<"$r" && (( el < 30 )); then
+  ok "marginals.sh --timeout 2 stops a stalled d4 ($el s)"
+else bad "marginals.sh --timeout 2 stops a stalled d4" "$el s: $(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+if [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then
+  ok "the stalled d4 wrapper's child is killed with it"
+else bad "the stalled d4 wrapper's child is killed with it" "child pid ${child:-none} still alive"
+  [[ -n "$child" ]] && kill "$child" 2>/dev/null; fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

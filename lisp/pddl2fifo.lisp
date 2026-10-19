@@ -64,6 +64,10 @@
     "CONSTRAINT-FLUENTS" "PREF-FLUENTS" "FLUENTCOST-FLUENTS" "NUMSLICES")
   "Domain names used by the generated encoding and satplan.wff; PDDL types may not collide with these.")
 
+;; Forward references: the static-predicate scans near the top call these, which
+;; are defined further down with the derived-predicate and reachability code.
+(declaim (ftype function derived-predicate-p reachability-ground-substitute))
+
 (defvar *constraint-env* nil
   "Problem context -- (:domain-def :object-pairs :type-table :static-init) --
 bound while the :constraints section is translated, so occur-in-order can

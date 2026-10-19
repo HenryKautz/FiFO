@@ -233,6 +233,34 @@ if grep -q 'could not run /nonexistent/flow_cutter_pace17' <<<"$OUT"; then
   ok "a missing flow_cutter_pace17 is reported by name"
 else bad "a missing flow_cutter_pace17 is reported by name" "$(tr '\n' ' ' <<<"$OUT" | cut -c1-160)"; fi
 
+# --- 9a. a flowcutter that will not stop costs speed, not the count ------------
+# A loaded Mac once had flowcutter outlive sharpSAT's SIGTERM; sharpSAT killed it
+# and then failed the whole count.  A stand-in that ignores SIGTERM and SIGALRM
+# must now cost only the decomposition: sharpSAT falls back to one bag and gives
+# the same Z as with the real flowcutter -- to 1e-12 relative, not textually:
+# a weighted count is carried in 53-bit floats, so a different decomposition
+# rounds differently in the last digit.  (Old sharpSAT: exit 1, no Z.)
+PB1="$REPO/SatPlan/Examples/LogisticsCosts/intermediates/pb1.scnf"
+printf '#!/bin/sh\ntrap "" TERM ALRM\nsleep 60\n' > deaf-fc
+chmod +x deaf-fc
+ZREF="$(bash "$W" "$PB1" --counter sharpsat-td 2>/dev/null)"
+T0=$SECONDS
+ZDEAF="$(SHARPSAT_FLOWCUTTER="$TMP/deaf-fc" bash "$W" "$PB1" --counter sharpsat-td 2>&1)"
+zval() { grep '^(WMC' | tr -d '()' | awk '{print $2}'; }
+if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$ZDEAF")" \
+     'BEGIN { if (b == "") exit 1; d = (a - b) / a; if (d < 0) d = -d; exit !(d < 1e-12) }' \
+   && (( SECONDS - T0 < 30 )); then
+  ok "a flowcutter that ignores SIGTERM still gives the exact Z"
+else bad "a flowcutter that ignores SIGTERM still gives the exact Z" "ref=$ZREF got=$(tr '\n' ' ' <<<"$ZDEAF" | tail -c 120)"; fi
+# ... and the real flowcutter answers SIGALRM, sharpSAT's backstop, like SIGTERM:
+# its best decomposition, exit 0 (it used to be killed by the alarm).
+FC="$(dirname "$(command -v sharpSAT)")/flow_cutter_pace17"
+{ echo "p tw 30 60"; for i in $(seq 1 30); do echo "$i $(( i % 30 + 1 ))"; echo "$i $(( (i + 6) % 30 + 1 ))"; done; } > ring.gr
+"$FC" < ring.gr > ring.td 2>/dev/null & FCPID=$!
+sleep 1; kill -ALRM "$FCPID"; wait "$FCPID"; RC=$?
+if [[ "$RC" == 0 ]] && grep -q '^s td ' ring.td; then ok "flow_cutter_pace17 stops on SIGALRM with a decomposition"
+else bad "flow_cutter_pace17 stops on SIGALRM with a decomposition" "exit $RC, $(grep -c '^s td' ring.td) td lines"; fi
+
 # --- 9b. --hypotheses counts only the hypotheses -----------------------------
 # A sharpSAT wrapper earlier on PATH logs each invocation.  The fixture has 6
 # atoms and 3 hypotheses; per-hypothesis needs a conditioned and an unconditioned

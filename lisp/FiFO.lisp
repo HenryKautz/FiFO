@@ -361,6 +361,9 @@ given, else discarding it).  When TIMEOUT (seconds) is a
 positive number and the process outlives it, send SIGTERM -- an anytime MaxSAT
 solver responds by printing the best solution it has found, so the partial output
 is still useful -- and escalate to SIGKILL after *solver-kill-grace* seconds.
+Both go to the child's whole PROCESS GROUP (SBCL starts each child as a group
+leader), so a wrapper script and the solver it runs stop together: signalling
+only a non-exec'ing wrapper would leave the real solver running, orphaned.
 Returns (values exit-code timed-out-p)."
   (with-open-file (out outfile :direction :output :if-exists :supersede
                                :if-does-not-exist :create)
@@ -376,15 +379,16 @@ Returns (values exit-code timed-out-p)."
                  (loop while (sb-ext:process-alive-p proc) do
                    (when (> (get-internal-real-time) deadline)
                      (setq timed-out t)
-                     (sb-ext:process-kill proc 15)   ; SIGTERM
+                     (sb-ext:process-kill proc 15 :process-group) ; SIGTERM
                      (let ((grace (+ (get-internal-real-time)
                                      (* *solver-kill-grace*
                                         internal-time-units-per-second))))
                        (loop while (and (sb-ext:process-alive-p proc)
                                         (< (get-internal-real-time) grace))
                              do (sleep 0.05)))
-                     (when (sb-ext:process-alive-p proc)
-                       (sb-ext:process-kill proc 9)) ; SIGKILL
+                     ;; the group, even if the leader has exited: a wrapper that
+                     ;; died of the SIGTERM can leave its solver behind
+                     (sb-ext:process-kill proc 9 :process-group) ; SIGKILL
                      (return))
                    (sleep 0.05)))))
         (sb-ext:process-wait proc))

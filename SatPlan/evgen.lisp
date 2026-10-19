@@ -33,6 +33,11 @@
 ;;;; Requires FiFO.lisp and pddl2fifo.lisp to be loaded first (both live in
 ;;;; CL-USER, and so does this).
 
+;; pddl2fifo.lisp's readers, and this file's own evgen--run, defined after the
+;; entry point that calls it; declared so loading compiles without warnings.
+(declaim (ftype function find-define get-section read-pddl-file resolve-domain-file
+                pddl2fifo evgen--run))
+
 ;;; ------------------------------------------------------------- slice specs
 
 (defun evgen--split (string char)

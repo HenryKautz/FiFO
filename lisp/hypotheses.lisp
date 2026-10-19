@@ -343,7 +343,8 @@ marginals.sh already does."
          (let* ((us (mapcar (lambda (h) (hp--lookup uncond-m h scnf-file)) hyps))
                 ;; P(h|T) = 0 means the hypothesis is impossible in the theory at
                 ;; all -- infeasible at this horizon, say.  Its posterior is 0;
-                ;; dividing would be 0/0.
+                ;; dividing would be 0/0.  That holds for an EXACT counter.  For a
+                ;; sampler, 0 means only "never visited", checked just below.
                 (ratios (mapcar (lambda (c u) (if (<= u 0d0) 0d0 (/ c u))) cs us))
                 (post (hp--normalise (mapcar #'* prior-v ratios))))
            ;; The ratio divides two estimates, so a small denominator amplifies
@@ -354,6 +355,28 @@ marginals.sh already does."
              (format t "; WARNING: P(h|T) below 0.02 for some hypothesis, and this baseline~%~
                         ; DIVIDES by it -- with a sampled counter that magnifies the Monte~%~
                         ; Carlo error.  Prefer an exact counter, or raise --samples.~%"))
+           ;; A sampler's 0 is "never visited", not "impossible".  A hypothesis it
+           ;; visited under the evidence but never without it has a ratio with a
+           ;; zero ESTIMATE in the denominator: undefined, and the 0 the exact
+           ;; rule above gives it is a wrong answer.  That is what made every
+           ;; posterior zero on the TwoPackage 5x5 runs: the two chains stayed in
+           ;; different modes (one package's goals each), so every hypothesis had
+           ;; c = 0 or u = 0, and recognize.sh reported "no finite complying cost".
+           (when (string-equal counter "mc-sat")
+             (let ((unseen (loop for h in hyps for c in cs for u in us
+                                 when (and (<= u 0d0) (> c 0d0)) collect h))
+                   (never (loop for h in hyps for c in cs for u in us
+                                when (and (<= u 0d0) (<= c 0d0)) collect h)))
+               (when unseen
+                 (error "MC-SAT sampled ~{~S~^, ~} under the evidence but never without it, so ~
+P(h|T) is estimated as 0 and the likelihood ratio P(h|T,O) / P(h|T) is undefined.~%  ~
+The sampler did not mix across the hypotheses -- a sampling failure, not an ~
+impossible hypothesis.  Raise --samples, try --unitprop, or use an exact counter."
+                        unseen))
+               (when never
+                 (format t "; WARNING: MC-SAT never sampled ~{~S~^, ~}, with or without the~%~
+                            ; evidence: its posterior 0 is the sampler's, not the theory's.~%"
+                         never))))
            (mapcar (lambda (h p pr c u r)
                      (list h p pr (list :cond c :uncond u :lik-ratio r)))
                    hyps post prior-v cs us ratios)))))))

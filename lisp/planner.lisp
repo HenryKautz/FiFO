@@ -14,11 +14,15 @@
 ;;;; (*satplan-numslices*, *cnf-format*, *solver*) explicitly at the start of
 ;;;; each iteration.
 
-;; marginals / marginals-addmc / marginals-sharpsat live in maxent.lisp / wmc.lisp;
+;; marginals / marginals-addmc / marginals-sharpsat / ddnnf-marginals /
+;; marginals-mcsat live in maxent.lisp / wmc.lisp / ddnnf.lisp / mcsat.lisp;
 ;; planner.sh loads them only for --marginals.  Declare them so this file compiles
 ;; without an undefined-function warning when they are absent (they are only ever
 ;; called on the --marginals path, where the shell has loaded them).
-(declaim (ftype (function (t &rest t) t) marginals marginals-addmc marginals-sharpsat))
+(declaim (ftype (function (t &rest t) t) marginals marginals-addmc marginals-sharpsat
+                ddnnf-marginals marginals-mcsat))
+;; pddl2fifo.lisp, which planner.sh loads alongside this file.
+(declaim (ftype function pddl2fifo occur-in-order-split))
 
 (defun planner-file (problem-path type)
   "The companion file of PROBLEM-PATH with the given TYPE, e.g. \"scnf\"."
@@ -94,7 +98,7 @@ its predicate+term in TERMS (keyed by (kind . term))."
             do (plan--collect-timeline-atoms f atoms terms)))
     (values atoms terms)))
 
-(defun plan--resolve-evidence (clauses problem-scnf n)
+(defun plan--resolve-evidence (clauses problem-scnf)
   "Check CLAUSES against the problem theory and return the clauses to write.
 Errors on an atom whose term the problem does not have at any slice.  A known
 term at an out-of-range slice cannot be true at this horizon, so its literal is
@@ -206,7 +210,7 @@ wrong answer without it."
          ;; the caller unresolved -- and an atom the theory does not contain
          ;; constrains nothing.
          (let* ((clauses (plan--resolve-evidence (parse-same-env (list assertion))
-                                                 problem-scnf n))
+                                                 problem-scnf))
                 (literal (second (first clauses))))
            (unless (and (= 1 (length clauses)) (= 2 (length (first clauses))))
              (error "the occur-in-order assertion did not clausify to one literal: ~S" clauses))
@@ -216,7 +220,7 @@ wrong answer without it."
                (format out "~S~%" literal)))))
         (t
          (let ((clauses (plan--resolve-evidence (parse-same-env evidence-forms)
-                                                problem-scnf n)))
+                                                problem-scnf)))
            (with-open-file (out evidence-scnf :direction :output
                                               :if-exists :supersede :if-does-not-exist :create)
              (dolist (c clauses) (format out "~S~%" c)))))))))

@@ -44,6 +44,10 @@
 
 (load (merge-pathnames "wmc.lisp" (or *load-pathname* *default-pathname-defaults*)))
 
+;; Forward references within this file: the compiler's mutual recursion, and the
+;; circuit loaders' shared assembly and node checks, defined after their callers.
+(declaim (ftype function ddnnf--compile-cs-1 ddnnf--decide ddnnf--assemble ddnnf--check-nodes))
+
 ;;; ----------------------------------------------------------------------------
 ;;; Circuit representation
 ;;; ----------------------------------------------------------------------------
@@ -449,23 +453,34 @@ a bit vector, adds d4's projection line 'c p show <vars> 0'."
 (defun ddnnf--run-d4 (cnf-file nnf-file &key (d4 *d4*))
   "Run the d4 compiler on CNF-FILE, dumping its d-DNNF to NNF-FILE.  Preprocessing
 is left at d4's default 'basic', which performs NO variable elimination (so every
-variable still appears in the dump and our smoothing is correct)."
-  (multiple-value-bind (out err code)
-      (handler-case
-          (uiop:run-program (list d4 "-i" cnf-file "--dump-file" nnf-file)
-                            :output :string :error-output :string :ignore-error-status t)
-        (error (c)
-          (error "could not run the d4 compiler (~A): ~A~%Put a 'd4' on PATH (bin/install-solvers.sh --only d4)."
-                 d4 c)))
-    (declare (ignore out))
-    ;; d4 exits 0 on satisfiable and unsatisfiable input alike, so any other code
-    ;; is a crash -- and a crashed d4 can leave a PARTIAL dump, whose import would
-    ;; be a wrong circuit, not an error.  Refuse it whether or not a dump exists.
-    (when (and code (not (zerop code)))
-      (error "d4 (~A) failed (exit ~A)~:[ and produced no dump~;; its partial dump is not used~].~%--- stderr ---~%~A"
-             d4 code (probe-file nnf-file) err))
-    (unless (probe-file nnf-file)
-      (error "d4 produced no dump file ~A~%--- stderr ---~%~A" nnf-file err))
+variable still appears in the dump and our smoothing is correct).  Bounded by
+*solver-timeout* like every other external solver: a compilation stopped that
+way is an error, since a circuit has no partial answer."
+  (let ((out-file (concatenate 'string nnf-file ".out"))
+        (err-file (concatenate 'string nnf-file ".err")))
+    (unwind-protect
+         (multiple-value-bind (code timed-out)
+             (handler-case
+                 (run-program-to-file d4 (list "-i" cnf-file "--dump-file" nnf-file) out-file
+                                      :timeout *solver-timeout* :error-file err-file)
+               (error (c)
+                 (error "could not run the d4 compiler (~A): ~A~%Put a 'd4' on PATH (bin/install-solvers.sh --only d4)."
+                        d4 c)))
+           (let ((err (or (ignore-errors (uiop:read-file-string err-file)) "")))
+             (when timed-out
+               (error "d4 timed out after ~A s (*solver-timeout*); a circuit has no partial answer"
+                      (solver-time-limit *solver-timeout*)))
+             ;; d4 exits 0 on satisfiable and unsatisfiable input alike, so any
+             ;; other code is a crash -- and a crashed d4 can leave a PARTIAL dump,
+             ;; whose import would be a wrong circuit, not an error.  Refuse it
+             ;; whether or not a dump exists.
+             (when (and code (not (zerop code)))
+               (error "d4 (~A) failed (exit ~A)~:[ and produced no dump~;; its partial dump is not used~].~%--- stderr ---~%~A"
+                      d4 code (probe-file nnf-file) err))
+             (unless (probe-file nnf-file)
+               (error "d4 produced no dump file ~A~%--- stderr ---~%~A" nnf-file err))))
+      (ignore-errors (delete-file out-file))
+      (ignore-errors (delete-file err-file)))
     nnf-file))
 
 (deftype ddnnf--litvec () '(simple-array (signed-byte 32) (*)))

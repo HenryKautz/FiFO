@@ -120,8 +120,25 @@ else
   bad "the default path finishes quickly" "took $((E-S))s"
 fi
 
+# --- 4a. --stop-after scnf: the same theory, no scoring ----------------------
+# For a caller that compiles the theory (CLARA's compile-d4.py), which used to
+# run a full max-term recognition just to get rec-problem.scnf.
+bash "$BIN/recognize.sh" intrusion-detection-costs.pddl problem.pddl evidence-3.txt \
+     --horizon 6 --out r-stop --stop-after scnf > r-stop.log 2>&1; RC=$?
+if [[ $RC == 0 && -s r-fast/rec-problem.scnf ]] && cmp -s r-fast/rec-problem.scnf r-stop/rec-problem.scnf \
+   && [[ ! -e r-stop/summary.tsv && ! -e r-stop/hypotheses.txt ]] && grep -q '^Horizon H = 6' r-stop.log; then
+  ok "--stop-after scnf writes the same theory and scores nothing"
+else bad "--stop-after scnf writes the same theory and scores nothing" \
+  "rc=$RC $(ls r-stop 2>&1 | tr '\n' ' ')"; fi
+
 # --- 5. flags ---------------------------------------------------------------
 errs() { local out; out="$(bash "$BIN/recognize.sh" "$@" 2>&1)"; printf '%s' "$out"; }
+grep -q "must be 'scnf'" \
+  <<<"$(errs intrusion-detection-costs.pddl problem.pddl evidence-3.txt --stop-after wff)" \
+  && ok "--stop-after other than scnf is refused" || bad "--stop-after other than scnf is refused" "?"
+grep -q "applies to --method fast only (plan-runs" \
+  <<<"$(errs intrusion-detection-costs.pddl problem.pddl evidence-3.txt --stop-after scnf --method plan-runs)" \
+  && ok "--stop-after with plan-runs is refused" || bad "--stop-after with plan-runs is refused" "?"
 grep -q "must be 'fast' or 'plan-runs'" \
   <<<"$(errs intrusion-detection-costs.pddl problem.pddl evidence-3.txt --method bogus)" \
   && ok "an unknown --method is refused" || bad "an unknown --method is refused" "?"

@@ -295,6 +295,40 @@ expect_err "priors under best-rival on an exact counter are refused" \
 expect_err "a partial prior specification is refused" "give all of them or none" \
   t.scnf "${H[@]}" --evidence '(OBS 1)' --baseline per-hypothesis --prior '(H 1)=0.5'
 
+# --- 7b. a sampler's zero is "never visited", not "impossible" ---------------
+# hp--marginals is replaced by canned answers, so the rule is tested exactly --
+# a real chain cannot be made to miss a mode on demand.  cond = the run under
+# the evidence (its file name has "hypev"), uncond = the run without.  On the
+# TwoPackage 5x5 runs the two chains sat in different modes, every hypothesis
+# had cond 0 or uncond 0, and every posterior came out 0 with no word of why.
+stub() {   # stub <counter> <cond alist> <uncond alist>
+  sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/maxent.lisp\")" --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+    --eval "(load \"$FIFO_LISP/hypotheses.lisp\")" \
+    --eval "(defun hp--marginals (file counter opts &optional atoms)
+              (declare (ignore counter opts atoms))
+              (if (search \"hypev\" file) (quote $2) (quote $3)))" \
+    --eval "(handler-case
+              (dolist (row (hp--exact-rows \"t.scnf\" (quote ((H 1) (H 2) (H 3))) (quote ((OBS 1)))
+                                           :per-hypothesis (list 1d0 1d0 1d0) nil \"$1\" nil))
+                (format t \"ROW ~S ~,3F~%\" (first row) (second row)))
+              (error (e) (format t \"ERR ~A~%\" e)))" 2>&1
+}
+r="$(stub mc-sat '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
+if grep -q "^ERR MC-SAT sampled (H 1) under the evidence but never without it" <<<"$r"; then
+  ok "mc-sat: a hypothesis seen only under evidence is an error"
+else bad "mc-sat: a hypothesis seen only under evidence is an error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
+r="$(stub mc-sat '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))' '(((H 1) . 0.5) ((H 2) . 0.5) ((H 3) . 0))')"
+if grep -q "never sampled (H 3), with or without" <<<"$r" && grep -q "^ROW (H 2) 1.000" <<<"$r" \
+   && ! grep -q "^ERR" <<<"$r"; then
+  ok "mc-sat: a hypothesis never sampled is warned about"
+else bad "mc-sat: a hypothesis never sampled is warned about" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
+# An exact counter's 0 IS impossibility: the same numbers, no error, ratio 0.
+r="$(stub maxent '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
+if grep -q "^ROW (H 2) 1.000" <<<"$r" && ! grep -q "^ERR\|never sampled" <<<"$r"; then
+  ok "an exact counter's P(h|T) = 0 still means impossible"
+else bad "an exact counter's P(h|T) = 0 still means impossible" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
+
 # --- 8. the default path is untouched ---------------------------------------
 bash "$M" t.scnf > plain.txt 2>/dev/null
 grep -q "^(MARGINAL (H 1) " plain.txt \

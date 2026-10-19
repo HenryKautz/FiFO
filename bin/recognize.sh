@@ -30,7 +30,7 @@
 #        [--horizon H] [--beta B] [--out DIR] [--solver NAME] [--counter NAME] \
 #        [--baseline B] [--maxsat-solver NAME] [--method M] [--timeout SECS] \
 #        [--prior H=W ...] [--priors FILE] [--priors-from-preferences] \
-#        [--create-hypothesis-atoms]
+#        [--create-hypothesis-atoms] [--stop-after scnf]
 #
 #   The HYPOTHESES are the disjuncts of ONE (or ...) in the problem's :goal,
 #   read by parsing it.  Each is scored as a single atom:
@@ -114,6 +114,11 @@
 #                 --timeout; 0, -1 or none for no limit.  Default: FiFO's
 #                 *solver-timeout*, 600 s, so one SharpSAT-TD count over 10
 #                 minutes fails the run however long the run itself may take.
+#   --stop-after scnf  (fast method) stop once the theory is instantiated at the
+#                 horizon: DIR/rec-problem.scnf (the problem, evidence-free) and
+#                 DIR/rec-problem-evidence.scnf are written and the horizon is
+#                 printed, but no hypothesis is scored -- for a caller that wants
+#                 the theory itself, e.g. to compile it, without the 2n solves.
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -144,7 +149,7 @@ set -- ${FIFO_EXPANDED_ARGS[@]+"${FIFO_EXPANDED_ARGS[@]}"}
 DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
 HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
 COUNTER="max-term"; BASELINE="per-hypothesis"; METHOD="fast"; MAXSAT_SOLVER=""
-PRIORS_KV=(); PRIORS_FROM_PREFS=0; CREATE_ATOMS=0; SOLVER_TIMEOUT=""
+PRIORS_KV=(); PRIORS_FROM_PREFS=0; CREATE_ATOMS=0; SOLVER_TIMEOUT=""; STOP_AFTER=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -161,6 +166,7 @@ while [[ $# -gt 0 ]]; do
     --prior)  PRIORS_KV+=("$2"); shift 2;;
     --priors-from-preferences) PRIORS_FROM_PREFS=1; shift;;
     --create-hypothesis-atoms) CREATE_ATOMS=1; shift;;
+    --stop-after) STOP_AFTER="$2"; shift 2;;
     -h|--help) usage 0;;
     *) echo "unexpected argument: $1" >&2; usage;;
   esac
@@ -181,7 +187,9 @@ if [[ "$METHOD" == "plan-runs" ]]; then
   [[ "$COUNTER" == "max-term" ]] || { echo "--counter has no meaning with --method plan-runs (it always computes R&G's cheapest-plan difference); drop one of them" >&2; exit 2; }
   [[ "$BASELINE" == "per-hypothesis" ]] || { echo "--baseline has no meaning with --method plan-runs (it is always per-hypothesis); drop one of them" >&2; exit 2; }
   [[ -z "$SOLVER_TIMEOUT" ]] || { echo "--timeout applies to --method fast only (planner.sh has no per-solver limit to pass it to); drop one of them" >&2; exit 2; }
+  [[ -z "$STOP_AFTER" ]] || { echo "--stop-after applies to --method fast only (plan-runs instantiates no single theory); drop one of them" >&2; exit 2; }
 fi
+[[ -z "$STOP_AFTER" || "$STOP_AFTER" == "scnf" ]] || { echo "--stop-after must be 'scnf', got: $STOP_AFTER" >&2; exit 2; }
 # Checked here, not left to marginals.sh: that runs only after the horizon search
 # and the instantiation, which can take minutes.
 # the same rule as marginals.sh's: a positive number, or exactly 0 / -1 / none
@@ -529,6 +537,12 @@ if [[ "$METHOD" == "fast" ]]; then
     echo "recognize.sh: instantiation failed (planner.sh exit $INST_RC)" >&2
     tail -3 "$OUT/instantiate.log" >&2
     exit 2
+  fi
+  if [[ "$STOP_AFTER" == "scnf" ]]; then
+    # no summary.tsv: a header with no rows must not pass for a result
+    rm -f "$SUM"
+    echo "Stopped after instantiation (--stop-after scnf): $SCNF" >&2
+    exit 0
   fi
   if [[ "$EVKIND" == "pddl" ]]; then
     ASSERT_FILE="$OUT/rec-problem-assertion.txt"
