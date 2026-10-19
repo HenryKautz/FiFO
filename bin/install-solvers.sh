@@ -87,6 +87,10 @@ Prerequisites: git, make, and a C/C++ compiler for all of them; cmake for addmc,
 sharpsat-td and d4; GMP and MPFR for sharpsat-td.  On macOS, d4 additionally
 needs Homebrew with 'brew install gcc gmp boost cmake', and sharpsat-td 'brew
 install gcc gmp mpfr cmake' -- both build with the GNU toolchain, not Apple clang.
+On Linux, d4 also needs ninja, Boost program_options, zlib and curl (it fetches
+the PaToH library, which may not be redistributed), and cmake looks for
+sharpsat-td's GMP/MPFR in the system paths and CMAKE_PREFIX_PATH (e.g. set
+CMAKE_PREFIX_PATH=\$HOME/.local for an MPFR built there without root).
 
 Most entries are a git clone plus a build; 'rc2' is instead 'pip install
 python-sat', since bin/rc2-maxsat.py ships with FiFO and only the library it
@@ -282,6 +286,8 @@ solver_prereq() {
         command -v g++-16 >/dev/null 2>&1 || missing="$missing g++-16(brew install gcc)"
       else
         command -v ninja >/dev/null 2>&1 || missing="$missing ninja"
+        # curl fetches PaToH, which the d4 fork cannot redistribute.
+        command -v curl  >/dev/null 2>&1 || missing="$missing curl"
       fi ;;
   esac
   printf '%s' "${missing# }"
@@ -388,6 +394,18 @@ solver_build() {
       if [[ "$(uname)" == "Darwin" ]]; then
         # PaToH and a g++-built boost::program_options are not bundled.
         ( cd "$dir" && ./setup-macos-deps.sh ) || return 1
+      elif [[ ! -f "$dir/3rdParty/patoh/libpatoh.a" ]]; then
+        # PaToH's license forbids redistribution, so the fork ships no libpatoh.a
+        # and build.sh's final `ar` fails without it.  Fetch Georgia Tech's Linux
+        # build; its patoh.h is identical to the checked-in one.
+        [[ "$(uname -m)" == "x86_64" ]] \
+          || { echo "no PaToH build is fetched for $(uname -m); see d4v2's README" >&2; return 1; }
+        local tmp rc; tmp="$(mktemp -d)" || return 1
+        ( curl -fsSL -o "$tmp/patoh.tar.gz" \
+            https://faculty.cc.gatech.edu/~umit/PaToH/patoh-Linux-x86_64.tar.gz \
+          && tar -xzf "$tmp/patoh.tar.gz" -C "$tmp" \
+          && cp "$tmp/build/Linux-x86_64/libpatoh.a" "$dir/3rdParty/patoh/libpatoh.a" )
+        rc=$?; rm -rf "$tmp"; [[ "$rc" -eq 0 ]] || return 1
       fi
       ( cd "$dir" && ./build.sh ) || return 1
       ( cd "$dir/demo/compiler" && make c -j ) || return 1

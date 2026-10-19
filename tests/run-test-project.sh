@@ -46,9 +46,11 @@ bad() { printf '  %-64s ... FAIL  %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 # to 1e-9.  Prints "<n> atoms, <k> strictly between 0 and 1"; fails when any
 # atom differs or is missing, when nothing was compared, or when every compared
 # marginal is 0 or 1 (vacuous).  The value is the LAST field: atoms have spaces.
+# sub() leaves v a STRING, so v+0 makes it numeric: under gawk (POSIX) v>1e-9 is
+# otherwise a string comparison, "0.34" < "1e-9", and every case reads vacuous.
 agree() {
-  awk 'FNR==NR { if ($1=="(MARGINAL") { v=$NF; sub(/\)$/,"",v); a=$0; sub(/ [^ ]*$/,"",a); full[a]=v }; next }
-       $1=="(MARGINAL" { v=$NF; sub(/\)$/,"",v); a=$0; sub(/ [^ ]*$/,"",a); n++
+  awk 'FNR==NR { if ($1=="(MARGINAL") { v=$NF; sub(/\)$/,"",v); a=$0; sub(/ [^ ]*$/,"",a); full[a]=v+0 }; next }
+       $1=="(MARGINAL" { v=$NF; sub(/\)$/,"",v); v+=0; a=$0; sub(/ [^ ]*$/,"",a); n++
                          if (!(a in full)) { print "missing in full: " a; bad=1; exit }
                          d=v-full[a]; if (d<0) d=-d; if (d>1e-9) { print a " " v " vs " full[a]; bad=1; exit }
                          if (v>1e-9 && v<1-1e-9) k++ }

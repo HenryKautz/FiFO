@@ -107,12 +107,14 @@ bin/planner.sh SatPlan/Examples/Plan_Recognition/BlocksWorldCosts/problem.pddl \
 **Posterior over the goals** (marginal inference) — `--marginals` reports
 `P(atom | evidence)`; the goal atoms' marginals are the posterior over the
 hypotheses. Exact enumeration (`--counter maxent`, the default) is only
-tractable on tiny instances, so use an ADDMC binary here:
+tractable on tiny instances, so use the d4 compiler here (≈ 5 s; `--counter
+sharpsat-td` gives the same marginals in ≈ 1 min, while ADDMC cannot finish a
+single count of this theory in 10 min):
 
 ```sh
 bin/planner.sh SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/problem.pddl \
     --domain SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/intrusion-detection-costs.pddl \
-    --numslices 4 --marginals --counter ../ADDMC/addmc \
+    --numslices 4 --marginals --counter d4 \
     --pddl-evidence-file SatPlan/Examples/Plan_Recognition/IntrusionDetectionCosts/evidence-3.txt
 ```
 
