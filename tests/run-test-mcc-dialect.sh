@@ -162,6 +162,18 @@ sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
      >/dev/null 2>&1
 grep -qx 'p wcnf 2 1' dflt.wcnf && ok "the default dialect is still MCC-2020" \
                                 || bad "the default dialect is still MCC-2020" "$(head -2 dflt.wcnf | tr '\n' ' ')"
+# :map-file names the variables of the file it accompanies.  Checked against the
+# file itself: the one charged literal of t.scnf is A's, so the variable on the
+# 2020 file's weight line must be the one the map calls A -- and the map has one
+# line per variable of the p line.
+sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
+     --eval '(progn (wmc-write-wcnf "t.scnf" "mp.wcnf" :scale 1 :map-file "mp.map" :verbose nil) (sb-ext:exit))' \
+     >/dev/null 2>&1
+WV="$(awk '$1=="w" { v=$2; sub(/^-/,"",v); print v; exit }' mp.wcnf 2>/dev/null)"
+NVP="$(awk '$1=="p" { print $3; exit }' mp.wcnf 2>/dev/null)"
+if [[ -n "$WV" && "$(wc -l < mp.map 2>/dev/null)" == "$NVP" ]] && grep -qx "$WV A" mp.map; then
+  ok ":map-file names the variables (weighted var $WV is A)"
+else bad ":map-file names the variables" "weight var ${WV:-none}, map: $(tr '\n' ' ' < mp.map 2>/dev/null)"; fi
 
 # --- 6. scale and evidence reach both dialects alike ------------------------
 printf '(OR A B)\n(WEIGHT A 100.0)\n' > s.scnf

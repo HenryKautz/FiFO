@@ -471,6 +471,12 @@ if [[ -z "${HYPL// /}" ]]; then
   The baseline compares P(evidence | h) ACROSS hypotheses, so it has to be told
   which atoms are the competing hypotheses."
 else
+  # Refused, not dropped, for a back end it means nothing to -- as the paths
+  # below refuse it without --hypotheses.
+  case "$SOLVER" in
+    maxent|ddnnf|d4) ;;
+    *) [[ -z "$NODE_LIMIT" ]] || die "--node-limit applies to the maxent, ddnnf and d4 solvers, not $SOLVER" ;;
+  esac
   KW=":hypotheses (quote ($HYPL)) :baseline :$BASELINE :counter \"$SOLVER\""
   [[ -n "$OUT" ]] && KW="$KW :out-file \"$OUT\""
   [[ -n "$SCALE" ]] && KW="$KW :scale $SCALE"
@@ -551,12 +557,10 @@ if [[ "$SOLVER" == "ddnnf" || "$SOLVER" == "d4" ]]; then
   else
     SCNF_ARG="\"$SCNF\""
   fi
-  NODE_EVAL="(progn)"
-  [[ -n "$NODE_LIMIT" ]] && NODE_EVAL="(setf *ddnnf-node-limit* $NODE_LIMIT)"
+  [[ -n "$NODE_LIMIT" ]] && KW="$KW :node-limit $NODE_LIMIT"
   exec sbcl --noinform --non-interactive \
     --eval "(load \"$FIFO_LISP/FiFO.lisp\")" --eval "$TIMEOUT_EVAL" \
     --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" \
-    --eval "$NODE_EVAL" \
     --eval "(handler-case (progn (ddnnf-marginals $SCNF_ARG $KW) (sb-ext:exit :code 0))
               (error (e) (format *error-output* \"marginals.sh: ~A~%\" e) (sb-ext:exit :code 1)))"
 fi

@@ -230,7 +230,10 @@ else fail "default solution path wrong"; fi
 
 name "--domain defaults to the problem's own (:domain ...)"
 cp "$DOMAIN" "$TMP/clara-logistics.pddl"
-if bash "$EVGEN" --problem "$PROB" --evidence "$TMP/dd.txt" --slices "2" 2>/dev/null \
+# Run from /: evgen records a path RELATIVE to its working directory whenever
+# the two share their first component, so from anywhere under /tmp (like $TMP)
+# the case below would see ../../tmp.X/... instead of the absolute path.
+if (cd / && bash "$EVGEN" --problem "$PROB" --evidence "$TMP/dd.txt" --slices "2" 2>/dev/null) \
    && grep -q '^(holds' "$TMP/dd.txt"
 then pass; else fail "did not resolve the domain beside the problem"; fi
 
@@ -243,7 +246,8 @@ then pass; else fail "recorded: $(grep -- '--domain' "$TMP/dd.txt")"; fi
 
 # Paths are recorded relative to the directory evgen.sh runs in, so the block
 # replays there on any machine; a domain from the library by its bare name.
-# (The case above runs from an unrelated directory, so it stays absolute.)
+# (The case above runs from /, which shares no component with $TMP, so it stays
+# absolute.)
 mkdir -p "$TMP/rel/sub"
 cp "$PROB" "$TMP/rel/sub/pb.pddl"; cp "$SRC" "$TMP/rel/sub/pb.answer"
 (cd "$TMP/rel" && bash "$EVGEN" --problem sub/pb.pddl --evidence out/e.txt \

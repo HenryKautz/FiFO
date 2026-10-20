@@ -244,6 +244,18 @@ el=$((SECONDS - T0))
 if grep -q 'd4 timed out after 2 s' <<<"$r" && (( el < 60 )); then
   ok "planner.sh --timeout 2 stops a stalled d4 ($el s)"
 else bad "planner.sh --timeout 2 stops a stalled d4" "$el s: $(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+# planner.sh --node-limit reaches the circuit compiler (it had no way to raise
+# the 2,000,000-node cap at all), and is refused where it means nothing.
+r="$(bash "$REPO/bin/planner.sh" sw/switchprob.pddl --domain sw/switches.pddl \
+       --numslices 4 --marginals --counter ddnnf --node-limit 1 2>&1)"
+if grep -q 'exceeded 1 nodes' <<<"$r"; then ok "planner.sh --node-limit reaches the ddnnf compiler"
+else bad "planner.sh --node-limit reaches the ddnnf compiler" "$(tr '\n' ' ' <<<"$r" | tail -c 140)"; fi
+r1="$(bash "$REPO/bin/planner.sh" sw/switchprob.pddl --marginals --counter mc-sat --node-limit 5 2>&1)"
+r2="$(bash "$REPO/bin/planner.sh" sw/switchprob.pddl --node-limit 5 2>&1)"
+if grep -q 'node-limit applies to the maxent, ddnnf and d4 counters, not mc-sat' <<<"$r1" \
+   && grep -q 'node-limit applies only with --marginals' <<<"$r2"; then
+  ok "planner.sh refuses --node-limit for mc-sat and without --marginals"
+else bad "planner.sh refuses --node-limit for mc-sat and without --marginals" "$(tail -1 <<<"$r1") / $(tail -1 <<<"$r2")"; fi
 r="$(bash "$REPO/bin/planner.sh" sw/switchprob.pddl --timeout -300 2>&1)"
 if grep -q 'timeout must be a number of seconds' <<<"$r"; then
   ok "planner.sh refuses --timeout -300"

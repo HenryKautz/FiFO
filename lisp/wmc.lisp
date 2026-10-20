@@ -662,12 +662,14 @@ WCNF-FILE was given explicitly."
               (unless keep (ignore-errors (delete-file wcnf))))))))))
 
 (defun wmc-write-wcnf (scnf-file out-file &key (dialect :mcc-2020) scale
-                                                 evidence evidence-file (verbose t))
+                                                 evidence evidence-file map-file (verbose t))
   "Write SCNF-FILE's weighted CNF to OUT-FILE in DIALECT and return OUT-FILE.
 The counting back ends generate this file internally and delete it; this is the
 same writer exposed on its own, for handing a FiFO theory to an external counter
 (SharpSAT-TD takes :dialect :mcc-2024) or for inspecting what a counter is
 actually being asked.  SCALE, EVIDENCE and EVIDENCE-FILE behave as in WMC.
+MAP-FILE, when given, gets the variable numbering: one \"<var> <atom>\" line per
+variable, in order -- what a reader of OUT-FILE needs to name its variables.
 Returns (values out-file nvars nclauses)."
   ;; Same preamble as WMC, and the same warning applies: bind the weight forms to
   ;; a NON-special name, since WEIGHTS is FiFO's global special and (parse ...)
@@ -685,6 +687,13 @@ Returns (values out-file nvars nclauses)."
         (with-open-file (s out-file :direction :output
                                     :if-exists :supersede :if-does-not-exist :create)
           (wmc--write-mcc clauses weight-forms a2i nvars s :scale scale :dialect dialect))
+        (when map-file
+          (let ((m (make-array (1+ nvars))))
+            (maphash (lambda (atom v) (setf (aref m v) atom)) a2i)
+            (with-open-file (s map-file :direction :output
+                                        :if-exists :supersede :if-does-not-exist :create)
+              (let ((*print-pretty* nil))
+                (loop for v from 1 to nvars do (format s "~D ~S~%" v (aref m v)))))))
         (when verbose
           (format t "; wrote ~A (~(~A~), ~D var~:P, ~D clause~:P)~%"
                   out-file dialect nvars (length clauses)))

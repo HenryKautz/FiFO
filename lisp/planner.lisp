@@ -263,7 +263,7 @@ objective."
                   domain-file (satplan-path "satplan.wff")
                   stop-after (longer 0)
                   evidence evidence-file pddl-evidence pddl-evidence-file
-                  marginals (counter "maxent") split-evidence project
+                  marginals (counter "maxent") split-evidence project node-limit
                   (stream *standard-output*))
   "Search horizons MINSLICES..MAXSLICES for the smallest plan for PROBLEM-FILE.
 A .pddl problem is translated with pddl2fifo; a .wff is used directly (its
@@ -408,7 +408,11 @@ wff/scnf.  Progress is printed to STREAM."
                 (format stream "Computing marginals at ~A time slices with the ~A counter~:[~; (conditioned on evidence)~]...~%"
                         lo (if (string-equal counter "maxent") "maxent enumeration" counter)
                         evidence-forms)
-                (cond ((string-equal counter "maxent") (marginals msc))
+                ;; NODE-LIMIT is the cap of the back ends that have one: maxent's
+                ;; enumeration nodes, the circuit nodes of ddnnf and d4
+                ;; (planner.sh --node-limit refuses it for the others).
+                (cond ((string-equal counter "maxent")
+                       (apply #'marginals msc (when node-limit (list :node-limit node-limit))))
                       ;; Approximate: one MC-SAT run gives every marginal.  Unit
                       ;; propagation is on because SatPlan encodings are unit-heavy
                       ;; (the initial state alone); it fixes only variables forced
@@ -421,9 +425,10 @@ wff/scnf.  Progress is printed to STREAM."
                       ;; need ddnnf.lisp, loaded by planner.sh.
                       ((string-equal counter "addmc") (marginals-addmc msc))
                       ((string-equal counter "sharpsat-td") (marginals-sharpsat msc))
-                      ((string-equal counter "ddnnf") (ddnnf-marginals msc))
+                      ((string-equal counter "ddnnf") (ddnnf-marginals msc :node-limit node-limit))
                       ((string-equal counter "d4") (ddnnf-marginals msc :compiler :d4
-                                                                         :project project))
+                                                                         :project project
+                                                                         :node-limit node-limit))
                       ;; Unreachable: the name was validated against the shared
                       ;; table above.  A name, never a path -- this used to accept
                       ;; a pathname and run it as an ADDMC binary, which meant

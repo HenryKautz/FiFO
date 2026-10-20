@@ -1584,9 +1584,15 @@ recompiled (circuit not reused)~%"
 
 (defun ddnnf-marginals (scnf-file &key circuit save-circuit out-file weighted-only scale
                                        evidence evidence-file (compiler :home) (d4 *d4*)
-                                       project project-atoms
+                                       project project-atoms node-limit
                                        (verbose t))
   "Exact marginal P(atom = true) of every atom via a compiled d-DNNF circuit.
+
+NODE-LIMIT, when non-NIL, is the circuit's node cap for this call (the
+*ddnnf-node-limit* default, 2,000,000, otherwise), for either compiler -- a d4
+import is built through the same cap.  It is a keyword so that every caller can
+raise it: the --hypotheses path once dropped marginals.sh --node-limit for
+ddnnf and d4, and planner.sh had no way to pass one at all.
 
 The theory comes from either CIRCUIT -- a prebuilt DDNNF struct or the path to one
 saved by DDNNF-SAVE or DDNNF-SAVE-BINARY (either format), in which case NO
@@ -1615,7 +1621,8 @@ SAVE-CIRCUIT asks for the unconditioned circuit, in which case the evidence's
 atoms are kept in the projection and it is applied afterwards as usual."
   (when (and project (not (eq compiler :d4)) (not circuit))
     (error "projection needs the d4 compiler (FiFO's own compiler cannot project)"))
-  (let* ((conjoin (and project scnf-file (not circuit) (not save-circuit)
+  (let* ((*ddnnf-node-limit* (or node-limit *ddnnf-node-limit*))
+         (conjoin (and project scnf-file (not circuit) (not save-circuit)
                        (or evidence evidence-file)))
          (base (cond (circuit (if (stringp circuit) (ddnnf-load circuit) circuit))
                      (scnf-file

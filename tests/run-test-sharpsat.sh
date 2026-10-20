@@ -243,7 +243,17 @@ else bad "a missing flow_cutter_pace17 is reported by name" "$(tr '\n' ' ' <<<"$
 PB1="$REPO/SatPlan/Examples/LogisticsCosts/intermediates/pb1.scnf"
 printf '#!/bin/sh\ntrap "" TERM ALRM\nsleep 60\n' > deaf-fc
 chmod +x deaf-fc
-ZREF="$(bash "$W" "$PB1" --counter sharpsat-td 2>/dev/null)"
+# The reference Z, from the real flowcutter.  Once, under heavy memory load from
+# other processes, this came back empty and the two cases that compare with it
+# failed with "ref=" and no reason; so its stderr is kept, a failure is retried
+# once (with a note), and a second failure is reported as itself.
+ZREF="$(bash "$W" "$PB1" --counter sharpsat-td 2>zref.err)"
+if ! grep -q '^(WMC' <<<"$ZREF"; then
+  printf '  (reference count retried; first attempt: %s)\n' "$(tail -c 160 zref.err | tr '\n' ' ')"
+  ZREF="$(bash "$W" "$PB1" --counter sharpsat-td 2>zref.err)"
+  grep -q '^(WMC' <<<"$ZREF" \
+    || bad "the reference count (real flowcutter) gives a Z" "$(tail -c 160 zref.err | tr '\n' ' ')"
+fi
 T0=$SECONDS
 ZDEAF="$(SHARPSAT_FLOWCUTTER="$TMP/deaf-fc" bash "$W" "$PB1" --counter sharpsat-td 2>&1)"
 zval() { grep '^(WMC' | tr -d '()' | awk '{print $2}'; }
@@ -251,7 +261,7 @@ if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$ZDEAF")" 
      'BEGIN { if (b == "") exit 1; d = (a - b) / a; if (d < 0) d = -d; exit !(d < 1e-12) }' \
    && (( SECONDS - T0 < 30 )); then
   ok "a flowcutter that ignores SIGTERM still gives the exact Z"
-else bad "a flowcutter that ignores SIGTERM still gives the exact Z" "ref=$ZREF got=$(tr '\n' ' ' <<<"$ZDEAF" | tail -c 120)"; fi
+else bad "a flowcutter that ignores SIGTERM still gives the exact Z" "ref=${ZREF:-(no reference Z)} got=$(tr '\n' ' ' <<<"$ZDEAF" | tail -c 120)"; fi
 # ... and the real flowcutter answers SIGALRM, sharpSAT's backstop, like SIGTERM:
 # its best decomposition, exit 0 (it used to be killed by the alarm).
 # The flowcutter sharpSAT itself would run: $SHARPSAT_FLOWCUTTER when set, else
@@ -282,7 +292,26 @@ ZNUL="$(SHARPSAT_FLOWCUTTER="$TMP/nul-fc" bash "$W" "$PB1" --counter sharpsat-td
 if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$ZNUL")" \
      'BEGIN { if (b == "") exit 1; d = (a - b) / a; if (d < 0) d = -d; exit !(d < 1e-12) }'; then
   ok "no decomposition, message ending in NUL: still the exact Z"
-else bad "no decomposition, message ending in NUL: still the exact Z" "ref=$ZREF got=$(tr '\n' ' ' <<<"$ZNUL" | tail -c 120)"; fi
+else bad "no decomposition, message ending in NUL: still the exact Z" "ref=${ZREF:-(no reference Z)} got=$(tr '\n' ' ' <<<"$ZNUL" | tail -c 120)"; fi
+# ... and any other output that does not parse as a valid decomposition costs
+# only the decomposition too.  Each stand-in prints one kind, and Z must be the
+# real flowcutter's: a truncated s line (it used to reach assert(nn == n) and
+# abort the count), a well-formed file whose one bag covers almost nothing (it
+# reached assert(Verify) and aborted), and a bare "b" line (it read an
+# uninitialised bag id, undefined behaviour).
+bad_td() {   # bad_td <name> <printf body; $n is the graph's vertex count>
+  printf '#!/bin/bash\nread p tw n m\ncat >/dev/null\n%s\n' "$2" > "$1"; chmod +x "$1"
+}
+bad_td trunc-fc 'printf "s td 5 3\n"'
+bad_td invalid-fc 'printf "s td 1 1 %s\nb 1 1\n" "$n"'
+bad_td bareb-fc 'printf "s td 1 %s %s\nb\n" "$n" "$n"'
+for fc in trunc-fc invalid-fc bareb-fc; do
+  Z="$(SHARPSAT_FLOWCUTTER="$TMP/$fc" bash "$W" "$PB1" --counter sharpsat-td 2>&1)"
+  if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$Z")" \
+       'BEGIN { if (b == "") exit 1; d = (a - b) / a; if (d < 0) d = -d; exit !(d < 1e-12) }'; then
+    ok "bad flowcutter output ($fc): still the exact Z"
+  else bad "bad flowcutter output ($fc): still the exact Z" "ref=${ZREF:-(no reference Z)} got=$(tr '\n' ' ' <<<"$Z" | tail -c 120)"; fi
+done
 if [[ -x "$FC" ]]; then
   awk 'BEGIN { n = 3000; k = 40; print "p tw", n, n * k
                for (i = 1; i <= n; i++) for (j = 1; j <= k; j++) print i, (i + j - 1) % n + 1 }' > big.gr

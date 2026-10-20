@@ -82,6 +82,9 @@ usage() {
   echo "               actions, the final-slice goal atoms and the weighted atoms, after a" >&2
   echo "               SAT check that it is exact; only those atoms are reported" >&2
   echo "               (see marginals.sh --project)." >&2
+  echo "  --node-limit <int>  (with --marginals --counter maxent|ddnnf|d4) the back end's" >&2
+  echo "               cap: maxent's enumeration nodes (default 5000000), the circuit" >&2
+  echo "               nodes of ddnnf and d4 (default 2000000), as marginals.sh --node-limit." >&2
   echo "  --timeout <secs>  wall-clock limit on EACH external solver run: every SAT and" >&2
   echo "               MaxSAT solve, and with --marginals every count and the d4" >&2
   echo "               compilation (SIGTERM, then SIGKILL, to the solver's process group)." >&2
@@ -110,6 +113,7 @@ MARGINALS=0    # --marginals: weighted model counting instead of planning
 COUNTER=""     # --counter: model counter for --marginals (a name from solvers.dat)
 PROJECT=0      # --project: projected compilation (--marginals --counter d4 only)
 TIMEOUT=""     # --timeout: *solver-timeout* for every solver run; empty = FiFO's default
+NODE_LIMIT=""  # --node-limit: the counter's cap (maxent, ddnnf, d4); empty = its default
 
 # Expand any --options FILE into the options it contains (see fifo-options.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fifo-options.sh"
@@ -137,6 +141,7 @@ while [[ $# -gt 0 ]]; do
     --counter)   [[ $# -ge 2 ]] || usage; COUNTER="$2"; shift 2 ;;
     --project)   PROJECT=1; shift ;;
     --timeout)   [[ $# -ge 2 ]] || usage; TIMEOUT="$2"; shift 2 ;;
+    --node-limit) [[ $# -ge 2 ]] || usage; NODE_LIMIT="$2"; shift 2 ;;
     -h|--help)   usage ;;
     -*)          echo "unknown option: $1" >&2; usage ;;
     *)           if [[ -z "$PROBLEM" ]]; then PROBLEM="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
@@ -204,6 +209,16 @@ fi
 if [[ "$PROJECT" -eq 1 && "$COUNTER" != "d4" ]]; then
   echo "--project applies only with --counter d4 (only d4 compiles a projection)" >&2; exit 2
 fi
+# --node-limit: the cap of the counters that have one (maxent, the default, and
+# the two circuit compilers); refused, not dropped, for the others
+if [[ -n "$NODE_LIMIT" ]]; then
+  [[ "$MARGINALS" -eq 1 ]] || { echo "--node-limit applies only with --marginals" >&2; exit 2; }
+  [[ "$NODE_LIMIT" =~ ^[0-9]+$ ]] || { echo "--node-limit must be a non-negative integer, got: $NODE_LIMIT" >&2; exit 2; }
+  case "${COUNTER:-maxent}" in
+    maxent|ddnnf|d4) ;;
+    *) echo "--node-limit applies to the maxent, ddnnf and d4 counters, not $COUNTER" >&2; exit 2 ;;
+  esac
+fi
 # The projection's exactness check runs kissat, whatever --solver says.
 if [[ "$PROJECT" -eq 1 ]]; then _fifo_require_solver kissat sat planner.sh >/dev/null || exit 2; fi
 FIFO="$FIFO_LISP/FiFO.lisp"
@@ -257,6 +272,8 @@ SPLIT_KW=""
 [[ "$SPLIT_EVIDENCE" -eq 1 ]] && SPLIT_KW=":split-evidence t"
 PROJECT_KW=""
 [[ "$PROJECT" -eq 1 ]] && PROJECT_KW=":project t"
+NODE_KW=""
+[[ -n "$NODE_LIMIT" ]] && NODE_KW=":node-limit $NODE_LIMIT"
 
 # Load FiFO and pddl2fifo; for --marginals also the weighted-model-counting code.
 EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
@@ -270,7 +287,7 @@ EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
               $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
               $EVIDENCE_KW $EVFILE_KW $PDDL_EVIDENCE_KW $PDDL_EVFILE_KW
-              $MARGINALS_KW $COUNTER_KW $SPLIT_KW $PROJECT_KW
+              $MARGINALS_KW $COUNTER_KW $SPLIT_KW $PROJECT_KW $NODE_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"
               :satplan-path \"$SATPLAN_REL\" $DOMAIN_KW))" )
 

@@ -191,6 +191,29 @@ for be in ddnnf d4; do
     ok "--node-limit reaches $be under --hypotheses"
   else bad "--node-limit reaches $be under --hypotheses" "$(tr '\n' ' ' <<<"$r" | tail -c 120)"; fi
 done
+# ... and RAISES the cap: the bug was a raised limit being ignored, which a lower
+# one cannot show.  With the default itself set to 1, a run without :node-limit
+# must stop (the control) and one with :node-limit 1000000 must finish.
+raise() {   # raise <node-limit form or empty>
+  sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+    --eval "(load \"$FIFO_LISP/ddnnf.lisp\")" --eval "(load \"$FIFO_LISP/hypotheses.lisp\")" \
+    --eval "(setf *ddnnf-node-limit* 1)" \
+    --eval "(handler-case (progn (hypothesis-posterior \"t.scnf\" :hypotheses (quote ((H 1) (H 2) (H 3)))
+                                   :evidence (quote ((OBS 1))) :baseline :per-hypothesis
+                                   :counter \"ddnnf\" $1 :verbose nil)
+                                 (format t \"~&FINISHED~%\"))
+              (error (e) (format t \"~&ERR ~A~%\" e)))" 2>&1
+}
+r0="$(raise "")"; r1="$(raise ":node-limit 1000000")"
+if grep -q 'exceeded 1 nodes' <<<"$r0" && grep -q '^FINISHED' <<<"$r1"; then
+  ok "a larger node limit raises the cap (default 1: stops; 1e6: finishes)"
+else bad "a larger node limit raises the cap" "default: $(grep -m1 -E 'ERR|FINISHED' <<<"$r0") / raised: $(grep -m1 -E 'ERR|FINISHED' <<<"$r1")"; fi
+# A back end with no node cap refuses --node-limit, as without --hypotheses.
+r="$(bash "$M" t.scnf "${H[@]}" --baseline per-hypothesis --evidence '(OBS 1)' \
+       --solver mc-sat --node-limit 5 2>&1)"
+if grep -q 'node-limit applies to the maxent, ddnnf and d4 solvers, not mc-sat' <<<"$r"; then
+  ok "--node-limit is refused for a back end without a cap"
+else bad "--node-limit is refused for a back end without a cap" "$(tr '\n' ' ' <<<"$r" | tail -c 120)"; fi
 
 # mc-sat is the one back end where the ratio's denominator matters: it divides
 # two ESTIMATES.  Loose tolerance on purpose -- this pins that the sampled path
