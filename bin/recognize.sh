@@ -124,7 +124,8 @@
 #                 observation monitor's axioms are IN rec-problem.scnf
 #                 (count-neutral, so it still conditions on nothing) and the one
 #                 literal to condition on is in DIR/rec-problem-assertion.txt.
-#                 The MaxSAT solver and counter are not checked (none runs).
+#                 The MaxSAT solver and counter names are checked, but not that
+#                 they are installed (neither runs).
 #   --options F   splice the options listed in file F in at this point (one logical
 #                 line, wrappable with a trailing backslash; if F has more than one
 #                 line only the first is used).
@@ -198,10 +199,13 @@ fi
 [[ -z "$STOP_AFTER" || "$STOP_AFTER" == "scnf" ]] || { echo "--stop-after must be 'scnf', got: $STOP_AFTER" >&2; exit 2; }
 # Checked here, not left to marginals.sh: that runs only after the horizon search
 # and the instantiation, which can take minutes.
-# the same rule as marginals.sh's: a positive number, or exactly 0 / -1 / none
-if [[ -n "$SOLVER_TIMEOUT" && "$SOLVER_TIMEOUT" != "none" && ! "$SOLVER_TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
-  echo "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $SOLVER_TIMEOUT" >&2; exit 2
+# the shared rule (fifo-solvers.sh): a positive number, or exactly 0 / -1 / none
+if [[ -n "$SOLVER_TIMEOUT" ]]; then
+  SOLVER_TIMEOUT="$(_fifo_check_timeout "$SOLVER_TIMEOUT" recognize.sh)" || exit 2
 fi
+# Forwarded to marginals.sh AND to every planner.sh run of the fast method (the
+# horizon search and the instantiation): a SAT solve the default 600 s cap stops
+# in the horizon search would read as "unreachable" and leave H too short.
 TIMEOUT_MARG=(); [[ -n "$SOLVER_TIMEOUT" ]] && TIMEOUT_MARG=(--timeout "$SOLVER_TIMEOUT")
 case "$BASELINE" in
   per-hypothesis|best-rival) ;;
@@ -226,23 +230,25 @@ if [[ -n "$SOLVER" ]]; then
   SOLVER_ARG=(--solver "$SOLVER")
 fi
 # --stop-after scnf runs neither the counter nor the MaxSAT solver, so it must not
-# be refused for a missing one (CLARA's compile-d4.py needs no python-sat).
-if [[ -z "$STOP_AFTER" ]]; then
-  # The counter too, before anything is translated or instantiated.
-  COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh)" || exit 2
+# be refused for a missing one (CLARA's compile-d4.py needs no python-sat) -- but
+# their NAMES are still checked: a typo is refused, run or no run.
+NAMES_ONLY=""; [[ -n "$STOP_AFTER" ]] && NAMES_ONLY="names-only"
+# The counter too, before anything is translated or instantiated.
+COUNTER="$(_fifo_require_counter "$COUNTER" marginals recognize.sh $NAMES_ONLY)" || exit 2
 
-  # The MaxSAT solver that produces the COSTS.  It must be EXACT by default, and
-  # the same one on both paths.  R&G's score is c(~O) - c(O), a DIFFERENCE of two
-  # minima: with an anytime solver those are two upper bounds, which do not cancel
-  # -- the hazard maxterm.lisp documents, and which the plan-runs path silently had
-  # because planner.sh's default weighted solver is anytime.  It also made the two
-  # paths disagree run to run, since an anytime solver need not return the same
-  # cost twice.
-  MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
-  MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh)" || exit 2
-  # A path is only checked for executability, and bin/rc2-maxsat.py always is --
-  # so without python-sat every solve fails, every cost comes back NA, and the run
-  # would report a confident table of zeros.  Check it can actually run.
+# The MaxSAT solver that produces the COSTS.  It must be EXACT by default, and
+# the same one on both paths.  R&G's score is c(~O) - c(O), a DIFFERENCE of two
+# minima: with an anytime solver those are two upper bounds, which do not cancel
+# -- the hazard maxterm.lisp documents, and which the plan-runs path silently had
+# because planner.sh's default weighted solver is anytime.  It also made the two
+# paths disagree run to run, since an anytime solver need not return the same
+# cost twice.
+MAXSAT_SOLVER="${MAXSAT_SOLVER:-$SELF/rc2-maxsat.py}"
+MAXSAT_SOLVER="$(_fifo_require_solver "$MAXSAT_SOLVER" maxsat recognize.sh $NAMES_ONLY)" || exit 2
+# A path is only checked for executability, and bin/rc2-maxsat.py always is --
+# so without python-sat every solve fails, every cost comes back NA, and the run
+# would report a confident table of zeros.  Check it can actually run.
+if [[ -z "$STOP_AFTER" ]]; then
   case "$MAXSAT_SOLVER" in
     *rc2-maxsat.py)
       python3 -c "import pysat" >/dev/null 2>&1 || {
@@ -494,7 +500,8 @@ if [[ -z "$HORIZON" ]]; then
   H=$(( NOBS + 1 ))
   for i in "${!HYPS[@]}"; do
     hyp="${HYPS[$i]}"; p="$OUT/sg-$hyp.pddl"; single_goal_problem "$i" "$p"
-    run_planner "$OUT/horizon-$hyp.log" "$p" --domain "$DOMAIN" --minslices 2 --maxslices 30 ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"}
+    run_planner "$OUT/horizon-$hyp.log" "$p" --domain "$DOMAIN" --minslices 2 --maxslices 30 ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"} \
+        ${TIMEOUT_MARG[@]+"${TIMEOUT_MARG[@]}"}
     n=$(sed -n 's/.*Found a plan with \([0-9][0-9]*\) time slices.*/\1/p; s/.*SOLVED with \([0-9][0-9]*\) time slices.*/\1/p' "$OUT/horizon-$hyp.log" | head -1)
     [[ -n "$n" && "$n" -gt "$H" ]] && H="$n"
     echo "  $hyp -> ${n:-unreachable}" >&2
@@ -542,7 +549,8 @@ if [[ "$METHOD" == "fast" ]]; then
   fi
   run_planner "$OUT/instantiate.log" "$P1" --domain "$DOMAIN" \
       --numslices "$HORIZON" "$EV_FLAG" "$EVIDENCE" --stop-after scnf \
-      ${SPLIT_ARG[@]+"${SPLIT_ARG[@]}"} ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"}
+      ${SPLIT_ARG[@]+"${SPLIT_ARG[@]}"} ${SOLVER_ARG[@]+"${SOLVER_ARG[@]}"} \
+      ${TIMEOUT_MARG[@]+"${TIMEOUT_MARG[@]}"}
   INST_RC=$?
   SCNF="$OUT/rec-problem.scnf"
   if [[ "$INST_RC" -ne 0 || ! -f "$SCNF" ]]; then

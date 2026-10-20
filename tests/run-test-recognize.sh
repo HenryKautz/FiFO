@@ -579,6 +579,26 @@ lit_problem lit-var.pddl '(or (at truck1 p1-3) (at truck1 ?p))'
 expect_err "a hypothesis with a free variable is refused" "free variable" \
   "$GD" lit-var.pddl lit-ev.txt --evidence-kind fifo --horizon 5
 
+# --stop-after skips the INSTALLED checks of the counter and MaxSAT solver, not
+# the names: a typo is still refused before any work.
+expect_err "--stop-after still refuses an unknown --counter" "unknown counter" \
+  "$GD" lit.pddl lit-ev.txt --evidence-kind fifo --horizon 5 --stop-after scnf --counter d44
+expect_err "--stop-after still refuses an unknown --maxsat-solver" "unknown solver" \
+  "$GD" lit.pddl lit-ev.txt --evidence-kind fifo --horizon 5 --stop-after scnf --maxsat-solver wmaxcdc
+
+# --timeout reaches the horizon search's planner.sh runs.  Their SAT solves had
+# the fixed 600 s cap: one stopped there read as "unreachable", and H stayed too
+# short for that hypothesis.  A stand-in SAT solver that never answers must be
+# stopped at the limit -- the log says so -- within seconds.
+printf '#!/bin/sh\nexec sleep 60\n' > stall-sat; chmod +x stall-sat
+T0=$SECONDS
+bash "$BIN/recognize.sh" "$GD" lit.pddl lit-ev.txt --evidence-kind fifo --solver "$TMP/stall-sat" \
+     --timeout 1 --out r-hto > r-hto.log 2>&1
+EL=$((SECONDS - T0))
+if grep -q 'stopped after the 1 s limit' r-hto/horizon-*.log 2>/dev/null && (( EL < 120 )); then
+  ok "--timeout reaches the horizon search ($EL s)"
+else bad "--timeout reaches the horizon search" "$EL s: $(cat r-hto/horizon-*.log 2>/dev/null | grep -m1 -i 'limit\|fail')"; fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]

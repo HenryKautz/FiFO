@@ -347,48 +347,56 @@ marginals.sh already does."
                 ;; sampler, 0 means only "never visited", checked just below.
                 (ratios (mapcar (lambda (c u) (if (<= u 0d0) 0d0 (/ c u))) cs us))
                 (post (hp--normalise (mapcar #'* prior-v ratios))))
-           ;; The ratio divides two estimates, so a small denominator amplifies
-           ;; whatever error the back end has.  Exact counters do not care;
-           ;; a sampler does, and silently.
-           (when (and (counter-approx-p counter)
-                      (some (lambda (u) (and (> u 0d0) (< u 0.02d0))) us))
-             (format t "; WARNING: P(h|T) below 0.02 for some hypothesis, and this baseline~%~
-                        ; DIVIDES by it -- with a sampled counter that magnifies the Monte~%~
-                        ; Carlo error.  Prefer an exact counter, or raise --samples.~%"))
-           ;; A sampler's 0 is "never visited", not "impossible".  A hypothesis it
-           ;; visited under the evidence but never without it has a ratio with a
-           ;; zero ESTIMATE in the denominator: undefined, and the 0 the exact
-           ;; rule above gives it is a wrong answer.  That is what made every
-           ;; posterior zero on the TwoPackage 5x5 runs: the two chains stayed in
-           ;; different modes (one package's goals each), so every hypothesis had
-           ;; c = 0 or u = 0, and recognize.sh reported "no finite complying cost".
-           ;; The reverse, visited without the evidence but never under it, gives
-           ;; a well-defined ratio of 0 -- right if the evidence rules the
-           ;; hypothesis out, a mixing failure if the conditioned chain merely
-           ;; sat elsewhere.  The sampler cannot tell which, so it says so.
+           ;; Both checks below are for a SAMPLER: a counter whose kind in
+           ;; solvers.dat is approx.  The option advice is for mc-sat, the one
+           ;; sampler the table has; another gets generic advice.
            (when (counter-approx-p counter)
-             (let ((unseen (loop for h in hyps for c in cs for u in us
-                                 when (and (<= u 0d0) (> c 0d0)) collect h))
-                   (never (loop for h in hyps for c in cs for u in us
-                                when (and (<= u 0d0) (<= c 0d0)) collect h))
-                   (unseen-cond (loop for h in hyps for c in cs for u in us
-                                      when (and (> u 0d0) (<= c 0d0)) collect h)))
-               (when unseen
-                 (error "MC-SAT sampled ~{~S~^, ~} under the evidence but never without it, so ~
+            (let* ((name (resolve-table-name counter "counter"))
+                   (more (if (string-equal name "mc-sat")
+                             "raise --samples, try --unitprop"
+                             "draw more samples")))
+              ;; The ratio divides two estimates, so a small denominator amplifies
+              ;; whatever error the back end has.  Exact counters do not care;
+              ;; a sampler does, and silently.
+              (when (some (lambda (u) (and (> u 0d0) (< u 0.02d0))) us)
+                (format t "; WARNING: P(h|T) below 0.02 for some hypothesis, and this baseline~%~
+                           ; DIVIDES by it -- with a sampled counter (~A) that magnifies the~%~
+                           ; Monte Carlo error.  Prefer an exact counter, or ~A.~%"
+                        name more))
+              ;; A sampler's 0 is "never visited", not "impossible".  A hypothesis it
+              ;; visited under the evidence but never without it has a ratio with a
+              ;; zero ESTIMATE in the denominator: undefined, and the 0 the exact
+              ;; rule above gives it is a wrong answer.  That is what made every
+              ;; posterior zero on the TwoPackage 5x5 runs: the two chains stayed in
+              ;; different modes (one package's goals each), so every hypothesis had
+              ;; c = 0 or u = 0, and recognize.sh reported "no finite complying cost".
+              ;; The reverse, visited without the evidence but never under it, gives
+              ;; a well-defined ratio of 0 -- right if the evidence rules the
+              ;; hypothesis out, which in recognition it usually does for several
+              ;; goals, and a mixing failure only if the conditioned chain merely sat
+              ;; elsewhere.  The sampler cannot tell which, so this is a NOTE, not a
+              ;; WARNING: a warning on most correct runs would teach users to skip
+              ;; the two above.
+              (let ((unseen (loop for h in hyps for c in cs for u in us
+                                  when (and (<= u 0d0) (> c 0d0)) collect h))
+                    (never (loop for h in hyps for c in cs for u in us
+                                 when (and (<= u 0d0) (<= c 0d0)) collect h))
+                    (unseen-cond (loop for h in hyps for c in cs for u in us
+                                       when (and (> u 0d0) (<= c 0d0)) collect h)))
+                (when unseen
+                  (error "~A sampled ~{~S~^, ~} under the evidence but never without it, so ~
 P(h|T) is estimated as 0 and the likelihood ratio P(h|T,O) / P(h|T) is undefined.~%  ~
 The sampler did not mix across the hypotheses -- a sampling failure, not an ~
-impossible hypothesis.  Raise --samples, try --unitprop, or use an exact counter."
-                        unseen))
-               (when never
-                 (format t "; WARNING: MC-SAT never sampled ~{~S~^, ~}, with or without the~%~
-                            ; evidence: its posterior 0 is the sampler's, not the theory's.~%"
-                         never))
-               (when unseen-cond
-                 (format t "; WARNING: MC-SAT sampled ~{~S~^, ~} without the evidence but never~%~
-                            ; under it, so its posterior is 0.  That is right only if the~%~
-                            ; evidence rules it out; otherwise the conditioned chain did not~%~
-                            ; mix.  Check with an exact counter, or raise --samples.~%"
-                         unseen-cond))))
+impossible hypothesis.  Use an exact counter, or ~A."
+                         name unseen more))
+                (when never
+                  (format t "; WARNING: ~A never sampled ~{~S~^, ~}, with or without the~%~
+                             ; evidence: its posterior 0 is the sampler's, not the theory's.~%"
+                          name never))
+                (when unseen-cond
+                  (format t "; note: ~A sampled ~{~S~^, ~} only without the evidence; posterior 0~%~
+                             ; assumes the evidence rules it out (an exact counter can confirm).~%"
+                          name unseen-cond)))))
            (mapcar (lambda (h p pr c u r)
                      (list h p pr (list :cond c :uncond u :lik-ratio r)))
                    hyps post prior-v cs us ratios)))))))

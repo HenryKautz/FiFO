@@ -146,11 +146,13 @@ _fifo_solver_kind() {
 
 _fifo_kind_word() { [[ "$1" == "sat" ]] && echo "SAT" || echo "MaxSAT"; }
 
-# _fifo_require_solver <name> <sat|maxsat> <script>
+# _fifo_require_solver <name> <sat|maxsat> <script> [names-only]
 # On success prints the resolved binary name and returns 0; otherwise explains
-# and returns 1.
+# and returns 1.  "names-only" checks the name and kind but not that the binary
+# is installed -- for a run that will not invoke it (recognize.sh --stop-after),
+# where a typo must still be refused.
 _fifo_require_solver() {
-  local name="$1" want="$2" self="$3" line bin kind want_word got_word install
+  local name="$1" want="$2" self="$3" names_only="${4:-}" line bin kind want_word got_word install
   _fifo_load_solver_table || return 1
   want_word="$(_fifo_kind_word "$want")"
 
@@ -199,7 +201,7 @@ _fifo_require_solver() {
      && ! command -v "$bin" >/dev/null 2>&1 && [[ -x "$_FIFO_SOLVERS_DIR/$bin" ]]; then
     printf '%s' "$_FIFO_SOLVERS_DIR/$bin"; return 0
   fi
-  if ! command -v "$bin" >/dev/null 2>&1 && [[ ! -x "$bin" ]]; then
+  if [[ "$names_only" != "names-only" ]] && ! command -v "$bin" >/dev/null 2>&1 && [[ ! -x "$bin" ]]; then
     {
       echo "$self: $want_word solver '$bin' is not installed."
       [[ "$name" != "$bin" ]] && echo "  ('$name' is an abbreviation for it.)"
@@ -240,13 +242,31 @@ EOF
   fi
 }
 
+# --- the per-solver time limit ----------------------------------------------
+
+# _fifo_check_timeout <value> <script>
+# The one rule for --timeout (marginals.sh, planner.sh, recognize.sh): a positive
+# number of seconds, or exactly 0 / -1 / none for no limit.  Any other negative
+# is a typo (--timeout -300), and reading it as "no limit" would defeat the cap.
+# Prints the value with none spelled -1; explains and returns 1 otherwise.
+_fifo_check_timeout() {
+  local v="$1" self="$2"
+  [[ "$v" == "none" ]] && v="-1"
+  if [[ ! "$v" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
+    echo "$self: --timeout must be a number of seconds (or 0/-1/none for no limit), got: $1" >&2
+    return 1
+  fi
+  printf '%s' "$v"
+}
+
 # --- counters ---------------------------------------------------------------
 
-# _fifo_require_counter <name> <marginals|planner> <script>
+# _fifo_require_counter <name> <marginals|planner> <script> [names-only]
 # Prints the canonical counter name on success.  CONTEXT "planner" excludes the
-# counters flagged no-planner.
+# counters flagged no-planner.  "names-only" skips the installed check, as for
+# _fifo_require_solver.
 _fifo_require_counter() {
-  local name="$1" context="$2" self="$3" line flags bin install
+  local name="$1" context="$2" self="$3" names_only="${4:-}" line flags bin install
   _fifo_load_solver_table || return 1
   line="$(_fifo_lookup counter "$name")"
   flags=""
@@ -276,7 +296,7 @@ _fifo_require_counter() {
   # it is not always the counter's own name -- mc-sat runs walksat.
   local prog
   prog="$(printf '%s' "$flags" | tr ',' '\n' | sed -n 's/^needs://p' | head -1)"
-  if [[ -n "$prog" ]]; then
+  if [[ -n "$prog" && "$names_only" != "names-only" ]]; then
     if ! command -v "$prog" >/dev/null 2>&1; then
       {
         echo "$self: counter '$bin' needs '$prog', which is not on PATH."

@@ -370,6 +370,31 @@ fails (ESRCH) only once it is empty.  PROC itself must have been reaped
 (PROCESS-ALIVE-P false), or its zombie keeps the group alive."
   (values (sb-ext:process-kill proc 0 :process-group)))
 
+(defun wait-for-process-group (proc deadline)
+  "Wait until PROC and every other member of its process group have exited, or
+until DEADLINE (internal real time; NIL means no deadline).  True if they all
+did."
+  (loop
+    ;; PROCESS-ALIVE-P first: it reaps the leader, whose zombie would otherwise
+    ;; keep the group alive
+    (unless (or (sb-ext:process-alive-p proc) (process-group-alive-p proc))
+      (return t))
+    (when (and deadline (> (get-internal-real-time) deadline))
+      (return nil))
+    (sleep 0.05)))
+
+(defun stop-process-group (proc)
+  "SIGTERM PROC's whole process group, wait *solver-kill-grace* seconds for ALL
+of it -- not just the leader: a wrapper dies of the SIGTERM at once while its
+solver is still printing the best model it has -- then SIGKILL whatever is left.
+Only if something is left: once the group is empty its number is free, and a
+sibling run (wmc--parallel-map) may already lead a new group with it."
+  (sb-ext:process-kill proc 15 :process-group) ; SIGTERM
+  (unless (wait-for-process-group
+           proc (+ (get-internal-real-time)
+                   (* *solver-kill-grace* internal-time-units-per-second)))
+    (sb-ext:process-kill proc 9 :process-group))) ; SIGKILL
+
 (defun run-program-to-file (program args outfile &key timeout error-file)
   "Run PROGRAM with ARGS, sending stdout to OUTFILE (and stderr to ERROR-FILE if
 given, else discarding it).  When TIMEOUT (seconds) is a
@@ -379,7 +404,9 @@ is still useful -- and escalate to SIGKILL after *solver-kill-grace* seconds.
 Both go to the child's whole PROCESS GROUP (SBCL starts each child as a group
 leader), so a wrapper script and the solver it runs stop together: signalling
 only a non-exec'ing wrapper would leave the real solver running, orphaned.
-Returns (values exit-code timed-out-p)."
+Likewise a run is over only when the whole group has exited: a wrapper that
+exits first, leaving its solver writing OUTFILE, would otherwise hand the caller
+a truncated answer.  Returns (values exit-code timed-out-p)."
   (with-open-file (out outfile :direction :output :if-exists :supersede
                                :if-does-not-exist :create)
     (let ((proc (sb-ext:run-program program args :search t :output out
@@ -387,29 +414,12 @@ Returns (values exit-code timed-out-p)."
                                     :wait nil))
           (timed-out nil))
       (unwind-protect
-           (let ((limit (solver-time-limit timeout)))
-             (when limit
-               (let ((deadline (+ (get-internal-real-time)
-                                  (* limit internal-time-units-per-second))))
-                 (loop while (sb-ext:process-alive-p proc) do
-                   (when (> (get-internal-real-time) deadline)
-                     (setq timed-out t)
-                     (sb-ext:process-kill proc 15 :process-group) ; SIGTERM
-                     (let ((grace (+ (get-internal-real-time)
-                                     (* *solver-kill-grace*
-                                        internal-time-units-per-second))))
-                       ;; Wait for the GROUP, not just the leader: a wrapper
-                       ;; dies of the SIGTERM at once while its solver is
-                       ;; still printing the best model it has.
-                       (loop while (and (or (sb-ext:process-alive-p proc)
-                                            (process-group-alive-p proc))
-                                        (< (get-internal-real-time) grace))
-                             do (sleep 0.05)))
-                     ;; the group, even if the leader has exited: whatever of
-                     ;; it outlived the grace period
-                     (sb-ext:process-kill proc 9 :process-group) ; SIGKILL
-                     (return))
-                   (sleep 0.05)))))
+           (let* ((limit (solver-time-limit timeout))
+                  (deadline (and limit (+ (get-internal-real-time)
+                                          (* limit internal-time-units-per-second)))))
+             (unless (wait-for-process-group proc deadline)
+               (setq timed-out t)
+               (stop-process-group proc)))
         (sb-ext:process-wait proc))
       (values (sb-ext:process-exit-code proc) timed-out))))
 

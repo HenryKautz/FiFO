@@ -316,17 +316,22 @@ stub() {   # stub <counter> <cond alist> <uncond alist>
               (error (e) (format t \"ERR ~A~%\" e)))" 2>&1
 }
 r="$(stub mc-sat '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
-if grep -q "^ERR MC-SAT sampled (H 1) under the evidence but never without it" <<<"$r"; then
+if grep -q "^ERR mc-sat sampled (H 1) under the evidence but never without it" <<<"$r" \
+   && grep -q "raise --samples, try --unitprop" <<<"$r"; then
   ok "mc-sat: a hypothesis seen only under evidence is an error"
 else bad "mc-sat: a hypothesis seen only under evidence is an error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
 # The rule follows the counter's KIND in solvers.dat, not the name "mc-sat": the
-# abbreviation, and an approx counter added to the table, get it too.
-for c in mcsat fake-sampler; do
-  r="$(stub "$c" '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
-  if grep -q "^ERR MC-SAT sampled (H 1) under the evidence" <<<"$r"; then
-    ok "$c (approx in solvers.dat): the same error"
-  else bad "$c (approx in solvers.dat): the same error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
-done
+# abbreviation, and an approx counter added to the table, get it too -- named as
+# itself, and without mc-sat's options as advice.
+r="$(stub mcsat '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
+if grep -q "^ERR mc-sat sampled (H 1) under the evidence" <<<"$r"; then
+  ok "mcsat (the abbreviation): the same error"
+else bad "mcsat (the abbreviation): the same error" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
+r="$(stub fake-sampler '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
+if grep -q "^ERR fake-sampler sampled (H 1) under the evidence" <<<"$r" \
+   && ! grep -q "unitprop\|--samples\|MC-SAT\|mc-sat" <<<"$r"; then
+  ok "another approx counter: the error, in its own name"
+else bad "another approx counter: the error, in its own name" "$(tr '\n' ' ' <<<"$r" | tail -c 200)"; fi
 r="$(stub mc-sat '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))' '(((H 1) . 0.5) ((H 2) . 0.5) ((H 3) . 0))')"
 if grep -q "never sampled (H 3), with or without" <<<"$r" && grep -q "^ROW (H 2) 1.000" <<<"$r" \
    && ! grep -q "^ERR" <<<"$r"; then
@@ -334,14 +339,16 @@ if grep -q "never sampled (H 3), with or without" <<<"$r" && grep -q "^ROW (H 2)
 else bad "mc-sat: a hypothesis never sampled is warned about" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
 # The reverse of the error case: seen without the evidence, never under it.  The
 # ratio 0 is defined, and right if the evidence rules (H 1) out -- but the
-# sampler cannot tell that from a conditioned chain stuck elsewhere.
-if grep -q "sampled (H 1) without the evidence but never" <<<"$r" \
-   && ! grep -q "sampled (H 2) without the evidence but never" <<<"$r"; then
-  ok "mc-sat: one seen only without evidence is warned about"
-else bad "mc-sat: one seen only without evidence is warned about" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
+# sampler cannot tell that from a conditioned chain stuck elsewhere.  A NOTE, not
+# a WARNING: in recognition the evidence rules several goals out on most correct
+# runs.
+if grep -q "^; note: mc-sat sampled (H 1) only without the evidence" <<<"$r" \
+   && ! grep -q "WARNING.*(H 1)\|sampled (H 2) only without" <<<"$r"; then
+  ok "mc-sat: one seen only without evidence gets a note"
+else bad "mc-sat: one seen only without evidence gets a note" "$(tr '\n' ' ' <<<"$r" | tail -c 160)"; fi
 # An exact counter's 0 IS impossibility: the same numbers, no error, ratio 0.
 r="$(stub maxent '(((H 1) . 0.6) ((H 2) . 0.4) ((H 3) . 0))' '(((H 1) . 0) ((H 2) . 1) ((H 3) . 0))')"
-if grep -q "^ROW (H 2) 1.000" <<<"$r" && ! grep -q "^ERR\|never sampled\|but never" <<<"$r"; then
+if grep -q "^ROW (H 2) 1.000" <<<"$r" && ! grep -q "^ERR\|never sampled\|only without" <<<"$r"; then
   ok "an exact counter's P(h|T) = 0 still means impossible"
 else bad "an exact counter's P(h|T) = 0 still means impossible" "$(grep -E '^(ROW|ERR)' <<<"$r" | tr '\n' ' ')"; fi
 

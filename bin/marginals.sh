@@ -442,12 +442,8 @@ if [[ -n "$INIT_CUTOFF" && ! "$INIT_CUTOFF" =~ ^[0-9]+$ ]]; then die "--init-cut
 if [[ -n "$INIT_TRIES" && ! "$INIT_TRIES" =~ ^[0-9]+$ ]]; then die "--init-tries must be a non-negative integer, got: $INIT_TRIES"; fi
 if [[ -n "$WALK_PROB" && ! "$WALK_PROB" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--walk-prob must be a number in [0,1], got: $WALK_PROB"; fi
 if [[ -n "$TEMP"      && ! "$TEMP"      =~ ^[0-9]+(\.[0-9]+)?$ ]]; then die "--temp must be a positive number, got: $TEMP"; fi
-[[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"
-# a positive number, or exactly 0 / -1 for no limit: any other negative is a typo
-# (--timeout -300), and silently meaning "no limit" would defeat the cap
-if [[ -n "$TIMEOUT" && ! "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
-  die "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $TIMEOUT"
-fi
+# the shared rule (fifo-solvers.sh): a positive number, or exactly 0 / -1 / none
+if [[ -n "$TIMEOUT" ]]; then TIMEOUT="$(_fifo_check_timeout "$TIMEOUT" marginals.sh)" || exit 2; fi
 # Set globally, right after FiFO.lisp loads, on every back-end path below: the
 # runs read *solver-timeout* when they start, and wmc--parallel-map hands its
 # value on to its threads.

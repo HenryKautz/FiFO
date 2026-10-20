@@ -87,8 +87,9 @@ usage() {
   echo "               compilation (SIGTERM, then SIGKILL, to the solver's process group)." >&2
   echo "               0, -1 or none: no limit.  Default: FiFO's *solver-timeout*, 600 s," >&2
   echo "               so a d4 compilation that may run longer needs a larger value.  A" >&2
-  echo "               stopped count or compilation is an error; a stopped MaxSAT solve" >&2
-  echo "               gives the best plan found so far." >&2
+  echo "               stopped count or compilation is an error, and so is a stopped SAT" >&2
+  echo "               solve in the horizon search ('SAT solver ... failed'); a stopped" >&2
+  echo "               MaxSAT solve gives the best plan found so far." >&2
   echo "  --options <file>  splice the options in <file> in at this point (one logical line," >&2
   echo "               wrappable with a trailing backslash; only the first line is used)." >&2
   exit 2
@@ -164,12 +165,8 @@ for v in MINSLICES MAXSLICES; do
     echo "--$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]') must be a non-negative integer, got: ${!v}" >&2; exit 2
   fi
 done
-[[ "$TIMEOUT" == "none" ]] && TIMEOUT="-1"
-# the same rule as marginals.sh's: a positive number, or exactly 0 / -1 for no
-# limit -- any other negative is a typo, and "no limit" would defeat the cap
-if [[ -n "$TIMEOUT" && ! "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?|-1)$ ]]; then
-  echo "--timeout must be a number of seconds (or 0/-1/none for no limit), got: $TIMEOUT" >&2; exit 2
-fi
+# the shared rule (fifo-solvers.sh): a positive number, or exactly 0 / -1 / none
+if [[ -n "$TIMEOUT" ]]; then TIMEOUT="$(_fifo_check_timeout "$TIMEOUT" planner.sh)" || exit 2; fi
 if [[ -n "$MINSLICES" && -n "$MAXSLICES" ]] && (( MINSLICES > MAXSLICES )); then
   echo "--minslices ($MINSLICES) must not exceed --maxslices ($MAXSLICES)" >&2; exit 2
 fi

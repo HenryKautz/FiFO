@@ -176,6 +176,23 @@ else
   bad "a wrapped solver gets its SIGTERM grace period" "$(grep -E 'objective|time limit|rror' o14 | head -2 | tr '\n' ' ')"
 fi
 
+# 15. A run is over when the whole process group is, not when its leader exits:
+#     a wrapper that backgrounds the solver and exits at once used to hand back
+#     an empty output ("produced no objective") while the solver was still
+#     writing it.  With a limit and without one (--timeout 0), and in neither
+#     case is it a timeout.
+printf '#!/bin/bash\n( sleep 1; echo "o 0"; echo "s OPTIMUM FOUND" ) &\nexit 0\n' > bg-maxsat
+chmod +x bg-maxsat
+for to in 20 0; do
+  bash "$M" w.scnf --solver max-term --maxsat-solver ./bg-maxsat --timeout "$to" \
+       --query all --scale 1 >o15 2>&1
+  if grep -q 'MAXTERM-MARGINAL' o15 && ! grep -q 'produced no objective\|time limit' o15; then
+    ok "a solver outliving its wrapper is waited for (--timeout $to)"
+  else
+    bad "a solver outliving its wrapper is waited for (--timeout $to)" "$(grep -E 'objective|time limit|rror' o15 | head -2 | tr '\n' ' ')"
+  fi
+done
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]
