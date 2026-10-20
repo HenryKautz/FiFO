@@ -269,6 +269,32 @@ else
   else bad "flow_cutter_pace17 stops on SIGALRM with a decomposition" "exit $RC, $(grep -c '^s td' ring.td) td lines ($FC)"; fi
 fi
 
+# ... and a flowcutter stopped before its FIRST decomposition.  Its message used
+# to end in a NUL byte (sizeof counted the string's terminator); sharpSAT read
+# the NUL as a line, handed it to stoi, and the count aborted -- every
+# BlocksWorldCosts count at H = 15, whose 2,520-vertex primal graph gets no
+# decomposition within the default 1 s.  A stand-in printing exactly that old
+# output must cost only the decomposition (Z as with the real one); and the real
+# flowcutter, stopped that early on a large graph, must print no NUL.
+printf '#!/bin/sh\ncat >/dev/null\nprintf "c min degree heuristic\\nc info programm was aborted before any decomposition was computed\\n\\000"\n' > nul-fc
+chmod +x nul-fc
+ZNUL="$(SHARPSAT_FLOWCUTTER="$TMP/nul-fc" bash "$W" "$PB1" --counter sharpsat-td 2>&1)"
+if [[ -n "$ZREF" ]] && awk -v a="$(zval <<<"$ZREF")" -v b="$(zval <<<"$ZNUL")" \
+     'BEGIN { if (b == "") exit 1; d = (a - b) / a; if (d < 0) d = -d; exit !(d < 1e-12) }'; then
+  ok "no decomposition, message ending in NUL: still the exact Z"
+else bad "no decomposition, message ending in NUL: still the exact Z" "ref=$ZREF got=$(tr '\n' ' ' <<<"$ZNUL" | tail -c 120)"; fi
+if [[ -x "$FC" ]]; then
+  awk 'BEGIN { n = 3000; k = 40; print "p tw", n, n * k
+               for (i = 1; i <= n; i++) for (j = 1; j <= k; j++) print i, (i + j - 1) % n + 1 }' > big.gr
+  "$FC" < big.gr > big.td 2>/dev/null & FCPID=$!
+  sleep 0.2; kill -TERM "$FCPID"; wait "$FCPID"
+  if ! grep -q 'aborted before any decomposition' big.td; then
+    printf '  %-60s ... SKIP  (%s)\n' "flowcutter stopped early prints no NUL" "it had a decomposition within 0.2 s"
+  elif [[ "$(tr -d '\000' < big.td | wc -c)" == "$(wc -c < big.td)" ]]; then
+    ok "flowcutter stopped before any decomposition prints no NUL"
+  else bad "flowcutter stopped before any decomposition prints no NUL" "$(od -c big.td | tail -2 | tr '\n' ' ')"; fi
+fi
+
 # --- 9b. --hypotheses counts only the hypotheses -----------------------------
 # A sharpSAT wrapper earlier on PATH logs each invocation.  The fixture has 6
 # atoms and 3 hypotheses; per-hypothesis needs a conditioned and an unconditioned
