@@ -180,6 +180,18 @@ for be in ddnnf addmc d4; do
   fi
 done
 
+# --node-limit reaches the circuit back ends on this path too.  It used to reach
+# maxent only, so a raised limit was silently ignored and ddnnf stopped at the
+# default 2,000,000 nodes.  A limit of 1 must stop the compile, naming it.
+for be in ddnnf d4; do
+  [[ "$be" == d4 ]] && ! command -v d4 >/dev/null 2>&1 && continue
+  r="$(bash "$M" t.scnf "${H[@]}" --baseline per-hypothesis --evidence '(OBS 1)' \
+         --solver "$be" --node-limit 1 2>&1)"
+  if grep -q 'exceeded 1 nodes' <<<"$r"; then
+    ok "--node-limit reaches $be under --hypotheses"
+  else bad "--node-limit reaches $be under --hypotheses" "$(tr '\n' ' ' <<<"$r" | tail -c 120)"; fi
+done
+
 # mc-sat is the one back end where the ratio's denominator matters: it divides
 # two ESTIMATES.  Loose tolerance on purpose -- this pins that the sampled path
 # runs and lands in the right place, not that Monte Carlo is exact.

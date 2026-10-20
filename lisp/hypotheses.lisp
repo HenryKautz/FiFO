@@ -62,6 +62,10 @@
 ;; Declaring them keeps that from adding style warnings to every other run --
 ;; the same treatment planner.lisp gives marginals / marginals-addmc.
 (declaim (ftype (function (t &rest t) t) ddnnf-marginals marginals-mcsat))
+;; ddnnf.lisp's node cap, rebound by hp--marginals for the circuit back ends.
+;; Proclaimed special here (no value) so the binding is dynamic even when this
+;; file is compiled before ddnnf.lisp.
+(defvar *ddnnf-node-limit*)
 
 (defparameter *hypothesis-counters* (counter-names)
   "The back ends :counter accepts, from the shared solvers.dat table.  A counter
@@ -200,13 +204,18 @@ run or one circuit anyway."
                                      :jobs (or (getf opts :jobs) *wmc-jobs*)
                                      :decot (or (getf opts :decot) *sharpsat-decot*)
                                      :cache-mb (or (getf opts :cache-mb) *sharpsat-cache-mb*)))
+      ;; :node-limit is ddnnf.lisp's node cap for the two circuit back ends (a d4
+      ;; import builds through the same cap).  It used to reach maxent only, so
+      ;; marginals.sh --hypotheses --node-limit was silently ignored here.
       ((string-equal counter "ddnnf")
-       (ddnnf-marginals scnf-file :verbose nil :scale scale))
+       (let ((*ddnnf-node-limit* (or (getf opts :node-limit) *ddnnf-node-limit*)))
+         (ddnnf-marginals scnf-file :verbose nil :scale scale)))
       ((string-equal counter "d4")
        ;; A projected compile keeps the hypotheses: they are what is read.
-       (ddnnf-marginals scnf-file :verbose nil :scale scale :compiler :d4
-                                  :project (getf opts :project)
-                                  :project-atoms (append (getf opts :project-atoms) atoms)))
+       (let ((*ddnnf-node-limit* (or (getf opts :node-limit) *ddnnf-node-limit*)))
+         (ddnnf-marginals scnf-file :verbose nil :scale scale :compiler :d4
+                                    :project (getf opts :project)
+                                    :project-atoms (append (getf opts :project-atoms) atoms))))
       ((string-equal counter "mc-sat")
        ;; :verbose nil suppresses the sampler's own diagnostics, so re-raise the
        ;; two that mean the numbers are WRONG rather than merely noisy.  A frozen
