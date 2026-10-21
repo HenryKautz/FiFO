@@ -171,7 +171,7 @@ sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/wmc.lisp\")" \
      >/dev/null 2>&1
 WV="$(awk '$1=="w" { v=$2; sub(/^-/,"",v); print v; exit }' mp.wcnf 2>/dev/null)"
 NVP="$(awk '$1=="p" { print $3; exit }' mp.wcnf 2>/dev/null)"
-if [[ -n "$WV" && "$(wc -l < mp.map 2>/dev/null)" == "$NVP" ]] && grep -qx "$WV A" mp.map; then
+if [[ -n "$WV" && "$(wc -l < mp.map 2>/dev/null | tr -d ' ')" == "$NVP" ]] && grep -qx "$WV A" mp.map; then
   ok ":map-file names the variables (weighted var $WV is A)"
 else bad ":map-file names the variables" "weight var ${WV:-none}, map: $(tr '\n' ' ' < mp.map 2>/dev/null)"; fi
 
