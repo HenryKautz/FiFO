@@ -21,6 +21,7 @@
 - [SAT solvers](#sat-solvers)
 - [Constraint Satisfaction](#constraint-satisfaction)
 - [Answer Extraction for Deduction](#answer-extraction-for-deduction)
+- [Mutual Exclusion](#mutual-exclusion)
 - [Common Binary Relationship Patterns](#common-binary-relationship-patterns)
 - [Optimization (Weighted MaxSAT)](#optimization-weighted-maxsat)
 - [Options](#options)
@@ -402,6 +403,43 @@ When new propositions are introduced in this manner, the relationship between th
 
 The new propositions are written `(TSEITIN n)`, numbered in order, and are left out of answers and marginal listings. For an OR of two sub-formulas whose clause lists are L and R, a selector S is defined as one of them (S ⇔ D, D being whichever of L, R is cheaper to define) and the disjunction becomes "S or the other side"; to define S as a conjunction of clauses, each multi-literal clause d gets its own proposition H ⇔ d. These definitions are asserted at top level rather than inside the formula, because an enclosing OR would otherwise be distributed over them and switch them off. Small ORs are multiplied out instead (when |L|·|R| ≤ |L|+|R|+1). Weighted formulas are encoded the same way. Because the names are FiFO's own, `TSEITIN` and `WEIGHTED-FORMULA` are reserved: a predicate with either name is an error.
 
+## Mutual Exclusion
+
+```
+(mutex (<var1> <set expression> <test> <formula1>)
+       (<var2> <set expression> <test> <formula2>))
+```
+
+`mutex` takes two *generators*. Each has the same four parts as the inside of an `all` — a variable, the set it ranges over, a test, and a formula in which the variable may occur — and produces one formula for each value of the variable that passes the test. That value is the formula's **label**. The `mutex` asserts that
+
+> no formula of the first family is true together with a formula of the second family that has a **different** label:
+> ¬(φ₁[c] ∧ φ₂[d]) for every label c of the first family and d of the second with c ≠ d.
+
+Labels are compared as `neq` compares values. So a value that labels a formula in both families is never excluded against itself, and two families with no labels in common exclude every pair. The same generator given twice says that **at most one** formula of the family is true:
+
+```
+;; Each node has at most one color
+(all x Node true
+  (mutex (c Color true (color x c)) (d Color true (color x d))))
+
+;; While any task in Late is scheduled, nothing in Early is
+(mutex (t Early true (scheduled t)) (u Late true (scheduled u)))
+```
+
+The formulas may be any formulas, not only literals. Variables bound outside the `mutex` (here `x`) are fixed for each instance; only the two generator variables range inside it. A `mutex` may appear wherever a formula may, including inside `and`, `or` and the body of `all`, but not negated (under `not`, as the antecedent of `implies`, or inside `equiv`), and not in a static form. To say that some pair *does* hold together, write the `exists` directly.
+
+**Why a separate form.** The same constraint can be written with quantifiers:
+
+```
+(all c D1 g1 (all d D2 (and g2 (neq c d)) (or (not φ₁) (not φ₂))))
+```
+
+but that always produces one clause per excluded pair: |D₁|·|D₂| clauses. `mutex` produces the same models in at most about 6|D₁| + 2|D₂| clauses. It orders the first family's formulas x₁ … x_m and defines prefix propositions Pₖ ⇔ x₁ ∨ … ∨ xₖ and suffix propositions Sₖ ⇔ xₖ ∨ … ∨ x_m. Each formula y of the second family, whose label is at position i, then needs only ¬y ∨ ¬Pᵢ₋₁ and ¬y ∨ ¬Sᵢ₊₁: nothing before it and nothing after it. When y's formula is the same literal as its namesake xᵢ, the suffix clause is unnecessary, so at-most-one over m formulas costs one chain: about 4m clauses instead of m(m−1)/2. The new propositions are `(TSEITIN n)` atoms, each *defined* by a biconditional, exactly like the compact encoding's (see [Compact Encodings](#compact-encodings)). So every model of the pairwise clauses extends to exactly one model of these: satisfiability, MaxSAT optima, model counts and marginals are all unchanged. A formula that is not a single literal first gets a defined proposition of its own.
+
+FiFO writes whichever form is smaller for each instance, so small families keep the pairwise clauses. `(option *mutex-pairwise* 1)` forces the pairwise form everywhere, for comparison. With `(option *compact-encoding* 0)`, `mutex` creates no propositions at all and writes the pairs.
+
+SatPlan's interfering-action axioms (`lisp/satplan.wff`) are `mutex` forms. For a fluent that actions at many places touch, such as logistics' `(in package truck)`, which every load and unload of that package into that truck needs, adds or deletes at every location, the pairs grew as the fourth power of the grid width. On a 6×6 logistics grid with two trucks and four packages they were 80% of the theory: 542,253 clauses with the pairs, 171,579 with `mutex`, and the same optimal plans.
+
 ## Common Binary Relationship Patterns
 
 Suppose R is a binary relation.  Properties of R can be asserted as follows.
@@ -433,6 +471,12 @@ We say that a relationship over domains E and V is functional if for every E the
 ;; R is functional
 (all x E true (exists y V true (R x y)))
 (all x E true (not (exists (y z) V (neq y z) (and (R x y) (R x z)))))
+```
+
+The second line can also be written with [mutex](#mutual-exclusion), which for a large V produces far fewer clauses (linear rather than quadratic in |V|):
+
+```
+(all x E true (mutex (y V true (R x y)) (z V true (R x z))))
 ```
 
 ### R is a bijection
@@ -663,6 +707,10 @@ The input to FiFO may include the following options, which should appear before 
 ; Do not create new propositions.
 (option *compact-encoding* 0)
 
+; Write every mutex as one clause per excluded pair (default: the smaller of
+; that and the linear encoding; see Mutual Exclusion).
+(option *mutex-pairwise* 1)
+
 ; Enable tracing: prints [TRACE] lines showing domains, variable bindings, and clause counts.
 (option *tracing* 1)
 ; Disable tracing (default).
@@ -679,6 +727,7 @@ When tracing is enabled, the interpreter prints diagnostic output to standard ou
 - `[TRACE] Formula: (OP ...)` -- each top-level formula entering the parser
 - `[TRACE] ALL/EXISTS/FOR VAR = VAL` -- each variable binding tried by a quantifier
 - `[TRACE] Multiply: N x M -> K clauses` -- clause counts at each OR-distribution step
+- `[TRACE] Mutex: N x M -> K clauses (pairwise|linear)` -- each mutex instance: the sizes of its two families, and the encoding written
 
 The multiply trace is especially useful for diagnosing exponential clause blowup. When compact encoding is disabled, each multiply step performs a full cross-product; the clause count shown will grow multiplicatively. With compact encoding enabled, auxiliary propositions are introduced and the count grows only linearly.
 
@@ -698,6 +747,7 @@ Only the options below may appear in a `.wff`. They all shape *what problem gets
 | Option (variable) | Meaning | Default | In a `.wff` file | On the command line |
 |---|---|---|---|---|
 | `*compact-encoding*` | Introduce auxiliary (Tseitin) propositions to keep the instantiated formula small | `t` (on) | `(option *compact-encoding* 0)` | `--eval '(setq *compact-encoding* nil)'` |
+| `*mutex-pairwise*` | Write every `mutex` as one clause per excluded pair instead of the smaller of that and the linear encoding (same models either way) | `nil` (off) | `(option *mutex-pairwise* 1)` | `--eval '(setq *mutex-pairwise* t)'` |
 | `*tracing*` | Print `[TRACE]` diagnostics during instantiation | `nil` (off) | `(option *tracing* 1)` | `--eval '(setq *tracing* t)'` |
 | `*satplan-numslices*` | SatPlan time horizon read by `pddl2fifo`-generated wff files | unbound (treated as `2`) | `(option *satplan-numslices* 10)` | `--eval '(setq *satplan-numslices* 10)'` |
 
@@ -826,7 +876,7 @@ Schema BNF
     
     <option> = (option <option name> <option value>)
     
-    <option name> = *compact-encoding* | *tracing* | *cnf-format* | *solver* | *solver-abbreviations*
+    <option name> = *compact-encoding* | *mutex-pairwise* | *tracing* | *cnf-format* | *solver* | *solver-abbreviations*
                   | *solver-timeout* | *preprocessor* | *preprocessor-techniques* | *satplan-numslices*
     
     <option value> = <numeric expression> | cnf | wcnf-old | wcnf
@@ -842,10 +892,13 @@ Schema BNF
         (all (<variable>+) <set expression> <test> <body>) |  
         (exists <variable> <set expression> <test> <body>) |  
         (exists (<variable>+) <set expression> <test> <body>) |  
+        (mutex <generator> <generator>) |  
         (if <test> <body>) |  
         (prove ((<variable> <set expression>)*) <test> <formula>)
     
     <body> = <formula> | <weight> | <probability>
+    
+    <generator> = (<variable> <set expression> <test> <formula>)
     
     <proposition> = <predicate symbol> | true | false | 
         (<predicate symbol> <term>*) |

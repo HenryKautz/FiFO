@@ -118,20 +118,22 @@ The file `SatPlan/satplan.wff` contains domain-independent axioms that apply to 
 ;;   if a2 adds a negative precondition of a1, where a1 and a2 are not equal.
 ;;
 ;; These are indexed by fluent rather than iterated over all action pairs: for
-;; each fluent, only the (few) actions that need it conflict with the (few) that
-;; change it -- avoiding an O(actions^2 x fluents) blowup.  The interfering pairs
-;; do not depend on the time slice, so the per-fluent collects are done once here
-;; (slice loop innermost) rather than repeated for every slice.
+;; each fluent, only the actions that need it conflict with the ones that change
+;; it -- avoiding an O(actions^2 x fluents) blowup.  Even so the pairs can be
+;; many: in logistics every load and unload of a package into one truck, at
+;; every place, touches (in pkg truck), so the pairs number 2 N^4 per slice on
+;; an N x N grid.  MUTEX states exactly these pairs (a1 /= a2 is its label
+;; test) and writes them as a linear chain of defined atoms when that is
+;; smaller; (option *mutex-pairwise* 1) writes the pairs instead.  Either way
+;; the models, and so plans, costs and counts, are the same.
 (all flu fluents true
-   (all a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true
-      (all a2 (collect a (Del a flu)) (neq a1 a2)
-         (all s actslices true
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
+   (all s actslices true
+      (mutex (a1 (union (collect a (Pre a flu)) (collect a (Add a flu))) true (Occurs a1 s))
+             (a2 (collect a (Del a flu)) true (Occurs a2 s)))))
 (all flu fluents true
-   (all a1 (collect a (PreNeg a flu)) true
-      (all a2 (collect a (Add a flu)) (neq a1 a2)
-         (all s actslices true
-            (or (not (Occurs a1 s)) (not (Occurs a2 s)))))))
+   (all s actslices true
+      (mutex (a1 (collect a (PreNeg a flu)) true (Occurs a1 s))
+             (a2 (collect a (Add a flu)) true (Occurs a2 s)))))
 
 ;; Initial state is completely specified
 (all f initial-state true
@@ -148,7 +150,9 @@ The `static` block at the top registers the five static predicates so that the q
 
 The axioms use **parallel execution semantics**: multiple non-interfering actions may occur at the same time step. Two actions interfere if one deletes a precondition or add-effect of the other, or if one adds a negative precondition of the other.
 
-The interference mutexes are written **indexed by fluent**: for each fluent, the actions that need it (`Pre`/`Add`, or `PreNeg`) are paired with the actions that change it (`Del`, or `Add`), gathered with `collect`. This generates exactly the interfering pairs without quantifying over every pair of actions, which would be O(actions² × fluents). They are also kept **outside the per-slice loop** (with the slice quantifier innermost), because the interfering pairs are the same at every step — so the per-fluent `collect`s run once rather than once per time slice. Together these let the encoding scale to many time steps.
+The interference mutexes are written **indexed by fluent**: for each fluent, the actions that need it (`Pre`/`Add`, or `PreNeg`) are excluded against the actions that change it (`Del`, or `Add`), gathered with `collect`. This generates exactly the interfering pairs without quantifying over every pair of actions, which would be O(actions² × fluents).
+
+Each fluent's exclusions are one [`mutex`](../README.md#mutual-exclusion) per time step. Written as explicit pairs, a fluent needed by *a* actions and deleted by *d* costs *a*·*d* clauses per step, and that can still be large. In logistics, every load and unload of one package into one truck, at every place, touches `(in package truck)`. On an N×N grid that is 2N⁴ pairs per step, 80% of a 6×6 two-truck, four-package theory. `mutex` states the same exclusions and writes them as a linear chain of defined auxiliary propositions when that is smaller: a number of clauses linear in *a*+*d* (at most about 6*a*+2*d*). The models are the same either way, so plans, costs and model counts are unchanged. `(option *mutex-pairwise* 1)` restores the explicit pairs for comparison.
 
 **Negative preconditions** are expressed with `(PreNeg action fluent)`, meaning the action requires the fluent to be false. An action occurrence implies its negative preconditions are false at that time step, and an action may add its own negative precondition, just as an action may delete its own positive precondition. Fluents appearing in `PreNeg` facts must be included in the `fluents` domain.
 

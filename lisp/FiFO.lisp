@@ -133,6 +133,11 @@ whichever of the three spellings is convenient."
 ;; Default values of options
 (defvar *compact-encoding* t)
 (defvar *tracing* nil)
+;; When true, every MUTEX is written as one clause per excluded pair, as the
+;; equivalent hand-written quantified formula would be, instead of choosing the
+;; smaller of that and the linear prefix/suffix encoding (see parse-mutex).  For
+;; comparing the two; the theories have the same models either way.
+(defvar *mutex-pairwise* nil)
 
 (defun trace-message (control &rest args)
   "When *tracing* is set, print a [TRACE] message and flush immediately, so that
@@ -172,7 +177,8 @@ exactly where it was."
 ;;; Because a theory's (option ...) forms are parsed inside that :CONTINUE
 ;;; binding, they never reach an enclosing scope: a second theory parsed in the
 ;;; same INSTANTIATE or SOLVE starts from the caller's values, not the first's.
-(defparameter *wff-settable-options* '(*compact-encoding* *tracing* *satplan-numslices*))
+(defparameter *wff-settable-options*
+  '(*compact-encoding* *mutex-pairwise* *tracing* *satplan-numslices*))
 
 ;; Marks an option that was unbound, in a recorded set of values.
 (defvar +wff-option-unbound+ '%wff-option-unbound)
@@ -282,7 +288,7 @@ the next."
                               union intersection set-difference + - * div rem mod ** bit
                               range))
 (defvar interpreted-functions (append '(not and or lisp set alldiff collect) binary-functions))
-(defvar logical-connectives '(not and or implies if equiv all exists))
+(defvar logical-connectives '(not and or implies if equiv all exists mutex))
 (defvar reserved-words (append interpreted-functions logical-connectives))
 
 (defvar debugp nil)
@@ -1556,6 +1562,12 @@ solve.sh / map.sh flag."
                         (parse-set-expression (caddr F))
                         (cadddr F)
                         (car (cddddr F))))
+        ((eql (car F) 'mutex)
+          (unless (and (= (length F) 3)
+                       (every (lambda (g) (and (consp g) (= (length g) 4))) (cdr F)))
+            (error "Malformed mutex (expected (mutex (<var> <domain> <test> <formula>) ~
+                    (<var> <domain> <test> <formula>))): ~S" F))
+          (parse-mutex (cadr F) (caddr F)))
         (t (error "Cannot parse formula ~S" F))))
 
 (defun parse-if (test body)
@@ -1576,6 +1588,9 @@ solve.sh / map.sh flag."
                              (parse-formula `(or (not ,(cadr F)) (not ,(caddr F))))))
           ((eql op 'all) (parse-formula `(exists ,(cadr F) ,(caddr F) ,(cadddr F) (not ,(car (cddddr F))))))
           ((eql op 'exists) (parse-formula `(all ,(cadr F) ,(caddr F) ,(cadddr F) (not ,(car (cddddr F))))))
+          ((eql op 'mutex)
+           (error "mutex may not be negated (or appear under not/implies/equiv): ~S~@
+                   Write the pairs it should allow with exists instead." F))
           (t (error "Cannot parse negation ~S" F)))))
 
 (defun negate-list (L)
@@ -1649,30 +1664,37 @@ whenever both sides held, so every such model was counted twice -- and, being
 uninterned, it did not even survive the scnf round trip (see auxatoms.lisp).
 The cost is linear: one clause per literal of each non-unit clause of D, plus
 one per clause, against the |L|*|R| clauses of the explicit product."
-  (when (eq *tseitin-definitions* :none)
-    (error "internal: the compact encoding minted a selector outside a ~
-clauses-with-definitions scope, so its definition would be lost"))
   (multiple-value-bind (D O) (if (<= (tseitin-definition-cost L) (tseitin-definition-cost R))
                                  (values L R)
                                  (values R L))
-      (let* ((s (make-aux-atom 'TSEITIN (incf *tseitin-counter*)))
-             (not-s (list 'not s))
-             (negations '())
-             (definitions '())
-             (d-has-empty nil))
-        (dolist (d D)
-          (cond ((null d) (setq d-has-empty t))      ; D is false: S is forced false
-                ((null (cdr d)) (push (complement-literal (car d)) negations))
-                (t (let ((h (make-aux-atom 'TSEITIN (incf *tseitin-counter*))))
-                     (push (cons (list 'not h) d) definitions)            ; H -> d
-                     (dolist (x d)                                        ; d -> H
-                       (push (list h (complement-literal x)) definitions))
-                     (push (list 'not h) negations)))))
-        (dolist (c (append (mapcar (lambda (c) (cons not-s c)) D)
-                           (unless d-has-empty (list (cons s (nreverse negations))))
-                           (nreverse definitions)))
-          (push c *tseitin-definitions*))
-        (mapcar (lambda (c) (cons s c)) O))))
+    (let ((s (define-conjunction-atom D)))
+      (mapcar (lambda (c) (cons s c)) O))))
+
+(defun define-conjunction-atom (D)
+  "Mint a (TSEITIN n) atom S, push the definition S <=> (the conjunction of the
+clauses D) onto *tseitin-definitions* (see tseitin-or), and return S.  Used by
+tseitin-or for its selector and by mutex-member for a member formula."
+  (when (eq *tseitin-definitions* :none)
+    (error "internal: the compact encoding minted a selector outside a ~
+clauses-with-definitions scope, so its definition would be lost"))
+  (let* ((s (make-aux-atom 'TSEITIN (incf *tseitin-counter*)))
+         (not-s (list 'not s))
+         (negations '())
+         (definitions '())
+         (d-has-empty nil))
+    (dolist (d D)
+      (cond ((null d) (setq d-has-empty t))      ; D is false: S is forced false
+            ((null (cdr d)) (push (complement-literal (car d)) negations))
+            (t (let ((h (make-aux-atom 'TSEITIN (incf *tseitin-counter*))))
+                 (push (cons (list 'not h) d) definitions)            ; H -> d
+                 (dolist (x d)                                        ; d -> H
+                   (push (list h (complement-literal x)) definitions))
+                 (push (list 'not h) negations)))))
+    (dolist (c (append (mapcar (lambda (c) (cons not-s c)) D)
+                       (unless d-has-empty (list (cons s (nreverse negations))))
+                       (nreverse definitions)))
+      (push c *tseitin-definitions*))
+    s))
 
 (defun tseitin-definition-cost (side)
   "Clauses needed, beyond one per clause, to define a selector as SIDE: |d|+1
@@ -1732,6 +1754,207 @@ for each multi-literal clause d (its H <=> d), 0 for a unit."
         (t
          (trace-message "[TRACE] EXISTS ~S over ~S~%" VAR DOM)
          (parse-formula (expand-multivar-exists VAR DOM TEST BODY)))))
+
+;;; ------------------------------------------------------------------ mutex
+;;;
+;;; (mutex (v1 D1 g1 phi1) (v2 D2 g2 phi2)) asserts
+;;;
+;;;     not (phi1[c] and phi2[d])   for every c in D1 passing g1, every d in D2
+;;;                                 passing g2, with c /= d (compared as neq does)
+;;;
+;;; -- no member of the first family is true together with a member of the
+;;; second carrying a DIFFERENT label (the value substituted for its variable).
+;;; (mutex G G) is at-most-one.  Written as the quantified formula it means,
+;;; (all c D1 g1 (all d D2 (and g2 (neq c d)) (or (not phi1) (not phi2)))), it
+;;; costs |D1|*|D2| clauses; SatPlan's interfering-action mutexes are this, and
+;;; for a fluent like (in pkg truck) touched by every load and unload on an
+;;; N x N grid it was 2 N^4 clauses per slice -- 80% of a 6x6 logistics theory.
+;;;
+;;; The linear encoding: order the first family's members x_1..x_m, define
+;;; prefix atoms P_k <=> x_1 or ... or x_k and suffix atoms S_k <=> x_k or ... or
+;;; x_m (each by its 3-clause biconditional with the previous one), and give
+;;; each member y of the second family
+;;;     not y or not P_(i-1)    and    not y or not S_(i+1)
+;;; where i is the position of y's label among the x's (y excludes everything
+;;; but its namesake), or just  not y or not P_m  when its label has no x.  Two
+;;; refinements: a label whose two members are the SAME literal needs no suffix
+;;; clause when such labels are ordered last (the pair (x_j, y_i), j > i, is the
+;;; prefix clause of y_j), so at-most-one costs one chain; and the first family's
+;;; labels absent from the second go first.  About 3m + 3m + 2|Y| clauses
+;;; against m*|Y|; parse-mutex writes whichever is smaller.
+;;;
+;;; Every atom it mints is a (TSEITIN n), DEFINED by a biconditional and asserted
+;;; at top level (like tseitin-or's), so each model of the pairwise clauses
+;;; extends to exactly one model of these: SAT, MaxSAT optima and model counts
+;;; are unchanged.  A member phi that is not a single literal gets its own atom
+;;; A <=> phi first, so the pairs, or the chain, work on literals.  With
+;;; *compact-encoding* off no atom is minted: the pairs are written out, each
+;;; (or (not phi1[c]) (not phi2[d])) as it would be parsed.
+
+(defun mutex-member (BODY)
+  "The literal standing for formula BODY in the current bindings, as
+(values LITERAL NEGATION-CLAUSES), or :FALSE when BODY instantiates to false (it
+then excludes nothing).  A single literal is itself.  Otherwise, under the
+compact encoding, a (TSEITIN n) atom defined as the conjunction of BODY's
+clauses; with the compact encoding off LITERAL is NIL, and NEGATION-CLAUSES --
+the negation of BODY's clauses, multiplied out -- are what the pairwise
+expansion multiplies.  The negation is taken from the clauses, never by parsing
+(not BODY): parse-not reads (not (if <false> ...)) as true, so a member with a
+vacuous if would be negated wrongly."
+  (let ((clauses (parse-formula BODY)))
+    (cond ((member nil clauses) :false)
+          ((and clauses (null (cdr clauses)) (null (cdr (car clauses))))
+           (let ((lit (caar clauses)))
+             (values lit (list (list (complement-literal lit))))))
+          (*compact-encoding*
+           (let ((a (define-conjunction-atom clauses)))
+             (values a (list (list (list 'not a))))))
+          (t
+           ;; not (c1 and ... and ck) = (not c1) or ... or (not ck), each (not c)
+           ;; a conjunction of negated literals
+           (values nil
+                   (let ((acc (list nil)))
+                     (dolist (c clauses acc)
+                       (setq acc (explicit-multiply-clauses
+                                  acc (mapcar (lambda (l) (list (complement-literal l))) c))))))))))
+
+(defun mutex-family (GENERATOR)
+  "Instantiate one (var domain test formula) half of a mutex: a list of
+(label literal negation-clauses), one per distinct domain value passing the test
+whose formula is not false, in domain order."
+  (destructuring-bind (var dom test body) GENERATOR
+    (when (listp var)
+      (error "mutex takes one variable per family, not ~S" var))
+    (let ((seen (make-hash-table :test #'equalp))
+          (members '()))
+      (dolist (val (parse-set-expression dom))
+        (unless (gethash val seen)
+          (setf (gethash val seen) t)
+          (with-binding var val
+            (when (is-true (parse-expression test))
+              (multiple-value-bind (lit negation) (mutex-member body)
+                (unless (eq lit :false)
+                  (push (list val lit negation) members)))))))
+      (nreverse members))))
+
+(defun mutex-pairwise-clauses (X Y)
+  "One clause per excluded pair, not (x and y), each written once."
+  (let ((seen (make-hash-table :test #'equal))
+        (out '()))
+    (dolist (x X)
+      (dolist (y Y)
+        (unless (equalp (first x) (first y))
+          (if (and (second x) (second y))
+              (let ((nx (complement-literal (second x)))
+                    (ny (complement-literal (second y))))
+                (unless (or (gethash (list nx ny) seen) (gethash (list ny nx) seen))
+                  (setf (gethash (list nx ny) seen) t)
+                  (push (if (equal nx ny) (list nx) (list nx ny)) out)))
+              (dolist (c (explicit-multiply-clauses (third x) (third y)))
+                (push c out))))))
+    (nreverse out)))
+
+(defun mutex-or-chain (lits count)
+  "A vector V of COUNT literals with V[k] <=> lits[0] or ... or lits[k].  V[0] is
+lits[0] itself; each later V[k] is a fresh (TSEITIN n) whose definition
+V[k] <=> V[k-1] or lits[k] is pushed onto *tseitin-definitions*."
+  (let ((v (make-array count)))
+    (when (plusp count)
+      (setf (aref v 0) (first lits))
+      (loop for k from 1 below count
+            for l in (rest lits)
+            do (let ((p (make-aux-atom 'TSEITIN (incf *tseitin-counter*)))
+                     (prev (aref v (1- k))))
+                 (push (list (list 'not p) prev l) *tseitin-definitions*)
+                 (push (list p (complement-literal prev)) *tseitin-definitions*)
+                 (push (list p (complement-literal l)) *tseitin-definitions*)
+                 (setf (aref v k) p))))
+    v))
+
+(defun mutex-chain-plan (X Y)
+  "Lay out the linear encoding of X against Y (literal members only).  Returns
+(values ORDERED-X-LITERALS PREFIX-COUNT SUFFIX-FROM Y-POSITIONS CLAUSE-COUNT):
+the x literals in chain order; how many prefix ORs are needed; the first
+position (0-based) whose suffix OR is needed, or NIL; for each y in order, its
+x position or NIL; and the number of clauses the encoding will cost."
+  (let ((ylabels (make-hash-table :test #'equalp))
+        (x-only '()) (asym '()) (sym '()))
+    (dolist (y Y) (setf (gethash (first y) ylabels) (second y)))
+    (dolist (x X)
+      (multiple-value-bind (ylit shared) (gethash (first x) ylabels)
+        (cond ((not shared) (push x x-only))
+              ((equal ylit (second x)) (push x sym))
+              (t (push x asym)))))
+    (let* ((ordered (coerce (append (nreverse x-only) (nreverse asym) (nreverse sym))
+                            'vector))
+           (m (length ordered))
+           (position-of (make-hash-table :test #'equalp))
+           (prefix 0) (suffix-from nil) (binary 0)
+           (positions '()))
+      (loop for x across ordered for i from 0 do (setf (gethash (first x) position-of) i))
+      (dolist (y Y)
+        (let ((i (gethash (first y) position-of)))
+          (push i positions)
+          (cond ((null i)                 ; no namesake: exclude every x
+                 (setq prefix (max prefix m))
+                 (incf binary))
+                (t
+                 (when (> i 0) (setq prefix (max prefix i)) (incf binary))
+                 (when (and (< i (1- m))
+                            (not (equal (second y) (second (aref ordered i)))))
+                   (setq suffix-from (if suffix-from (min suffix-from (1+ i)) (1+ i)))
+                   (incf binary))))))
+      (values (map 'list #'second ordered) prefix suffix-from (nreverse positions)
+              (+ (* 3 (max 0 (1- prefix)))
+                 (if suffix-from (* 3 (max 0 (- m suffix-from 1))) 0)
+                 binary)))))
+
+(defun mutex-chain-clauses (X Y)
+  "The linear encoding (see the section header); X and Y have literal members."
+  (multiple-value-bind (xlits prefix suffix-from positions)
+      (mutex-chain-plan X Y)
+    (let* ((m (length xlits))
+           (xvec (coerce xlits 'vector))
+           (pre (mutex-or-chain xlits prefix))
+           ;; suffix ORs: built as a prefix chain over the reversed tail, so
+           ;; suf[j] covers positions m-1-j .. m-1
+           (suf (if suffix-from
+                    (mutex-or-chain (reverse (nthcdr suffix-from xlits)) (- m suffix-from))
+                    #()))
+           (out '()))
+      (loop for y in Y
+            for i in positions
+            do (let ((ny (complement-literal (second y))))
+                 (cond ((null i)
+                        (push (list ny (complement-literal (aref pre (1- m)))) out))
+                       (t
+                        (when (> i 0)
+                          (push (list ny (complement-literal (aref pre (1- i)))) out))
+                        (when (and (< i (1- m))
+                                   (not (equal (second y) (aref xvec i))))
+                          (push (list ny (complement-literal (aref suf (- m i 2)))) out))))))
+      (nreverse out))))
+
+(defun parse-mutex (G1 G2)
+  (when static-body-mode
+    (error "mutex may not appear in a static form"))
+  (when (eq *tseitin-definitions* :none)
+    (error "internal: mutex parsed outside a clauses-with-definitions scope"))
+  (let* ((X (mutex-family G1))
+         (Y (mutex-family G2))
+         (literal-only (and (every #'second X) (every #'second Y)))
+         (xlabels (let ((h (make-hash-table :test #'equalp)))
+                    (dolist (x X h) (setf (gethash (first x) h) t))))
+         (shared (count-if (lambda (y) (gethash (first y) xlabels)) Y))
+         (pairwise-cost (- (* (length X) (length Y)) shared))
+         (chain-cost (and literal-only *compact-encoding* (not *mutex-pairwise*)
+                          X Y
+                          (nth-value 4 (mutex-chain-plan X Y))))
+         (chain (and chain-cost (< chain-cost pairwise-cost)))
+         (result (if chain (mutex-chain-clauses X Y) (mutex-pairwise-clauses X Y))))
+    (trace-message "[TRACE] Mutex: ~D x ~D -> ~D clauses (~:[pairwise~;linear~])~%"
+                   (length X) (length Y) (length result) chain)
+    result))
 
 
 (defun parse-for (VAR DOM TEST BODY)

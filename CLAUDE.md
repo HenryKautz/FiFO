@@ -84,6 +84,9 @@ preprocessor-techniques timeout)`.
 - Tseitin definitions go to `*tseitin-definitions*` at top level, only inside
   `clauses-with-definitions`; never return them inside a formula (an enclosing OR
   switches them off). TSEITIN and WEIGHTED-FORMULA are reserved names.
+- `mutex` (`parse-mutex`): its chain atoms are TSEITIN atoms with 3-clause
+  biconditionals. Negate a formula from its CLAUSES, never by parsing `(not φ)`:
+  `parse-not` reads `(not (if <false> …))` as true.
 - Evidence parsed separately is namespaced (`wmc--evidence-namespace`, first unused
   EVIDENCE/EVIDENCE2/…). Readers refuse gensyms (`scnf-check-no-gensyms`).
 - `Weights` is a global special reset by `parse`: never bind a weight list to that
@@ -143,8 +146,8 @@ preprocessor-techniques timeout)`.
   `gold_solve/<name>_gold.answer`). Instantiate output is deterministic.
 - Behavioural suites `tests/run-test-*.sh`, runnable from anywhere: action-costs,
   cleanup, cli, ddnnf-eval, docs, evgen, evidence, hypotheses, maxsat, maxterm, mcc-dialect,
-  mcsat, odds, options, paths, pddl, ppgen, project, recognize, sharpsat, solvers,
-  tseitin, weight-formula. Each skips cleanly (exit 0) when its optional binary is
+  mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, sharpsat,
+  solvers, tseitin, weight-formula. Each skips cleanly (exit 0) when its optional binary is
   missing. `run-test-pddl.sh` diffs translations against checked-in wffs — update
   them when emitter output legitimately changes.
 - Suite conventions: compare against an INDEPENDENT oracle, never FiFO against
