@@ -115,6 +115,11 @@
 #                 --timeout; 0, -1 or none for no limit.  Default: FiFO's
 #                 *solver-timeout*, 600 s, so one SharpSAT-TD count over 10
 #                 minutes fails the run however long the run itself may take.
+#   --planner-timeout S  wall-clock limit on EACH planner.sh run as a whole --
+#                 the fast method's horizon search and instantiation, every run of
+#                 plan-runs -- after which its process group is killed and the run
+#                 fails.  Default 900; 0, -1 or none for no limit.  Independent of
+#                 --timeout, which bounds each solver run inside one.
 #   --stop-after scnf  (fast method) stop once the theory is instantiated at the
 #                 horizon: DIR/rec-problem.scnf is written and the horizon is
 #                 printed, but no hypothesis is scored -- for a caller that wants
@@ -157,6 +162,7 @@ DOMAIN="$1"; PROBLEM="$2"; EVIDENCE="$3"; shift 3
 HORIZON=""; BETA="1.0"; PRIORS=""; OUT=""; SOLVER=""; EVKIND="pddl"
 COUNTER="max-term"; BASELINE="per-hypothesis"; METHOD="fast"; MAXSAT_SOLVER=""
 PRIORS_KV=(); PRIORS_FROM_PREFS=0; CREATE_ATOMS=0; SOLVER_TIMEOUT=""; STOP_AFTER=""
+TIMEOUT=900
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --horizon) HORIZON="$2"; shift 2;;
@@ -170,7 +176,8 @@ while [[ $# -gt 0 ]]; do
     --method)  METHOD="$2"; shift 2;;
     --maxsat-solver) MAXSAT_SOLVER="$2"; shift 2;;
     --timeout) SOLVER_TIMEOUT="$2"; shift 2;;
-    --prior)  PRIORS_KV+=("$2"); shift 2;;
+    --planner-timeout) TIMEOUT="$2"; shift 2;;
+    --prior) PRIORS_KV+=("$2"); shift 2;;
     --priors-from-preferences) PRIORS_FROM_PREFS=1; shift;;
     --create-hypothesis-atoms) CREATE_ATOMS=1; shift;;
     --stop-after) STOP_AFTER="$2"; shift 2;;
@@ -203,6 +210,11 @@ fi
 if [[ -n "$SOLVER_TIMEOUT" ]]; then
   SOLVER_TIMEOUT="$(_fifo_check_timeout "$SOLVER_TIMEOUT" recognize.sh)" || exit 2
 fi
+# This limit was a fixed 900 s: make-formats.py's 15x15 instantiations at 54-79
+# slices were killed at 900 s whatever limit the caller gave.  Integer seconds,
+# since the watchdog counts whole seconds; 0 and -1 (none) mean no limit.
+[[ "$TIMEOUT" == "none" ]] && TIMEOUT=-1
+[[ "$TIMEOUT" =~ ^([0-9]+|-1)$ ]] || { echo "recognize.sh: --planner-timeout must be a whole number of seconds (or 0/-1/none for no limit), got: $TIMEOUT" >&2; exit 2; }
 # Forwarded to marginals.sh AND to every planner.sh run of the fast method (the
 # horizon search and the instantiation): a SAT solve the default 600 s cap stops
 # in the horizon search would read as "unreachable" and leave H too short.
@@ -262,7 +274,7 @@ if [[ -z "$STOP_AFTER" ]]; then
 fi
 
 # --- run a planner.sh invocation in its own process group with a timeout ------
-TIMEOUT=900
+# TIMEOUT is --planner-timeout (default 900); 0 or -1 never fires.
 run_planner() {           # run_planner <logfile> <extra planner args...>
   local log="$1"; shift
   local pid rc elapsed=0
@@ -276,7 +288,7 @@ run_planner() {           # run_planner <logfile> <extra planner args...>
   # planner is known to be alive, and there is nothing left running afterwards.
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1; elapsed=$(( elapsed + 1 ))
-    if [ "$elapsed" -ge "$TIMEOUT" ]; then
+    if [ "$TIMEOUT" -gt 0 ] && [ "$elapsed" -ge "$TIMEOUT" ]; then
       echo "recognize.sh: planner exceeded ${TIMEOUT}s -- killing it" >&2
       kill -9 -"$pid" 2>/dev/null
       break

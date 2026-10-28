@@ -246,7 +246,7 @@ fi
 # never added to the header block usage() prints.
 HELP="$(bash "$BIN/recognize.sh" --help 2>&1)"
 MISSING=""
-for f in --counter --baseline --maxsat-solver --method --timeout; do
+for f in --counter --baseline --maxsat-solver --method --timeout --planner-timeout; do
   grep -q -- "$f" <<<"$HELP" || MISSING="$MISSING $f"
 done
 [[ -z "$MISSING" ]] && ok "--help documents the new flags" \
@@ -267,6 +267,10 @@ expect_err "--timeout must be a number of seconds" "must be a number of seconds"
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --timeout soon
 expect_err "--timeout -300 is refused, not read as no limit" "must be a number of seconds" \
   intrusion-detection-costs.pddl problem.pddl evidence-3.txt --timeout -300
+expect_err "--planner-timeout must be whole seconds" "must be a whole number of seconds" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --planner-timeout 1.5
+expect_err "--planner-timeout -300 is refused, not read as no limit" "must be a whole number of seconds" \
+  intrusion-detection-costs.pddl problem.pddl evidence-3.txt --planner-timeout -300
 
 # --timeout must REACH the counts.  Without it every solver run inside the
 # inference had FiFO's default 600 s limit, which recognize.sh could not change:
@@ -598,6 +602,18 @@ EL=$((SECONDS - T0))
 if grep -q 'stopped after the 1 s limit' r-hto/horizon-*.log 2>/dev/null && (( EL < 120 )); then
   ok "--timeout reaches the horizon search ($EL s)"
 else bad "--timeout reaches the horizon search" "$EL s: $(cat r-hto/horizon-*.log 2>/dev/null | grep -m1 -i 'limit\|fail')"; fi
+
+# --planner-timeout reaches the watchdog round each planner.sh run.  It was a
+# fixed 900 s: FourPackage's 15x15 instantiations were killed there whatever limit
+# the caller gave.  The same stalled SAT solver, now with no solver limit, must be
+# killed by the watchdog at 2 s, not at 900.
+T0=$SECONDS
+bash "$BIN/recognize.sh" "$GD" lit.pddl lit-ev.txt --evidence-kind fifo --solver "$TMP/stall-sat" \
+     --timeout none --planner-timeout 2 --out r-pto > r-pto.log 2>&1
+EL=$((SECONDS - T0))
+if grep -q 'planner exceeded 2s' r-pto.log && (( EL < 120 )); then
+  ok "--planner-timeout reaches the planner watchdog ($EL s)"
+else bad "--planner-timeout reaches the planner watchdog" "$EL s: $(grep -m1 -i 'exceeded\|fail' r-pto.log)"; fi
 
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
