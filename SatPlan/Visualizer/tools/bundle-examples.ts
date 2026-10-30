@@ -20,11 +20,17 @@ namespace BundleExamples {
   const domainName = (t: string) => /\(\s*define\s*\(\s*domain\s+([^\s()]+)/i.exec(strip(t))?.[1]?.toLowerCase();
   const domains = pddl.filter((p) => domainName(p.text) !== undefined);
   const problems = pddl.filter((p) => domainName(p.text) === undefined);
+  const stemOf = (f: string) => f.slice(0, -".pddl".length);
+  const matches = (f: string, stem: string) => f.startsWith(stem + ".") || f.startsWith(stem + "-");
+  // each solution file goes to the problem with the LONGEST matching name, so
+  // grid5x5-air.answer belongs to grid5x5-air.pddl, not to grid5x5.pddl too
+  const owner = (f: string) => problems.map((p) => stemOf(p.file)).filter((s) => matches(f, s))
+    .sort((a, b) => b.length - a.length)[0];
   const examples = problems.map((p) => {
-    const stem = p.file.slice(0, -".pddl".length);
+    const stem = stemOf(p.file);
     const wants = /\(:domain\s+([^\s()]+)\)/i.exec(strip(p.text))?.[1]?.toLowerCase();
     const domain = domains.find((d) => domainName(d.text) === wants);
-    const solutions = files.filter((f) => !f.endsWith(".pddl") && (f.startsWith(stem + ".") || f.startsWith(stem + "-")));
+    const solutions = files.filter((f) => !f.endsWith(".pddl") && owner(f) === stem);
     return { problem: p, domain, solutions: solutions.map(read) };
   });
   process.stdout.write(

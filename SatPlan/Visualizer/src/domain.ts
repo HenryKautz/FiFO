@@ -7,8 +7,12 @@ namespace Viz {
   export interface DomainAction {
     name: string;
     params: string[];
-    /** the (increase (total-cost) X) amounts of the effect, summed; [] if none */
+    /** the unconditional (increase (total-cost) X) amounts of the effect,
+     *  summed; [] if none */
     costs: SExpr[];
+    /** true when a cost sits under when/forall: it depends on the state or on
+     *  how many objects match, which the visualizer does not evaluate */
+    conditionalCosts: boolean;
   }
 
   export interface Domain {
@@ -22,15 +26,18 @@ namespace Viz {
     return list.filter((x): x is string => !isList(x) && x.startsWith("?"));
   }
 
-  /** Every (increase (total-cost) X) anywhere in EFFECT, through and/when/forall. */
-  function costTerms(effect: SExpr | undefined, out: SExpr[] = []): SExpr[] {
-    if (!isList(effect)) return out;
+  /** The (increase (total-cost) X) amounts of EFFECT: those under plain ANDs in
+   *  COSTS, and whether any sits under a when or forall. */
+  function costTerms(effect: SExpr | undefined, acc = { costs: [] as SExpr[], conditional: false }, under = false) {
+    if (!isList(effect)) return acc;
     if (effect[0] === "increase" && isList(effect[1]) && effect[1][0] === "total-cost" && effect[2] !== undefined) {
-      out.push(effect[2]);
-      return out;
+      if (under) acc.conditional = true;
+      else acc.costs.push(effect[2]);
+      return acc;
     }
-    for (const x of effect) costTerms(x, out);
-    return out;
+    const cond = under || effect[0] === "when" || effect[0] === "forall";
+    for (const x of effect) costTerms(x, acc, cond);
+    return acc;
   }
 
   export function isDomainText(text: string): boolean {
@@ -53,7 +60,8 @@ namespace Viz {
         if (x[i] === ":parameters") params = paramNames(x[i + 1]);
         if (x[i] === ":effect") effect = x[i + 1];
       }
-      actions.set(name, { name, params, costs: costTerms(effect) });
+      const c = costTerms(effect);
+      actions.set(name, { name, params, costs: c.costs, conditionalCosts: c.conditional });
     }
     return { name: String(def[1][1]), actions };
   }
@@ -79,7 +87,7 @@ namespace Viz {
     if (!da) return { cost: 0, exact: false };
     const bind = new Map(da.params.map((p, i) => [p, action.args[i]] as [string, string]));
     let cost = 0;
-    let exact = true;
+    let exact = !da.conditionalCosts;   // conditional costs are not counted
     for (const term of da.costs) {
       if (!isList(term)) {
         const n = Number(term);

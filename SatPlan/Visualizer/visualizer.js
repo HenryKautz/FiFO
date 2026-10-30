@@ -1,3 +1,4 @@
+// Built from src/ by build.sh with tsc 4.9.5 -- do not edit; rebuild instead.
 "use strict";
 // S-expression reader for PDDL problems and FiFO answer files.
 //
@@ -253,15 +254,18 @@ var Viz;
             }
             return lit;
         }));
-        // preferences: a weight written in the preference, else from the metric
+        // preferences: a weight written in the preference, else from the metric.
+        // A violation's coefficient in a metric to MINIMIZE is the utility of
+        // achieving the preference; in one to MAXIMIZE, minus it.
         const metricWeights = new Map();
         const metric = section(def, ":metric");
+        const direction = (metric === null || metric === void 0 ? void 0 : metric[1]) === "maximize" ? -1 : 1;
         (function walk(x, scale) {
             var _a;
             if (!Viz.isList(x))
                 return;
             if (x[0] === "is-violated" && !Viz.isList(x[1])) {
-                metricWeights.set(x[1], ((_a = metricWeights.get(x[1])) !== null && _a !== void 0 ? _a : 0) + scale);
+                metricWeights.set(x[1], ((_a = metricWeights.get(x[1])) !== null && _a !== void 0 ? _a : 0) + direction * scale);
             }
             else if (x[0] === "*" && x.length === 3) {
                 const [a, b] = [x[1], x[2]];
@@ -272,6 +276,12 @@ var Viz;
             }
             else if (x[0] === "+") {
                 x.slice(1).forEach((y) => walk(y, scale));
+            }
+            else if (x[0] === "-") {
+                if (x.length === 2)
+                    walk(x[1], -scale);
+                else
+                    x.slice(1).forEach((y, i) => walk(y, i === 0 ? scale : -scale));
             }
         })(metric === null || metric === void 0 ? void 0 : metric[2], 1);
         const preferences = [];
@@ -331,17 +341,22 @@ var Viz;
             return [];
         return list.filter((x) => !Viz.isList(x) && x.startsWith("?"));
     }
-    /** Every (increase (total-cost) X) anywhere in EFFECT, through and/when/forall. */
-    function costTerms(effect, out = []) {
+    /** The (increase (total-cost) X) amounts of EFFECT: those under plain ANDs in
+     *  COSTS, and whether any sits under a when or forall. */
+    function costTerms(effect, acc = { costs: [], conditional: false }, under = false) {
         if (!Viz.isList(effect))
-            return out;
+            return acc;
         if (effect[0] === "increase" && Viz.isList(effect[1]) && effect[1][0] === "total-cost" && effect[2] !== undefined) {
-            out.push(effect[2]);
-            return out;
+            if (under)
+                acc.conditional = true;
+            else
+                acc.costs.push(effect[2]);
+            return acc;
         }
+        const cond = under || effect[0] === "when" || effect[0] === "forall";
         for (const x of effect)
-            costTerms(x, out);
-        return out;
+            costTerms(x, acc, cond);
+        return acc;
     }
     function isDomainText(text) {
         return /\(\s*define\s*\(\s*domain\b/i.test(text.replace(/;[^\n]*/g, ""));
@@ -366,7 +381,8 @@ var Viz;
                 if (x[i] === ":effect")
                     effect = x[i + 1];
             }
-            actions.set(name, { name, params, costs: costTerms(effect) });
+            const c = costTerms(effect);
+            actions.set(name, { name, params, costs: c.costs, conditionalCosts: c.conditional });
         }
         return { name: String(def[1][1]), actions };
     }
@@ -388,7 +404,7 @@ var Viz;
             return { cost: 0, exact: false };
         const bind = new Map(da.params.map((p, i) => [p, action.args[i]]));
         let cost = 0;
-        let exact = true;
+        let exact = !da.conditionalCosts; // conditional costs are not counted
         for (const term of da.costs) {
             if (!Viz.isList(term)) {
                 const n = Number(term);
@@ -509,24 +525,27 @@ var Viz;
             if (f.length === 0)
                 continue;
             const head = f[0];
-            if (head === "holds" && Viz.isList(f[1]) && f.length === 3) {
-                const fl = f[1];
-                const t = Number(f[2]);
-                if (fl.length === 3 && !Viz.isList(fl[1]) && !Viz.isList(fl[2])) {
-                    if (fl[0] === "at")
-                        holdsAt(t).at.set(fl[1], fl[2]);
-                    else if (fl[0] === "in")
-                        holdsAt(t).inside.set(fl[1], fl[2]);
+            // (HOLDS fluent t) and (OCCURS action t); FiFO writes a 0-ary one bare: (HOLDS P t)
+            if ((head === "holds" || head === "occurs") && f.length === 3 && f[1] !== undefined) {
+                const t = Viz.isList(f[2]) ? NaN : Number(f[2]);
+                if (!Number.isInteger(t)) {
+                    warnings.push(`ignored ${Viz.show(f)}: its time step is not a number`);
+                    continue;
+                }
+                const body = Viz.isList(f[1]) ? f[1] : [f[1]];
+                if (head === "occurs") {
+                    sawOccurs = true;
+                    items.push({ action: toAction(body), time: t });
+                }
+                else if (body.length === 3 && !Viz.isList(body[1]) && !Viz.isList(body[2]) && (body[0] === "at" || body[0] === "in")) {
+                    if (body[0] === "at")
+                        holdsAt(t).at.set(body[1], body[2]);
                     else
-                        holdsAt(t);
+                        holdsAt(t).inside.set(body[1], body[2]);
                 }
                 else {
                     holdsAt(t);
                 }
-            }
-            else if (head === "occurs" && Viz.isList(f[1]) && f.length === 3) {
-                sawOccurs = true;
-                items.push({ action: toAction(f[1]), time: Number(f[2]) });
             }
             else if (head === "*objective*") {
                 objective = String(f[1]);
@@ -542,6 +561,10 @@ var Viz;
                 let time;
                 if (forms[i + 1] === "@" && forms[i + 2] !== undefined && !Viz.isList(forms[i + 2])) {
                     time = Number(forms[i + 2]);
+                    if (!Number.isInteger(time)) {
+                        warnings.push(`${Viz.show(f)} @ ${forms[i + 2]}: the step is not a number`);
+                        time = undefined;
+                    }
                     sawAt = true;
                     i += 2;
                 }
@@ -655,7 +678,7 @@ var Viz;
                     undecided++;
             }
         }
-        const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0)
+        const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0 || a.conditionalCosts)
             : [...problem.numbers.keys()].some((k) => /-cost\)$/.test(k) && k !== "(total-cost)");
         let costs;
         let costsExact = !!domain;
@@ -838,7 +861,9 @@ var Viz;
         for (const r of problem.roads) {
             const a = center(problem, r.a);
             const b = center(problem, r.b);
-            if (!a || !b)
+            // a road from a place to itself (or two places drawn in one cell) has no
+            // line to draw
+            if (!a || !b || (a.x === b.x && a.y === b.y))
                 continue;
             const dx = b.x - a.x;
             const dy = b.y - a.y;
@@ -971,7 +996,7 @@ var Viz;
 // through the solution.
 var Viz;
 (function (Viz) {
-    const app = { step: 0 };
+    const app = { step: 0, errors: [] };
     function $(id) {
         const e = document.getElementById(id);
         if (!e)
@@ -999,7 +1024,7 @@ var Viz;
         var _a, _b, _c, _d;
         const msgs = [...((_b = (_a = app.problem) === null || _a === void 0 ? void 0 : _a.warnings) !== null && _b !== void 0 ? _b : []), ...domainWarnings(), ...((_d = (_c = app.plan) === null || _c === void 0 ? void 0 : _c.warnings) !== null && _d !== void 0 ? _d : [])];
         const box = $("messages");
-        const err = app.error ? `<div class="error">✖ ${esc(app.error)}</div>` : "";
+        const err = app.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("");
         box.hidden = msgs.length === 0 && !err;
         box.innerHTML = err + msgs.slice(0, 20).map((m) => `<div>⚠ ${esc(m)}</div>`).join("") +
             (msgs.length > 20 ? `<div>… and ${msgs.length - 20} more</div>` : "");
@@ -1050,7 +1075,7 @@ var Viz;
             : !app.plan
                 ? "no solution loaded"
                 : u.costsExact ? `from the domain${app.domainFile ? " " + app.domainFile : ""}`
-                    : app.domain ? "some costs unknown (counted as 0)"
+                    : app.domain ? "some costs unknown or conditional (not counted)"
                         : "estimated: load the domain for exact costs";
         $("utility").innerHTML =
             `<div class="u-item"><span class="u-label">Goals</span><span class="u-value">${num(u.goals)}</span>` +
@@ -1118,7 +1143,7 @@ var Viz;
         redraw();
     }
     function fail(where, e) {
-        app.error = `${where}: ${e instanceof Error ? e.message : String(e)}`;
+        app.errors.push(`${where}: ${e instanceof Error ? e.message : String(e)}`);
         showMessages();
     }
     function loadProblem(name, text) {
@@ -1129,7 +1154,6 @@ var Viz;
             app.plan = undefined;
             app.planFile = undefined;
             app.step = 0;
-            app.error = undefined;
             $("solution-file").value = "";
             redraw();
             return true;
@@ -1143,11 +1167,15 @@ var Viz;
         try {
             app.domain = Viz.parseDomain(text);
             app.domainFile = name;
-            app.error = undefined;
             redraw();
         }
         catch (e) {
+            // drop the old domain too: costs from a domain the user just replaced
+            // would be silently wrong; without one they are marked estimated
+            app.domain = undefined;
+            app.domainFile = undefined;
             fail(name, e);
+            redraw();
         }
     }
     function loadPlan(name, text) {
@@ -1159,7 +1187,6 @@ var Viz;
             app.plan = Viz.parsePlan(text, app.problem);
             app.planFile = name;
             app.step = 0;
-            app.error = undefined;
             redraw();
         }
         catch (e) {
@@ -1170,6 +1197,7 @@ var Viz;
      *  text: for a page that gets its files some other way than the file
      *  choosers, e.g. from a server. */
     function load(problemName, problemText, planName, planText, step = 0, domainName, domainText) {
+        app.errors = [];
         if (domainName !== undefined && domainText !== undefined)
             loadDomain(domainName, domainText);
         if (!loadProblem(problemName, problemText))
@@ -1193,6 +1221,7 @@ var Viz;
         const file = (_a = input.files) === null || _a === void 0 ? void 0 : _a[0];
         if (!file)
             return;
+        app.errors = [];
         readText(file).then((f) => then(f.name, f.text), (e) => fail(file.name, e));
     }
     function initExamples() {
@@ -1254,6 +1283,10 @@ var Viz;
             const tag = ev.target.tagName;
             if (tag === "INPUT" || tag === "SELECT")
                 return;
+            // leave browser shortcuts (Cmd/Alt+arrows navigate) and, with nothing to
+            // step through, ordinary scrolling alone
+            if (!app.plan || ev.metaKey || ev.ctrlKey || ev.altKey)
+                return;
             if (ev.key === "ArrowRight")
                 go(app.step + 1);
             else if (ev.key === "ArrowLeft")
@@ -1273,6 +1306,7 @@ var Viz;
             var _a, _b;
             ev.preventDefault();
             const files = [...((_b = (_a = ev.dataTransfer) === null || _a === void 0 ? void 0 : _a.files) !== null && _b !== void 0 ? _b : [])];
+            app.errors = [];
             Promise.all(files.map(readText)).then((texts) => {
                 const isPddl = (t) => /\.pddl$/i.test(t.name) || /\(\s*define\s*\(/i.test(t.text);
                 const dom = texts.find((t) => isPddl(t) && Viz.isDomainText(t.text));

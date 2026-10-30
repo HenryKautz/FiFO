@@ -218,19 +218,25 @@ namespace Viz {
       }),
     );
 
-    // preferences: a weight written in the preference, else from the metric
+    // preferences: a weight written in the preference, else from the metric.
+    // A violation's coefficient in a metric to MINIMIZE is the utility of
+    // achieving the preference; in one to MAXIMIZE, minus it.
     const metricWeights = new Map<string, number>();
     const metric = section(def, ":metric");
+    const direction = metric?.[1] === "maximize" ? -1 : 1;
     (function walk(x: SExpr | undefined, scale: number) {
       if (!isList(x)) return;
       if (x[0] === "is-violated" && !isList(x[1])) {
-        metricWeights.set(x[1] as string, (metricWeights.get(x[1] as string) ?? 0) + scale);
+        metricWeights.set(x[1] as string, (metricWeights.get(x[1] as string) ?? 0) + direction * scale);
       } else if (x[0] === "*" && x.length === 3) {
         const [a, b] = [x[1], x[2]];
         if (!isList(a) && !Number.isNaN(Number(a))) walk(b, scale * Number(a));
         else if (!isList(b) && !Number.isNaN(Number(b))) walk(a, scale * Number(b));
       } else if (x[0] === "+") {
         x.slice(1).forEach((y) => walk(y, scale));
+      } else if (x[0] === "-") {
+        if (x.length === 2) walk(x[1], -scale);
+        else x.slice(1).forEach((y, i) => walk(y, i === 0 ? scale : -scale));
       }
     })(metric?.[2], 1);
     const preferences: Preference[] = [];

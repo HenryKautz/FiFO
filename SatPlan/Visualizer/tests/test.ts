@@ -163,6 +163,17 @@ namespace VizTest {
           wrong.warnings.some((w) => /does not have|in the problem's init/.test(w)));
     const odd = Viz.parsePlan("(teleport truck1 p5-5)\n", p5);
     check("an action it cannot apply is reported", odd.warnings.some((w) => /don't know how to apply/.test(w)));
+    // FiFO writes a 0-ary fluent or action bare: (HOLDS DONE 1), (OCCURS NOOP 2)
+    const bare = Viz.parsePlan("SAT\n(HOLDS (AT TRUCK1 P2-1) 1)\n(HOLDS DONE 1)\n(OCCURS (DRIVE TRUCK1 P2-1 P3-1) 1)\n" +
+                               "(HOLDS (AT TRUCK1 P3-1) 2)\n(OCCURS NOOP 2)\n(HOLDS (AT TRUCK1 P3-1) 3)\n", p5);
+    check("0-ary HOLDS and OCCURS keep their slices (no extra step, no action named holds)",
+          bare.steps.length === 2 && bare.steps[1].map((a) => a.name).join() === "noop" &&
+          !bare.steps.flat().some((a) => a.name === "holds" || a.name === "occurs"),
+          JSON.stringify(bare.steps.map((s) => s.map((a) => a.text))));
+    const badT = Viz.parsePlan("(HOLDS (AT TRUCK1 P2-1) 1)\n(HOLDS (AT TRUCK1 P1-1) X)\n(OCCURS (DRIVE TRUCK1 P2-1 P3-1) 1)\n", p5);
+    check("a HOLDS with a non-numeric slice is reported and skipped, not a NaN step",
+          badT.firstStep === 1 && badT.steps.length === 1 && badT.warnings.some((w) => /not a number/.test(w)),
+          `${badT.firstStep} ${badT.steps.length} ${badT.warnings}`);
   }
 
   console.log("=== rendering ===");
@@ -211,6 +222,9 @@ namespace VizTest {
     const end = planA.states[planA.states.length - 1];
     const s5 = Viz.renderMap(p5, end);
     check("goals achieved at the end are drawn as achieved", count(s5, /class="goal achieved"/g) === 3);
+    const loop = Viz.parseProblem(t6.replace("(road p2-1 p1-1)", "(road p1-1 p1-1) (road p2-1 p1-1)"));
+    check("a road from a place to itself draws nothing, and no NaN",
+          !/NaN/.test(Viz.renderMap(loop, { at: new Map(loop.initAt), inside: new Map() })));
     const moves = Viz.renderMap(p5, planA.states[0], { next: planA.steps[0] });
     check("the next step's drives are highlighted in their trucks' colors",
           count(moves, /class="move"/g) === 2 && moves.includes(`stroke="${Viz.colorOf(p5, "truck1")}"`));
@@ -281,6 +295,19 @@ namespace VizTest {
           pm.preferences.map((p) => `${p.name}=${p.weight}`).join() === "p1=5,p2=2" &&
           um.goals === 2 && um.costs === 7 && Viz.utilityAt(pm, dm, pmPlan, 2).costs === 10,
           `${pm.preferences.map((p) => p.name + "=" + p.weight)} ${um.goals} ${um.costs}`);
+    const metricOf = (m: string) => Viz.parseProblem(`(define (problem m) (:domain d) (:objects a - place k - package)
+      (:init (at k a)) (:goal (and (preference p1 (at k a)) (preference p2 (at k a)))) (:metric ${m}))`)
+      .preferences.map((p) => `${p.name}=${p.weight}`).join();
+    check("a maximize metric, and (- ...), give violation penalties as positive utilities",
+          metricOf("maximize (- 0 (* 5 (is-violated p1)) (* 2 (is-violated p2)))") === "p1=5,p2=2" &&
+          metricOf("minimize (- (total-cost) (* -3 (is-violated p1)) (- (* 4 (is-violated p2))))") === "p1=3,p2=4",
+          metricOf("maximize (- 0 (* 5 (is-violated p1)) (* 2 (is-violated p2)))") + " | " +
+          metricOf("minimize (- (total-cost) (* -3 (is-violated p1)) (- (* 4 (is-violated p2))))"));
+    const dc = Viz.parseDomain(`(define (domain d) (:action move :parameters (?t - truck ?from ?to - place)
+      :effect (and (at ?t ?to) (increase (total-cost) 2) (when (at ?t ?from) (increase (total-cost) 5)))))`);
+    const cc = Viz.actionCost(pm, dc, { name: "move", args: ["t", "a", "b"], text: "(move t a b)" });
+    check("a cost under when (or forall) is not counted, and the cost is marked inexact",
+          cc.cost === 2 && !cc.exact, JSON.stringify(cc));
   }
 
   console.log("=== the Examples menu (examples.js) ===");

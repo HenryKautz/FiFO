@@ -11,11 +11,12 @@ namespace Viz {
     plan?: Plan;
     planFile?: string;
     step: number;
-    /** an error from the last file loaded, shown until the next load */
-    error?: string;
+    /** errors from the files of the last load (one chooser, or one drop of
+     *  several files), shown until the next load begins */
+    errors: string[];
   }
 
-  const app: AppState = { step: 0 };
+  const app: AppState = { step: 0, errors: [] };
 
   function $(id: string): HTMLElement {
     const e = document.getElementById(id);
@@ -43,7 +44,7 @@ namespace Viz {
   function showMessages() {
     const msgs = [...(app.problem?.warnings ?? []), ...domainWarnings(), ...(app.plan?.warnings ?? [])];
     const box = $("messages");
-    const err = app.error ? `<div class="error">✖ ${esc(app.error)}</div>` : "";
+    const err = app.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("");
     box.hidden = msgs.length === 0 && !err;
     box.innerHTML = err + msgs.slice(0, 20).map((m) => `<div>⚠ ${esc(m)}</div>`).join("") +
       (msgs.length > 20 ? `<div>… and ${msgs.length - 20} more</div>` : "");
@@ -96,7 +97,7 @@ namespace Viz {
       : !app.plan
         ? "no solution loaded"
         : u.costsExact ? `from the domain${app.domainFile ? " " + app.domainFile : ""}`
-          : app.domain ? "some costs unknown (counted as 0)"
+          : app.domain ? "some costs unknown or conditional (not counted)"
             : "estimated: load the domain for exact costs";
     $("utility").innerHTML =
       `<div class="u-item"><span class="u-label">Goals</span><span class="u-value">${num(u.goals)}</span>` +
@@ -164,7 +165,7 @@ namespace Viz {
   }
 
   function fail(where: string, e: unknown) {
-    app.error = `${where}: ${e instanceof Error ? e.message : String(e)}`;
+    app.errors.push(`${where}: ${e instanceof Error ? e.message : String(e)}`);
     showMessages();
   }
 
@@ -176,7 +177,6 @@ namespace Viz {
       app.plan = undefined;
       app.planFile = undefined;
       app.step = 0;
-      app.error = undefined;
       ($("solution-file") as HTMLInputElement).value = "";
       redraw();
       return true;
@@ -190,10 +190,14 @@ namespace Viz {
     try {
       app.domain = parseDomain(text);
       app.domainFile = name;
-      app.error = undefined;
       redraw();
     } catch (e) {
+      // drop the old domain too: costs from a domain the user just replaced
+      // would be silently wrong; without one they are marked estimated
+      app.domain = undefined;
+      app.domainFile = undefined;
       fail(name, e);
+      redraw();
     }
   }
 
@@ -206,7 +210,6 @@ namespace Viz {
       app.plan = parsePlan(text, app.problem);
       app.planFile = name;
       app.step = 0;
-      app.error = undefined;
       redraw();
     } catch (e) {
       fail(name, e);
@@ -218,6 +221,7 @@ namespace Viz {
    *  choosers, e.g. from a server. */
   export function load(problemName: string, problemText: string, planName?: string, planText?: string, step = 0,
                        domainName?: string, domainText?: string) {
+    app.errors = [];
     if (domainName !== undefined && domainText !== undefined) loadDomain(domainName, domainText);
     if (!loadProblem(problemName, problemText)) return;
     if (planName !== undefined && planText !== undefined) {
@@ -238,6 +242,7 @@ namespace Viz {
   function readInto(input: HTMLInputElement, then: (name: string, text: string) => void) {
     const file = input.files?.[0];
     if (!file) return;
+    app.errors = [];
     readText(file).then((f) => then(f.name, f.text), (e) => fail(file.name, e));
   }
 
@@ -306,6 +311,9 @@ namespace Viz {
     document.addEventListener("keydown", (ev) => {
       const tag = (ev.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "SELECT") return;
+      // leave browser shortcuts (Cmd/Alt+arrows navigate) and, with nothing to
+      // step through, ordinary scrolling alone
+      if (!app.plan || ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (ev.key === "ArrowRight") go(app.step + 1);
       else if (ev.key === "ArrowLeft") go(app.step - 1);
       else if (ev.key === "Home") go(0);
@@ -319,6 +327,7 @@ namespace Viz {
     document.addEventListener("drop", (ev) => {
       ev.preventDefault();
       const files = [...(ev.dataTransfer?.files ?? [])];
+      app.errors = [];
       Promise.all(files.map(readText)).then((texts) => {
         const isPddl = (t: { name: string; text: string }) =>
           /\.pddl$/i.test(t.name) || /\(\s*define\s*\(/i.test(t.text);

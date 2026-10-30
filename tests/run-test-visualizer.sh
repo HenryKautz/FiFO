@@ -29,25 +29,54 @@ done
 TMP="$(mktemp -d /tmp/fifo-viz-XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 FAIL=0
 
-STALE=0
+PASS=0; STALE=0; SKIP=0
 mkdir -p "$TMP/build"
 if ! bash "$VIZ/build.sh" --outdir "$TMP/build" >"$TMP/build.log" 2>&1; then
   echo "  build.sh failed:"; cat "$TMP/build.log"
   STALE=1
 fi
+# visualizer.js records the tsc that built it; another tsc version may emit
+# different code from the same sources, so that comparison is skipped then
+built_with=$(head -1 "$VIZ/visualizer.js" | sed -n 's/.* with tsc \([^ ]*\) .*/\1/p')
+here=$(tsc --version | awk '{print $2}')
 for f in visualizer.js examples.js; do
-  if [ "$STALE" = 0 ] && cmp -s "$TMP/build/$f" "$VIZ/$f"; then
-    printf '  %-66s ... PASS\n' "$f is up to date (build.sh)"
+  name="$f is up to date (build.sh)"
+  if [ "$f" = visualizer.js ] && [ "$built_with" != "$here" ]; then
+    printf '  %-66s ... SKIP\n' "$name"
+    echo "      built with tsc ${built_with:-unknown}, this machine has $here"
+    SKIP=$((SKIP+1))
+  elif [ "$STALE" = 0 ] && cmp -s "$TMP/build/$f" "$VIZ/$f"; then
+    printf '  %-66s ... PASS\n' "$name"; PASS=$((PASS+1))
   else
-    printf '  %-66s ... FAIL\n' "$f is up to date (build.sh)"
+    printf '  %-66s ... FAIL\n' "$name"
     echo "      rebuild: bash SatPlan/Visualizer/build.sh"
-    STALE=1
+    STALE=$((STALE+1))
   fi
 done
+echo "  (build checks: $PASS passed, $STALE failed, $SKIP skipped)"
 
 if ! tsc -p "$VIZ/tsconfig.test.json" --outFile "$TMP/test.js" >"$TMP/tsc-test.log" 2>&1; then
   echo "  the tests do not compile:"; cat "$TMP/tsc-test.log"
   exit 1
 fi
 node "$TMP/test.js" "$VIZ" || FAIL=1
+
+# the Examples bundler: a solution belongs to the problem with the longest
+# matching name, so grid5x5-air's solutions are not grid5x5's too
+echo "=== the Examples bundler ==="
+mkdir -p "$TMP/ex"
+for f in grid5x5-air.pddl grid5x5-air.answer grid5x5-air.plan; do cp "$VIZ/examples/$f" "$TMP/ex/"; done
+sed 's/(problem grid5x5-air)/(problem grid5x5)/' "$VIZ/examples/grid5x5-air.pddl" > "$TMP/ex/grid5x5.pddl"
+cp "$VIZ/examples/grid5x5-air.answer" "$TMP/ex/grid5x5.answer"
+tsc -p "$VIZ/tsconfig.tools.json" --outFile "$TMP/bundle.js" >/dev/null 2>&1 &&
+  node "$TMP/bundle.js" "$TMP/ex" > "$TMP/ex.js" 2>/dev/null
+owners=$(node -e "eval(require('fs').readFileSync('$TMP/ex.js','utf8') + ';global.E=VIZ_EXAMPLES');
+  console.log(E.map(e => e.problem.file + ':' + e.solutions.map(s => s.file).join('+')).join(' '))" 2>&1)
+want="grid5x5-air.pddl:grid5x5-air.answer+grid5x5-air.plan grid5x5.pddl:grid5x5.answer"
+if [ "$owners" = "$want" ]; then
+  printf '  %-66s ... PASS\n' "each solution goes to the longest matching problem name"
+else
+  printf '  %-66s ... FAIL\n' "each solution goes to the longest matching problem name"
+  echo "      got:  $owners"; echo "      want: $want"; FAIL=1
+fi
 [ "$STALE" = 0 ] && [ "$FAIL" = 0 ]

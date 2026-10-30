@@ -124,19 +124,23 @@ namespace Viz {
       }
       if (f.length === 0) continue;
       const head = f[0];
-      if (head === "holds" && isList(f[1]) && f.length === 3) {
-        const fl = f[1] as SExpr[];
-        const t = Number(f[2]);
-        if (fl.length === 3 && !isList(fl[1]) && !isList(fl[2])) {
-          if (fl[0] === "at") holdsAt(t).at.set(fl[1] as string, fl[2] as string);
-          else if (fl[0] === "in") holdsAt(t).inside.set(fl[1] as string, fl[2] as string);
-          else holdsAt(t);
+      // (HOLDS fluent t) and (OCCURS action t); FiFO writes a 0-ary one bare: (HOLDS P t)
+      if ((head === "holds" || head === "occurs") && f.length === 3 && f[1] !== undefined) {
+        const t = isList(f[2]) ? NaN : Number(f[2]);
+        if (!Number.isInteger(t)) {
+          warnings.push(`ignored ${show(f)}: its time step is not a number`);
+          continue;
+        }
+        const body = isList(f[1]) ? f[1] : [f[1]];
+        if (head === "occurs") {
+          sawOccurs = true;
+          items.push({ action: toAction(body), time: t });
+        } else if (body.length === 3 && !isList(body[1]) && !isList(body[2]) && (body[0] === "at" || body[0] === "in")) {
+          if (body[0] === "at") holdsAt(t).at.set(body[1] as string, body[2] as string);
+          else holdsAt(t).inside.set(body[1] as string, body[2] as string);
         } else {
           holdsAt(t);
         }
-      } else if (head === "occurs" && isList(f[1]) && f.length === 3) {
-        sawOccurs = true;
-        items.push({ action: toAction(f[1] as SExpr[]), time: Number(f[2]) });
       } else if (head === "*objective*") {
         objective = String(f[1]);
       } else if (head === "pref-violated" || head === "not") {
@@ -148,6 +152,10 @@ namespace Viz {
         let time: number | undefined;
         if (forms[i + 1] === "@" && forms[i + 2] !== undefined && !isList(forms[i + 2])) {
           time = Number(forms[i + 2]);
+          if (!Number.isInteger(time)) {
+            warnings.push(`${show(f)} @ ${forms[i + 2]}: the step is not a number`);
+            time = undefined;
+          }
           sawAt = true;
           i += 2;
         } else if (prefixTime !== undefined) {
@@ -266,7 +274,7 @@ namespace Viz {
         else if (v === undefined) undecided++;
       }
     }
-    const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0)
+    const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0 || a.conditionalCosts)
                             : [...problem.numbers.keys()].some((k) => /-cost\)$/.test(k) && k !== "(total-cost)");
     let costs: number | undefined;
     let costsExact = !!domain;

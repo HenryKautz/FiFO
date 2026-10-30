@@ -158,7 +158,9 @@ namespace Viz {
     for (const r of problem.roads) {
       const a = center(problem, r.a);
       const b = center(problem, r.b);
-      if (!a || !b) continue;
+      // a road from a place to itself (or two places drawn in one cell) has no
+      // line to draw
+      if (!a || !b || (a.x === b.x && a.y === b.y)) continue;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const p = exitPoint(a.x, a.y, dx, dy, 2);
