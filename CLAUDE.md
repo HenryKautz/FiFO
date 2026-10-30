@@ -106,7 +106,10 @@ preprocessor-techniques timeout)`.
   and `*default-pathname-defaults*`; scratch names are taken under a lock.
 - d4 projection: exact only when kept atoms determine the rest — guarded by the
   Padoa check, never assumed. Never smooth over dropped vars (Z ×2 per atom,
-  invisible in marginals).
+  invisible in marginals). d4 itself leaks implied literals of dropped vars onto
+  arcs (its `manageTop` skips the projection filter); `ddnnf--d4-build` drops them
+  ONLY after checking decomposability and that every OR splits on a kept var —
+  never drop without both checks (discussion.md, "d4's projected dump leaks").
 - MC-SAT: check ESS AND the `mixing:` line — a frozen chain gives 0/1 marginals.
 - max-term output is `MAXTERM-MARGINAL` deliberately; it is not a Gibbs marginal.
 
@@ -126,6 +129,14 @@ preprocessor-techniques timeout)`.
   `(not A)`); use `--recognition 1`.
 - `map.sh` scratch root must contain no `.` (FiFO derives `.satout` from the first
   dot).
+- `planner.sh`'s default `--maxslices` (2 × the reachability bound) is far too few
+  once a truck must fetch packages: the search ends "UNSATISFIABLE … within the
+  given horizon" though a plan exists. Pass `--maxslices` explicitly.
+- Exact MaxSAT at long horizons: WMaxCDCL often finds NOTHING (horizons ≥ 24 on
+  CLARA problems) where EvalMaxSAT_bin proves the optimum; prefer EvalMaxSAT_bin.
+- `--restrict steps|actions` is EXPERIMENTAL and NOT optimal (cheapest plan within
+  the SAT plan's actions); never make it a default or report its cost as an
+  optimum. Its scratch files are `<root>-restrict-*`.
 
 **Shell**
 - Scripts run under macOS `/bin/bash` 3.2: no `mapfile`, `${v,,}`, empty-array
@@ -149,7 +160,9 @@ preprocessor-techniques timeout)`.
   mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, restrict,
   sharpsat, solvers, tseitin, weight-formula. Each skips cleanly (exit 0) when its optional binary is
   missing. `run-test-pddl.sh` diffs translations against checked-in wffs — update
-  them when emitter output legitimately changes.
+  them when emitter output legitimately changes. `run-test-restrict.sh`'s
+  strict-improvement case is calibrated to kissat 4.0.4's plan (a FAIL under
+  4.0.4, a SKIP under another kissat); recalibrate it after a kissat upgrade.
 - Suite conventions: compare against an INDEPENDENT oracle, never FiFO against
   itself; refuse to pass vacuously (all marginals 0/1, no aux atom produced, a flat
   posterior); mutation-check new cases. Destructive tests run in throwaway repos.
