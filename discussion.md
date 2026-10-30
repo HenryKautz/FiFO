@@ -17,6 +17,8 @@
 - [Goal Posteriors and the Per-Goal Normalization (Z_G) Issue](#goal-posteriors-and-the-per-goal-normalization-z_g-issue)
 - [Max-Term versus Counting](#max-term-versus-counting)
 - [Projected Inference over Action Variables](#projected-inference-over-action-variables)
+  - [d4's projected dump leaks implied literals](#d4s-projected-dump-leaks-implied-literals)
+- [Restricted Cost Minimization (experimental)](#restricted-cost-minimization-experimental)
 
 ## Mixing Probabilities and Utilities
 
@@ -490,3 +492,130 @@ projected marginals to be cheaper than the direct ones.
   for MC-SAT, the sampler this would sit on top of, and
   [§3.3](Probability/probability-background.md#33-map-inference-the-mode-of-the-distribution)
   for why this is a summing method rather than a marginal MAP.
+
+### d4's projected dump leaks implied literals
+
+**Symptom (2026-10-29, CLARA ThreePackage).** On two of the four 5×5
+recognition theories (`grid5x5-3`, `grid5x5-4`; one truck, three packages,
+horizons 22 and 27, mutex encoding), `marginals.sh --solver d4 --project`
+refused d4's circuit:
+
+    d4's projected dump mentions variable 4306 ((TSEITIN 1584)), which is not in
+    the projection -- d4 did not honour the 'c p show' line
+
+The same atom on all three attempts, so it is not one of d4's nondeterministic
+crashes. The leaked atoms are TSEITIN chain atoms of the `mutex` encoding
+(`(TSEITIN 1584)` ⇔ `(TSEITIN 1583)` ∨ `(OCCURS (UNLOAD PKG2 TRUCK1 P5-4) 12)`),
+which the projection drops because the actions determine them (the Padoa check
+proved it).
+
+**Cause, from d4v2's source.** In projected mode d4 branches only on the
+projected ("decision") variables: every branching heuristic skips the others.
+At each node, `DpllStyleMethod::compute_` collects the literals implied there
+(`whichAreUnits`) and filters them to decision variables (`expelNoDecisionLit`)
+before they are written on the arc. But when a component has no decision
+variable left, `computeDecisionNode` calls `manageTop(component)`, and
+`DecisionDNNFOperation::manageTop` (`src/methods/DecisionDNNFOperation.hpp:126`)
+collects the component's implied literals and writes them on a unary node
+**without** that filter. So the dump carries implied literals of projected-away
+variables. It takes a component made only of projected-away variables that still
+has implied literals, which is why it shows up with the mutex encoding's chain
+atoms and not on TwoPackage's pairwise theories, and on two of the four 5×5
+theories but not the other two. (Read from the code, not reproduced under a
+debugger.)
+
+**Why dropping them is sound.** Write X for the kept variables and Y for the
+projected-away ones; d4 is to compile ∃Y.F(X, Y). The node `manageTop` emits is
+y₁ ∧ … ∧ yₖ ∧ ⊤, where a correct projected compiler emits ⊤ (as `compute_`
+does). Deleting the yᵢ is therefore exactly the patched d4's output. As logic:
+replacing a variable's literals by ⊤ is existential quantification of it in any
+decomposable circuit (∃y(A ∨ B) = ∃yA ∨ ∃yB; ∃y(A ∧ B) = (∃yA) ∧ B when y is not
+in B; ∃y.y = ⊤). Counting also needs determinism, and every OR node of d4's
+output is a decision on an X variable, which the deletion does not touch. It
+would NOT be sound if d4 had branched on a Y variable (forgetting it would merge
+the two branches and double-count), or if a dropped variable occurred in two
+conjuncts of an AND.
+
+**What FiFO does** (`lisp/ddnnf.lisp`, `ddnnf--d4-build`). For a projected
+import it strips every literal of a projected-away variable from the arcs and
+then checks, at every node, the two conditions the argument needs, refusing the
+circuit if either fails:
+- **decomposability**: a dropped variable does not occur below its own arc, nor
+  in two conjuncts of one AND node;
+- **determinism on X**: every two live branches of an OR node hold opposite
+  literals of some kept variable.
+
+It reports how many literals it dropped. Every circuit is still checked
+independently: CLARA's `compile-d4.py` compares the circuit's model count with
+SharpSAT-TD's exact count of the whole theory, which agree because X determines
+Y. (The alternative fix is the one-line filter in d4's `manageTop`; doing it in
+FiFO means no patched d4 is needed.)
+
+**Status (2026-10-30).** The importer change passes `tests/run-test-project.sh`
+(25/25, every projected compile now also checked for determinism on X) and
+`tests/run-test-ddnnf-eval.sh`. The retry of `grid5x5-3` and `grid5x5-4` with it
+is in progress; its outcome will be recorded here and in CLARA's
+`ThreePackage/README.md`.
+
+## Restricted Cost Minimization (experimental)
+
+**Status: implemented as `planner.sh --restrict steps|actions`, measured, not
+ready for general use.** The idea and its evaluation are recorded here; the
+evaluation is in CLARA's `RestrictedPlanning/`.
+
+**The idea** (the user's, 2026-10-29). `planner.sh` plans in two steps: kissat
+finds the shortest horizon H with a plan, ignoring costs, and a MaxSAT solver then
+minimizes cost over the whole theory at H, which is where nearly all the time
+goes. Restricted minimization keeps the first step and shrinks the second:
+before the MaxSAT solve, every action atom `(OCCURS a t)` that kissat's plan does
+not license is forced false (unit clauses appended to the WCNF):
+- `steps`: an action is allowed only at the step kissat took it, so the solver
+  can only *drop* actions (a pointless load, a removable detour);
+- `actions`: an action kissat took is allowed at *any* step, so the solver can
+  also move, reorder and repeat them.
+
+kissat's plan satisfies both restrictions, so the restricted problem is always
+satisfiable, and optimum ≤ `actions` ≤ `steps` ≤ kissat's plan's cost. The
+planner also reports kissat's plan's own cost.
+
+**What was measured** (EvalMaxSAT, fixed horizon, 1800 s per solve; SimpleGrid
+3×3–7×7: 160 goals, TwoPackage: 80, ThreePackage 5×5–7×7: 96):
+- **At the shortest horizon, kissat's plan was already optimal** wherever the
+  optimum is known (all 160 + 80 + 62 such problems). The restriction never
+  improved on it there; its value was speed: 20–90 s against 4–23 minutes for
+  unrestricted EvalMaxSAT, which found no plan in 30 minutes on 24 of 32 7×7
+  ThreePackage goals.
+- **With 4 slices of slack**, kissat's plan cost 11–65% more than the optimum on
+  TwoPackage and 10–16% on ThreePackage. The restriction removed about half to
+  two-thirds of that excess (ThreePackage: `actions` 5.5–6.1% above the optimum,
+  `steps` 6.6–8.4%), 5–25 times faster than the full solve.
+- **The limit**: the restricted solver can never use a road kissat's plan did
+  not drive. A single truck's route cannot be shortened by dropping drives (each
+  is needed to get from one place to the next), only by driving other roads.
+
+**Why it is not ready.**
+- It is a heuristic with no bound on its gap: the result can be as bad as
+  kissat's plan, and nothing reports how far from optimal it is.
+- At the shortest horizon, where `planner.sh` uses it, it gave nothing beyond
+  kissat's plan itself in these domains, so its value there is not shown. Domains
+  where a minimal-length plan is costly (preferences, as in CLARA's FourPackage,
+  or uneven action costs) are untested.
+- A code review (2026-10-30) found ten issues. Fixed since: a timeout while
+  costing kissat's plan aborted the run as "not a model" (now only that cost is
+  unknown, and its scratch files are always removed); a classic `p wcnf` file
+  would have been restricted silently not at all (now refused); `--stop-after`
+  ignored `--restrict` (now refused); scratch names could collide with a problem
+  named `<root>-sat` (now `<root>-restrict-*`); and the test suite could pass with
+  a restriction that did nothing (it now requires a strict improvement on a 3×3
+  problem, and fails under a mutant that pins kissat's plan). Still open:
+  kissat's plan is costed by a second MaxSAT solve with every action pinned, where
+  evaluating the WCNF's soft clauses on the model would need no solver; the found
+  horizon is instantiated twice (once as CNF, once as WCNF) where
+  `propositionalize :cnf-format` could reuse the first; and the answer and map
+  readers repeat code from `interpret`.
+
+**Open directions** (the user's "between it and full EvalMaxSAT"): allow, beside
+kissat's actions, those *near* them, e.g. every drive from a place the truck
+visits, or every action within a step of kissat's; or iterate: restrict, solve,
+and restrict again around the new plan. Both keep the search small while making a
+shorter route reachable.

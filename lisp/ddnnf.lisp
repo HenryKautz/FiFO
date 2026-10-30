@@ -557,10 +557,36 @@ needs little or no smoothing -- the common case -- costs nvars/64 steps."
         while v do (push (bld-free b v) acc))
   acc)
 
-(defun ddnnf--d4-build (b root node-type arcs nvars)
+(defun ddnnf--d4-conflict-p (a b keep)
+  "True when the arc literal vectors A and B hold opposite literals of some
+variable KEEP marks: the two branches are mutually exclusive on the kept
+variables alone."
+  (declare (type ddnnf--litvec a b) (type simple-bit-vector keep))
+  (loop for x across a
+        thereis (and (= 1 (sbit keep (abs x))) (find (- x) b))))
+
+(defun ddnnf--d4-strip-unprojected (arcs projected)
+  "Remove from every arc of ARCS (in place) the literals of variables PROJECTED
+does not keep.  Returns (values a hash table arc -> the literal vector removed,
+holding only the arcs that lost any; the number of literals removed)."
+  (let ((dropped (make-hash-table :test #'eq)) (n 0))
+    (maphash (lambda (src lst) (declare (ignore src))
+               (dolist (a lst)
+                 (let ((lits (cdr a)))
+                   (declare (type ddnnf--litvec lits))
+                   (when (find-if (lambda (l) (zerop (sbit projected (abs l)))) lits)
+                     (let ((gone (remove-if (lambda (l) (= 1 (sbit projected (abs l)))) lits)))
+                       (incf n (length gone))
+                       (setf (gethash a dropped) gone
+                             (cdr a) (remove-if (lambda (l) (zerop (sbit projected (abs l))))
+                                                lits)))))))
+             arcs)
+    (values dropped n)))
+
+(defun ddnnf--d4-build (b root node-type arcs nvars &key projected a2i)
   "Build the d4 circuit under ROOT into builder B, smoothing every OR arc up to
 the OR's scope.  Returns (values our id for ROOT, ROOT's scope: a bit vector of
-the variables occurring in the circuit).
+the variables occurring in the circuit, the number of arc literals dropped).
 
 Memory is what limits the import of a large dump, so one postorder pass computes
 each node's scope from its children's and builds the node, and then drops what
@@ -569,8 +595,27 @@ id once its last parent is built -- so only the scopes of the nodes still
 awaiting a parent are alive, not one per node (nodes x nvars bits: about 2 GB on
 a 9x9 SimpleGrid circuit).  An arc into a FALSE node is skipped (it would be
 dropped anyway); smoothing it first used to cons tens of millions of free(v)
-entries for nothing.  The scope of a node still counts every arc, as before."
+entries for nothing.  The scope of a node still counts every arc, as before.
+
+PROJECTED (a bit vector of the kept variables) works around a d4 bug.  When its
+projected compiler reaches a component with no projected variable left to
+branch on, DecisionDNNFOperation::manageTop writes that component's implied
+literals on the arc WITHOUT filtering them to the projection (DpllStyleMethod's
+compute_ does filter, with expelNoDecisionLit), so a projected-away variable can
+appear as a unit literal on an arc.  Such literals are DROPPED -- replaced by
+true, which in a decomposable circuit is exactly existential quantification of
+their variable -- under two checks that make that sound, each an error if it
+fails:
+  - decomposability: a dropped variable does not occur below its own arc;
+  - determinism on the kept variables: every two live arcs of an OR node hold
+    opposite literals of some KEPT variable, so dropping cannot make branches
+    overlap (it would if d4 had branched on a projected-away variable).
+See discussion.md, \"d4's projected dump leaks implied literals\"."
+  (multiple-value-bind (dropped n-dropped)
+      (if projected (ddnnf--d4-strip-unprojected arcs projected) (values nil 0))
   (let ((built (make-hash-table)) (scopes (make-hash-table)) (parents (make-hash-table))
+        ;; per node, the dropped variables at or below it (only when any were)
+        (yscopes (and dropped (plusp n-dropped) (make-hash-table)))
         (empty (make-array (1+ nvars) :element-type 'bit :initial-element 0))
         (covered (make-array (1+ nvars) :element-type 'bit))
         (missing (make-array (1+ nvars) :element-type 'bit))
@@ -593,6 +638,40 @@ entries for nothing.  The scope of a node still counts every arc, as before."
                (bit-ior scope (gethash (car arc) scopes) scope)
                (loop for l across (the ddnnf--litvec (cdr arc))
                      do (setf (sbit scope (abs l)) 1))))
+           (when yscopes
+             ;; decomposability of each dropped literal: its variable must not
+             ;; occur in the sub-circuit below its arc, nor, at an AND node, in
+             ;; two of its conjuncts
+             (let ((ys (make-array (1+ nvars) :element-type 'bit :initial-element 0))
+                   (c (make-array (1+ nvars) :element-type 'bit)))
+               (dolist (arc arcs-of)
+                 (let ((below (gethash (car arc) yscopes)) (gone (gethash arc dropped)))
+                   (if below (replace c below) (fill c 0))
+                   (when gone
+                     (loop for l across (the ddnnf--litvec gone)
+                           when (= 1 (sbit c (abs l)))
+                             do (error "d4's projected dump: projected-away variable ~D (~S) ~
+is an implied literal on an arc AND occurs below it -- not decomposable, so it cannot ~
+be dropped" (abs l) (ddnnf--var-atom a2i (abs l)))
+                           do (setf (sbit c (abs l)) 1)))
+                   (when (and (eq type :and) (find 1 (bit-and ys c)))
+                     (let ((v (position 1 (bit-and ys c))))
+                       (error "d4's projected dump: projected-away variable ~D (~S) occurs in ~
+two conjuncts of AND node ~D -- not decomposable, so it cannot be dropped"
+                              v (ddnnf--var-atom a2i v) id)))
+                   (bit-ior ys c ys)))
+               (setf (gethash id yscopes) ys)))
+           (when (and projected (eq type :or))
+             ;; determinism on the kept variables alone
+             (let ((live (loop for arc in arcs-of
+                               unless (eq (gethash (car arc) node-type) :false)
+                                 collect (cdr arc))))
+               (loop for (x . rest) on live
+                     do (dolist (y rest)
+                          (unless (ddnnf--d4-conflict-p x y projected)
+                            (error "d4's projected dump: two branches of OR node ~D share no ~
+opposite literal of a projected variable -- d4 branched on a projected-away variable, ~
+so the circuit is not the projected one" id))))))
            (setf (gethash id scopes) scope
                  (gethash id built)
                  (ecase type
@@ -627,8 +706,9 @@ entries for nothing.  The scope of a node still counts every arc, as before."
            (dolist (arc arcs-of)
              (when (zerop (decf (gethash (car arc) parents)))
                (remhash (car arc) scopes)
+               (when yscopes (remhash (car arc) yscopes))
                (remhash (car arc) built)))))))
-    (values (gethash root built) (gethash root scopes))))
+    (values (gethash root built) (gethash root scopes) n-dropped))))
 
 (defun ddnnf--var-atom (a2i v)
   "The atom numbered V in A2I (a linear search -- for error messages only)."
@@ -668,15 +748,21 @@ factor of 2, which is exactly the existential the projection removed."
         (error "d4 NNF dump ~A has ~:[no root~;~:*~D nodes with no parent (~{~D~^ ~}), ~
 not one root~] -- truncated or corrupt"
                nnf-file (and roots (length roots)) (subseq roots 0 (min 5 (length roots)))))
-      (multiple-value-bind (body rscope)
-          (ddnnf--d4-build b (first roots) node-type arcs nvars)
+      (multiple-value-bind (body rscope n-dropped)
+          (ddnnf--d4-build b (first roots) node-type arcs nvars :projected projected :a2i a2i)
         (when projected
+          ;; every projected-away literal was stripped from the arcs, so this can
+          ;; only fire if one survived some other way: keep it as the backstop
           (let ((v (position 1 (bit-andc2 rscope projected))))
             (when v
               (error "d4's projected dump mentions variable ~D (~S), which is not in the ~
 projection -- d4 did not honour the 'c p show' line, so the circuit would not be ~
 the projected one"
-                     v (ddnnf--var-atom a2i v)))))
+                     v (ddnnf--var-atom a2i v))))
+          (when (plusp n-dropped)
+            (format t "; d4 left ~D implied literal~:P of projected-away variables on its ~
+arcs (a d4 bug); dropped: decomposable, and every OR node splits on a kept variable~%"
+                    n-dropped)))
         ;; root smoothing: the kept variables the circuit never mentions
         (let* ((never (bit-andc2 (or projected
                                      (let ((all (make-array (1+ nvars) :element-type 'bit

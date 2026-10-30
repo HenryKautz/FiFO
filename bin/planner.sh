@@ -50,6 +50,13 @@ usage() {
   echo "                     the separate <root>-evidence.scnf." >&2
   echo "  --longer K   for a costed domain, also minimize cost at up to K horizons beyond" >&2
   echo "               the smallest feasible one, returning the cheapest plan (default 0)." >&2
+  echo "  --restrict steps|actions  (EXPERIMENTAL) minimize cost only over the SAT plan's actions: every" >&2
+  echo "               action atom the feasibility step's plan does not use is forced false" >&2
+  echo "               -- 'steps' keeps each only at the slice it was taken (the solver can" >&2
+  echo "               only drop actions), 'actions' keeps each ground action at any slice." >&2
+  echo "               Fast, NOT optimal: the cheapest plan within that set.  The SAT plan" >&2
+  echo "               is kept as <root>-restrict-sat.answer and its own cost printed.  Not with" >&2
+  echo "               --longer, --marginals or --stop-after.  See discussion.md." >&2
   echo "  --evidence <formula>  condition on a FiFO formula (ground or quantified over the" >&2
   echo "               problem's domains); instantiated in the same env as the problem into a" >&2
   echo "               separate <root>-evidence.scnf and conjoined.  Repeatable." >&2
@@ -104,6 +111,7 @@ MINSLICES=""   # empty = let the planner default it from reachability analysis
 MAXSLICES=""   # empty = let the planner default it to 2 * minslices
 STOP_AFTER=""  # empty = run the full pipeline; "wff" or "scnf" stops early
 LONGER=""      # empty = 0; search K horizons beyond the smallest feasible for a cheaper plan
+RESTRICT=""    # --restrict steps|actions: minimize over the SAT plan's actions only
 EVFILE=""      # --evidence-file
 EVIDENCE_FORMS=()  # --evidence (repeatable)
 PDDL_EVFILE=""        # --pddl-evidence-file
@@ -132,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     --weighted-solver) [[ $# -ge 2 ]] || usage; WEIGHTED_SOLVER="$2"; shift 2 ;;
     --stop-after) [[ $# -ge 2 ]] || usage; STOP_AFTER="$2"; shift 2 ;;
     --longer)    [[ $# -ge 2 ]] || usage; LONGER="$2";    shift 2 ;;
+    --restrict)  [[ $# -ge 2 ]] || usage; RESTRICT="$2";  shift 2 ;;
     --evidence)       [[ $# -ge 2 ]] || usage; EVIDENCE_FORMS+=("$2"); shift 2 ;;
     --evidence-file)  [[ $# -ge 2 ]] || usage; EVFILE="$2"; shift 2 ;;
     --pddl-evidence)      [[ $# -ge 2 ]] || usage; PDDL_EVIDENCE_FORMS+=("$2"); shift 2 ;;
@@ -155,6 +164,18 @@ if [[ -n "$STOP_AFTER" && "$STOP_AFTER" != "wff" && "$STOP_AFTER" != "scnf" ]]; 
 fi
 if [[ -n "$LONGER" && ! "$LONGER" =~ ^[0-9]+$ ]]; then
   echo "--longer must be a non-negative integer, got: $LONGER" >&2; exit 2
+fi
+if [[ -n "$RESTRICT" && "$RESTRICT" != "steps" && "$RESTRICT" != "actions" ]]; then
+  echo "--restrict must be steps or actions, got: $RESTRICT" >&2; exit 2
+fi
+if [[ -n "$RESTRICT" && -n "$LONGER" && "$LONGER" != "0" ]]; then
+  echo "--restrict and --longer cannot be combined: the SAT plan restricts one horizon" >&2; exit 2
+fi
+if [[ -n "$RESTRICT" && -n "$STOP_AFTER" ]]; then
+  echo "--restrict applies to planning, not --stop-after (nothing is solved)" >&2; exit 2
+fi
+if [[ -n "$RESTRICT" && "$MARGINALS" -eq 1 ]]; then
+  echo "--restrict applies to planning, not --marginals" >&2; exit 2
 fi
 if [[ -n "$EVFILE" && ! -f "$EVFILE" ]]; then echo "evidence file not found: $EVFILE" >&2; exit 2; fi
 if [[ -n "$PDDL_EVFILE" && ! -f "$PDDL_EVFILE" ]]; then echo "pddl-evidence file not found: $PDDL_EVFILE" >&2; exit 2; fi
@@ -256,6 +277,8 @@ STOP_KW=""
 [[ -n "$STOP_AFTER" ]] && STOP_KW=":stop-after :$STOP_AFTER"
 LONGER_KW=""
 [[ -n "$LONGER" ]] && LONGER_KW=":longer $LONGER"
+RESTRICT_KW=""
+[[ -n "$RESTRICT" ]] && RESTRICT_KW=":restrict :$RESTRICT"
 EVIDENCE_KW=""
 [[ ${#EVIDENCE_FORMS[@]} -gt 0 ]] && EVIDENCE_KW=":evidence (quote ( ${EVIDENCE_FORMS[*]} ))"
 EVFILE_KW=""
@@ -285,7 +308,7 @@ EVALS=( --eval "(load \"$FIFO\")" --eval "(load \"$PDDL2FIFO\")" )
 EVALS+=( --eval "(load \"$PLANNER\")" )
 EVALS+=( --eval "(sb-ext:exit :code
             (plan-and-report \"$PROBLEM\"
-              $MIN_KW $MAX_KW $STOP_KW $LONGER_KW
+              $MIN_KW $MAX_KW $STOP_KW $LONGER_KW $RESTRICT_KW
               $EVIDENCE_KW $EVFILE_KW $PDDL_EVIDENCE_KW $PDDL_EVFILE_KW
               $MARGINALS_KW $COUNTER_KW $SPLIT_KW $PROJECT_KW $NODE_KW
               :sat-solver \"$SAT_SOLVER\" :weighted-solver \"$WEIGHTED_SOLVER\"

@@ -256,12 +256,113 @@ objective."
       (multiple-value-bind (scale offset) (wcnf-scale-offset wcnf-file)
         (+ (/ raw scale) offset)))))
 
+;;; --restrict: minimize cost only over the actions of phase 1's SAT plan.
+;;;
+;;; Phase 1's model (pure SAT, weights ignored) is a plan at the shortest horizon
+;;; H.  Restricted minimization solves the weighted problem at H with every action
+;;; atom (OCCURS a t) that the SAT plan does not license forced false -- hard unit
+;;; clauses appended to the WCNF -- so the MaxSAT solver searches a tiny space:
+;;;   :steps    an action is allowed only at the step the SAT plan took it, so
+;;;             the solver can only DROP actions (detours, pointless loads);
+;;;   :actions  a ground action the SAT plan took is allowed at ANY step, so the
+;;;             solver can also move, reorder and repeat them.
+;;; The SAT plan itself satisfies both restrictions, so the restricted problem is
+;;; always satisfiable, and its optimum lies between the true optimum at H and
+;;; the SAT plan's own cost -- which is computed too, by pinning every action
+;;; atom to its value in the SAT plan, so the three can be compared.
+
+(defun plan--plan-actions (answer-file)
+  "The (ACTION SLICE) pairs of the (OCCURS action slice) lines of ANSWER-FILE."
+  (with-open-file (s answer-file :direction :input)
+    (let ((*read-eval* nil))
+      (loop for form = (read s nil :eof) until (eq form :eof)
+            when (and (consp form) (symbolp (car form))
+                      (string= (symbol-name (car form)) "OCCURS"))
+              collect (list (second form) (third form))))))
+
+(defun plan--action-vars (map-file)
+  "(VAR ACTION SLICE) for every (OCCURS action slice) atom in MAP-FILE."
+  (with-open-file (s map-file :direction :input)
+    (let ((*read-eval* nil))
+      (unless (eql (read s) 'map) (error "bad map file ~A" map-file))
+      (read s)                          ; the variable count
+      (loop for v = (read s nil :eof) until (eq v :eof)
+            for atom = (read s)
+            when (and (consp atom) (symbolp (car atom))
+                      (string= (symbol-name (car atom)) "OCCURS"))
+              collect (list v (second atom) (third atom))))))
+
+(defun plan--restrict-wcnf (wcnf map-file sat-actions mode &key out-file)
+  "Append hard unit clauses to the 2022-format WCNF (or write a copy to OUT-FILE)
+restricting its action atoms to SAT-ACTIONS, the (ACTION SLICE) pairs of a plan.
+MODE :STEPS forbids every (OCCURS a t) not in SAT-ACTIONS; :ACTIONS forbids every
+one whose action a appears nowhere in them; :PIN also forces each one in
+SAT-ACTIONS true, fixing the plan.  Returns (values allowed forbidden): the
+number of action atoms left free (or pinned true) and forced false."
+  (let* ((steps (make-hash-table :test #'equal))
+         (acts (make-hash-table :test #'equal))
+         (allowed 0) (forbidden 0)
+         (units '()))
+    ;; Appending h lines is only right in the 2022 format; a classic "p wcnf"
+    ;; file has a clause count in its header and no "h" keyword, so the units
+    ;; would be rejected or ignored -- and a silently unrestricted solve would
+    ;; still be reported as restricted.
+    (with-open-file (s wcnf :direction :input)
+      (loop for line = (read-line s nil nil) while line
+            unless (or (zerop (length line)) (char= (char line 0) #\c))
+              do (when (char= (char line 0) #\p)
+                   (error "~A is in the classic 'p wcnf' format; --restrict appends 2022-format ~
+'h' clauses and needs that format" wcnf))
+                 (return)))
+    (dolist (sa sat-actions)
+      (setf (gethash sa steps) t (gethash (first sa) acts) t))
+    (dolist (va (plan--action-vars map-file))
+      (destructuring-bind (v act slice) va
+        (let ((ok (ecase mode
+                    ((:steps :pin) (gethash (list act slice) steps))
+                    (:actions (gethash act acts)))))
+          (cond (ok (incf allowed) (when (eq mode :pin) (push v units)))
+                (t (incf forbidden) (push (- v) units))))))
+    (when out-file (uiop:copy-file wcnf out-file))
+    (with-open-file (o (or out-file wcnf) :direction :output :if-exists :append)
+      (dolist (u (nreverse units)) (format o "h ~D 0~%" u)))
+    (values allowed forbidden)))
+
+(defun plan--restricted-setup (wcnf map sat-answer mode problem-path stream)
+  "Before a restricted phase-2 solve of WCNF (with MAP): solve the SAT plan's own
+cost -- a copy of WCNF with every action atom pinned to its value in SAT-ANSWER --
+and print it, then restrict WCNF in place to MODE (:STEPS or :ACTIONS)."
+  ;; Scratch names no problem file can collide with: <root>-sat.pddl would own
+  ;; <root>-sat.wcnf, so the pinned copy is named <root>-restrict-pin.*.
+  (let* ((sat-actions (plan--plan-actions sat-answer))
+         (pin-wcnf (planner-sibling problem-path "-restrict-pin" "wcnf"))
+         (pin-satout (planner-sibling problem-path "-restrict-pin" "satout"))
+         (pin-answer (planner-sibling problem-path "-restrict-pin" "answer")))
+    (unwind-protect
+         (progn
+           (plan--restrict-wcnf wcnf map sat-actions :pin :out-file pin-wcnf)
+           (case (satisfy pin-wcnf :satoutfile pin-satout)
+             (sat (interpret pin-satout :mapfile map :solnfile pin-answer)
+                  (format stream "  the SAT plan (~D actions) as found: cost ~A~%"
+                          (length sat-actions) (or (plan-true-cost pin-answer pin-wcnf) "(none)")))
+             ;; the SAT plan satisfies the plain theory, of which the weighted one
+             ;; is a definitional extension: UNSAT here is a bug, not a property
+             (unsat (error "the SAT plan, its actions pinned, is not a model of the weighted theory"))
+             ;; a timeout, a crash, an UNKNOWN: the cost is unknown, nothing worse
+             (t (format stream "  the SAT plan (~D actions): its cost could not be computed ~
+(the solver gave no answer); restricting anyway~%" (length sat-actions)))))
+      (dolist (f (list pin-wcnf pin-satout pin-answer))
+        (when (probe-file f) (delete-file f))))
+    (multiple-value-bind (allowed forbidden) (plan--restrict-wcnf wcnf map sat-actions mode)
+      (format stream "  restricted to the SAT plan's ~(~A~): ~D of ~D action atoms allowed~%"
+              mode allowed (+ allowed forbidden)))))
+
 (defun plan (problem-file
              &key minslices maxslices
                   (sat-solver "kissat")
                   (weighted-solver "tt-open-wbo-inc-Glucose4_1")
                   domain-file (satplan-path "satplan.wff")
-                  stop-after (longer 0)
+                  stop-after (longer 0) restrict
                   evidence evidence-file pddl-evidence pddl-evidence-file
                   marginals (counter "maxent") split-evidence project node-limit
                   (stream *standard-output*))
@@ -285,6 +386,14 @@ smallest feasible horizon s, it solves each horizon s..s+LONGER and returns the
 cheapest plan found (a longer horizon can admit a lower-cost plan).  Costs at
 different horizons are compared as true plan costs (raw objective / scale +
 offset).  LONGER has no effect when the domain has no action costs.
+
+RESTRICT (:STEPS or :ACTIONS; default NIL) makes phase 2 a RESTRICTED
+minimization: every action atom phase 1's SAT plan does not license is forced
+false -- :STEPS allows only the SAT plan's own (action, slice) pairs, :ACTIONS its
+ground actions at any slice -- so the weighted solver searches a tiny space and
+returns the cheapest plan within it, not the problem's optimum.  The SAT plan is
+kept as <root>-restrict-sat.answer, and its own cost is computed and printed (every action
+atom pinned) for comparison.  Not combinable with LONGER.
 
 EVIDENCE (a list of GROUND-or-quantified FiFO formulas) and EVIDENCE-FILE (a file
 of them) condition the problem: each is instantiated at the working horizon in the
@@ -336,11 +445,18 @@ wff/scnf.  Progress is printed to STREAM."
          (answer (planner-file problem-path "answer"))
          (evidence-forms (plan--evidence-forms evidence evidence-file))
          (pddl-evidence-forms (plan--evidence-forms pddl-evidence pddl-evidence-file))
+         (sat-answer (planner-sibling problem-path "-restrict-sat" "answer"))
          (evidence-scnf  (planner-sibling problem-path "-evidence" "scnf"))
          (assertion-scnf (planner-sibling problem-path "-assertion" "txt"))
          (combined-scnf  (planner-sibling problem-path "-combined" "scnf")))
     (handler-case
         (let ((reach-min nil) (goal-atoms nil))
+          (unless (member restrict '(nil :steps :actions))
+            (error "RESTRICT must be :STEPS or :ACTIONS, got ~S" restrict))
+          (when (and restrict (plusp longer))
+            (error "RESTRICT and LONGER cannot be combined: the SAT plan restricts one horizon"))
+          (when (and restrict (or marginals stop-after))
+            (error "RESTRICT applies to planning, not ~:[STOP-AFTER~;MARGINALS~]" marginals))
           ;; Build the wff from PDDL when needed, capturing the reachability bound
           ;; and the FiFO translation of any PDDL-style evidence.
           (cond
@@ -455,6 +571,12 @@ wff/scnf.  Progress is printed to STREAM."
                (format stream "Found a plan with ~A time slices.~%" found)
                ;; The domain has costs iff the instantiated scnf carries weights.
                (setq has-costs (file-contains-string-p "(WEIGHT" scnf))
+               ;; --restrict: keep the SAT plan before phase 2 overwrites satout
+               ;; and map (phase 2 propositionalizes its own wcnf and map).
+               (when restrict
+                 (if has-costs
+                     (interpret satout :mapfile map :solnfile sat-answer)
+                     (format stream "(no action costs; --restrict has no effect)~%")))
                (cond
                  ((not has-costs)
                   ;; No costs: the shortest feasible model is the answer; a longer
@@ -477,11 +599,14 @@ wff/scnf.  Progress is printed to STREAM."
                       (let ((psc (plan--scnf-to-solve scnf evidence-forms evidence-scnf combined-scnf)))
                         (unless (propositionalize psc :cnffile wcnf :mapfile map)
                           (error "propositionalization failed at ~A slices" n)))
+                      (when restrict
+                        (plan--restricted-setup wcnf map sat-answer restrict problem-path stream))
                       (case (satisfy wcnf :satoutfile satout)
                         (sat
                          (interpret satout :mapfile map :solnfile answer)
                          (let ((cost (plan-true-cost answer wcnf)))
-                           (format stream "  ~A time slices: cost ~A~%" n (or cost "(none)"))
+                           (format stream "  ~A time slices: cost ~A~@[ (restricted to the SAT plan's ~(~A~))~]~%"
+                                   n (or cost "(none)") restrict)
                            (when (and cost (or (null best-cost) (< cost best-cost)))
                              (setq best-cost cost best-n n)
                              (uiop:copy-file answer best-answer))))
