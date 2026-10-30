@@ -552,10 +552,15 @@ Y. (The alternative fix is the one-line filter in d4's `manageTop`; doing it in
 FiFO means no patched d4 is needed.)
 
 **Status (2026-10-30).** The importer change passes `tests/run-test-project.sh`
-(25/25, every projected compile now also checked for determinism on X) and
-`tests/run-test-ddnnf-eval.sh`. The retry of `grid5x5-3` and `grid5x5-4` with it
-is in progress; its outcome will be recorded here and in CLARA's
-`ThreePackage/README.md`.
+(25/25, every projected compile now also checked for determinism on X), and
+every other suite. Rerun with it, both refused theories compiled: `grid5x5-3`
+(d4 1148 s, 1,866,595 nodes) and `grid5x5-4` (1629 s, 311,315 nodes). The
+`grid5x5-3` circuit's model count, 179,559,483, **agrees** with SharpSAT-TD's
+exact count of the whole theory, the independent check that the repaired
+circuit is the projected one. The `grid5x5-4` count check did not finish in an
+hour, so that circuit is unverified. There is not yet a unit test with a
+synthetic dump carrying a leaked literal; the evidence is the real circuit
+above and the unchanged projection suite.
 
 ## Restricted Cost Minimization (experimental)
 
