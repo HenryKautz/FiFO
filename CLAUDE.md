@@ -147,7 +147,7 @@ preprocessor-techniques timeout)`.
 - Behavioural suites `tests/run-test-*.sh`, runnable from anywhere: action-costs,
   cleanup, cli, ddnnf-eval, docs, evgen, evidence, hypotheses, maxsat, maxterm, mcc-dialect,
   mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, restrict,
-  sharpsat, solvers, tseitin, weight-formula. Each skips cleanly (exit 0) when its optional binary is
+  sharpsat, solvers, tseitin, visualizer, weight-formula. Each skips cleanly (exit 0) when its optional binary is
   missing. `run-test-pddl.sh` diffs translations against checked-in wffs — update
   them when emitter output legitimately changes.
 - Suite conventions: compare against an INDEPENDENT oracle, never FiFO against

@@ -1,0 +1,18 @@
+{
+  // One classic script, visualizer.js, so index.html works when opened as a
+  // file (browsers refuse ES modules from file:// URLs).  The sources share the
+  // Viz namespace; order matters.  Build: tsc -p SatPlan/Visualizer
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "none",
+    "outFile": "visualizer.js",
+    "lib": ["ES2019", "DOM", "DOM.Iterable"],
+    // no @types packages from any node_modules above this directory
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "removeComments": false,
+    "newLine": "lf"
+  },
+  "files": ["src/sexpr.ts", "src/problem.ts", "src/plan.ts", "src/render.ts", "src/app.ts"]
+}

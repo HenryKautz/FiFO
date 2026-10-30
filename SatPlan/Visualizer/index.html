@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SatPlan Visualizer</title>
+  <link rel="stylesheet" href="visualizer.css">
+</head>
+<body>
+  <header>
+    <h1>SatPlan Visualizer</h1>
+    <label class="file">Problem (.pddl)
+      <input type="file" id="problem-file" accept=".pddl,.txt">
+    </label>
+    <label class="file">Solution (optional)
+      <input type="file" id="solution-file">
+    </label>
+    <span id="summary" class="summary">Choose a grid planning problem, or drop its files on this page.</span>
+  </header>
+  <div id="messages" class="messages" hidden></div>
+  <main>
+    <section class="panel map-panel">
+      <div id="map" class="map-box">
+        <div class="placeholder">
+          <p>The map appears here.</p>
+          <p class="legend-hint">Squares are places, lines are roads (an arrow at each end that can be
+            driven to). <b>T</b> trucks, <b>A</b> airplanes, <b>P</b> packages, <b>G</b> goal destinations
+            (in their package's color). Hover over anything for its name.</p>
+        </div>
+      </div>
+    </section>
+    <aside>
+      <section class="panel">
+        <h2>Goal</h2>
+        <div id="goals" class="goals"><p class="empty">No problem loaded.</p></div>
+      </section>
+      <section class="panel solution-panel">
+        <h2>Solution</h2>
+        <div id="controls" class="controls" hidden>
+          <button id="first" title="First step (Home)">⏮</button>
+          <button id="prev" title="Back (←)">◀</button>
+          <button id="next" title="Forward (→)">▶</button>
+          <button id="last" title="Last step (End)">⏭</button>
+          <span id="step-label" class="step-label"></span>
+        </div>
+        <div id="solution" class="solution"><p class="empty">No solution loaded.</p></div>
+      </section>
+    </aside>
+  </main>
+  <script src="visualizer.js"></script>
+</body>
+</html>

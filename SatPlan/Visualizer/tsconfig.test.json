@@ -1,0 +1,11 @@
+{
+  // The sources plus tests/test.ts as one script for Node; the scratch output
+  // directory is given on the command line (tsc -p ... --outFile DIR/test.js).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "outFile": "build/test.js"
+  },
+  "files": ["src/sexpr.ts", "src/problem.ts", "src/plan.ts", "src/render.ts", "src/app.ts", "tests/test.ts"]
+}
