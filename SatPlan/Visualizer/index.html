@@ -9,8 +9,14 @@
 <body>
   <header>
     <h1>SatPlan Visualizer</h1>
+    <label class="file">Examples
+      <select id="examples"><option value="">Choose an example…</option></select>
+    </label>
     <label class="file">Problem (.pddl)
       <input type="file" id="problem-file" accept=".pddl,.txt">
+    </label>
+    <label class="file">Domain (optional, for costs)
+      <input type="file" id="domain-file" accept=".pddl,.txt">
     </label>
     <label class="file">Solution (optional)
       <input type="file" id="solution-file">
@@ -34,6 +40,10 @@
         <h2>Goal</h2>
         <div id="goals" class="goals"><p class="empty">No problem loaded.</p></div>
       </section>
+      <section class="panel">
+        <h2>Utility so far</h2>
+        <div id="utility" class="utility"><p class="empty">No problem loaded.</p></div>
+      </section>
       <section class="panel solution-panel">
         <h2>Solution</h2>
         <div id="controls" class="controls" hidden>
@@ -47,6 +57,7 @@
       </section>
     </aside>
   </main>
+  <script src="examples.js"></script>
   <script src="visualizer.js"></script>
 </body>
 </html>

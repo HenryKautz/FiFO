@@ -1,0 +1,13 @@
+{
+  // tools/bundle-examples.ts for Node; build.sh gives the output file.
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "none",
+    "outFile": "build/bundle-examples.js",
+    "lib": ["ES2020"],
+    "types": [],
+    "strict": true,
+    "newLine": "lf"
+  },
+  "files": ["tools/bundle-examples.ts"]
+}

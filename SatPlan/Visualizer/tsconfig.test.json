@@ -7,5 +7,5 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "outFile": "build/test.js"
   },
-  "files": ["src/sexpr.ts", "src/problem.ts", "src/plan.ts", "src/render.ts", "src/app.ts", "tests/test.ts"]
+  "files": ["src/sexpr.ts", "src/problem.ts", "src/domain.ts", "src/plan.ts", "src/render.ts", "src/app.ts", "tests/test.ts"]
 }

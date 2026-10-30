@@ -14,5 +14,5 @@
     "removeComments": false,
     "newLine": "lf"
   },
-  "files": ["src/sexpr.ts", "src/problem.ts", "src/plan.ts", "src/render.ts", "src/app.ts"]
+  "files": ["src/sexpr.ts", "src/problem.ts", "src/domain.ts", "src/plan.ts", "src/render.ts", "src/app.ts"]
 }

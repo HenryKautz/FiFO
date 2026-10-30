@@ -25,6 +25,15 @@ namespace Viz {
     both: boolean;
   }
 
+  /** A soft goal: (preference NAME GD WEIGHT) in the goal (FiFO and ppgen's
+   *  form), or (preference NAME GD) weighted by the metric's (* W (is-violated
+   *  NAME)).  Its weight is the utility of achieving it. */
+  export interface Preference {
+    name: string;
+    formula: SExpr;
+    weight: number;
+  }
+
   export interface Problem {
     name: string;
     domain: string;
@@ -43,6 +52,11 @@ namespace Viz {
     goal: Literal[][];
     /** Every distinct goal literal, in label order. */
     goalLiterals: Literal[];
+    /** Weighted preferences; those with no weight anywhere are left out. */
+    preferences: Preference[];
+    /** Numeric fluents from :init, (= (drive-cost) 2), keyed by the term as
+     *  written: "(drive-cost)". */
+    numbers: Map<string, number>;
     layout: Map<string, { row: number; col: number }>;
     rows: number;
     cols: number;
@@ -71,12 +85,12 @@ namespace Viz {
 
   /** The hard goal's lines: preferences dropped, nested ANDs flattened, each
    *  conjunct an OR (one line of disjuncts) or a single literal (a line of one). */
-  function goalLines(goal: SExpr | undefined, warnings: string[]): SExpr[][] {
+  function goalLines(goal: SExpr | undefined, warnings: string[], prefs: SExpr[][]): SExpr[][] {
     if (goal === undefined) return [];
     const conjuncts: SExpr[] = [];
     (function flatten(g: SExpr) {
       if (isList(g) && g[0] === "and") g.slice(1).forEach(flatten);
-      else if (isList(g) && g[0] === "preference") return;
+      else if (isList(g) && g[0] === "preference") prefs.push(g);
       else conjuncts.push(g);
     })(goal);
     const lines: SExpr[][] = [];
@@ -137,7 +151,12 @@ namespace Viz {
     const initIn = new Map<string, string>();
     const roadSet = new Set<string>();
     const roadPairs: [string, string][] = [];
+    const numbers = new Map<string, number>();
     for (const f of (section(def, ":init") ?? []).slice(1)) {
+      if (isList(f) && f[0] === "=" && isList(f[1]) && f.length === 3 && !Number.isNaN(Number(f[2]))) {
+        numbers.set(show(f[1]), Number(f[2]));
+        continue;
+      }
       if (!isList(f) || f.length !== 3 || isList(f[1]) || isList(f[2])) continue;
       const [p, a, b] = f as string[];
       if (p === "at") initAt.set(a, b);
@@ -178,7 +197,8 @@ namespace Viz {
     const goalForm = section(def, ":goal");
     const literalByText = new Map<string, Literal>();
     const goalLiterals: Literal[] = [];
-    const goal = goalLines(goalForm?.[1], warnings).map((line) =>
+    const prefForms: SExpr[][] = [];
+    const goal = goalLines(goalForm?.[1], warnings, prefForms).map((line) =>
       line.map((x) => {
         let negated = false;
         let atom = x;
@@ -197,6 +217,32 @@ namespace Viz {
         return lit;
       }),
     );
+
+    // preferences: a weight written in the preference, else from the metric
+    const metricWeights = new Map<string, number>();
+    const metric = section(def, ":metric");
+    (function walk(x: SExpr | undefined, scale: number) {
+      if (!isList(x)) return;
+      if (x[0] === "is-violated" && !isList(x[1])) {
+        metricWeights.set(x[1] as string, (metricWeights.get(x[1] as string) ?? 0) + scale);
+      } else if (x[0] === "*" && x.length === 3) {
+        const [a, b] = [x[1], x[2]];
+        if (!isList(a) && !Number.isNaN(Number(a))) walk(b, scale * Number(a));
+        else if (!isList(b) && !Number.isNaN(Number(b))) walk(a, scale * Number(b));
+      } else if (x[0] === "+") {
+        x.slice(1).forEach((y) => walk(y, scale));
+      }
+    })(metric?.[2], 1);
+    const preferences: Preference[] = [];
+    for (const pf of prefForms) {
+      // (preference NAME GD [WEIGHT]) or (preference GD [WEIGHT]) unnamed
+      const named = pf.length >= 3 && !isList(pf[1]);
+      const name = named ? (pf[1] as string) : "";
+      const formula = named ? pf[2] : pf[1];
+      const w = named ? pf[3] : pf[2];
+      const weight = w !== undefined && !isList(w) && !Number.isNaN(Number(w)) ? Number(w) : metricWeights.get(name);
+      if (formula !== undefined && weight !== undefined) preferences.push({ name, formula, weight });
+    }
 
     // layout
     const layout = new Map<string, { row: number; col: number }>();
@@ -226,7 +272,7 @@ namespace Viz {
     }
     return {
       name, domain, kinds, places, airports, trucks, airplanes, packages, labels, roads,
-      initAt, initIn, goal, goalLiterals, layout, rows, cols, warnings,
+      initAt, initIn, goal, goalLiterals, preferences, numbers, layout, rows, cols, warnings,
     };
   }
 }

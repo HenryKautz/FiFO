@@ -1,21 +1,43 @@
 // The map as SVG markup: places as squares on the grid, roads as lines with an
 // arrowhead at each end they can be driven towards, and in each square its
-// trucks, packages and goal destinations.
+// trucks, airplanes, packages and goal destinations.
 //
-// Inside a place's square each kind has its own corner so none hides another:
-// goals top left, packages top right, vehicles along the bottom.  Several of one
-// kind in one place overlap, each further one offset up and to the right so its
-// edge shows.  A package in a vehicle is a badge on that vehicle.  The SVG has a
-// viewBox and no fixed size, so it scales with its container.
+// A square's contents fill it: one kind alone (say, a truck) gets the whole
+// square; vehicles share it with the others by taking the bottom part; goals
+// and packages split what is left side by side.  Several of one kind overlap,
+// each further one offset up and to the right so its edge shows, and they shrink
+// as there are more.  A package in a vehicle is a small badge on that vehicle.
+// The SVG has a viewBox and no fixed size, so it scales with its container.
+//
+// Icons: Material Design Icons (https://pictogrammers.com/library/mdi/),
+// Apache License 2.0 -- "truck", "airplane", "package-variant-closed".
 
 namespace Viz {
   const TRUCK_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#0891b2", "#ca8a04", "#db2777", "#475569"];
   const PACKAGE_COLORS = ["#ea580c", "#0d9488", "#c026d3", "#65a30d", "#4f46e5", "#e11d48", "#0284c7", "#a16207",
                           "#7c3aed", "#059669", "#be123c", "#1d4ed8"];
 
+  /** Icon paths in a 24 x 24 box, and where on the icon its label sits. */
+  const ICONS = {
+    truck: {
+      d: "M18,18.5A1.5,1.5 0 0,1 16.5,17A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 19.5,17A1.5,1.5 0 0,1 18,18.5M19.5,9.5L21.46,12H17V9.5M6,18.5A1.5,1.5 0 0,1 4.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,17A1.5,1.5 0 0,1 6,18.5M20,8H17V4H3C1.89,4 1,4.89 1,6V17H3A3,3 0 0,0 6,20A3,3 0 0,0 9,17H15A3,3 0 0,0 18,20A3,3 0 0,0 21,17H23V12L20,8Z",
+      label: { x: 8.5, y: 10.5 },
+    },
+    airplane: {
+      d: "M20.56 3.91C21.15 4.5 21.15 5.45 20.56 6.03L16.67 9.92L18.79 19.11L17.38 20.53L13.5 13.1L9.6 17L9.96 19.47L8.89 20.53L7.13 17.35L3.94 15.58L5 14.5L7.5 14.87L11.37 11L3.94 7.09L5.36 5.68L14.55 7.8L18.44 3.91C19 3.33 20 3.33 20.56 3.91Z",
+      label: { x: 12, y: 12.5 },
+    },
+    package: {
+      d: "M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L10.11,5.22L16,8.61L17.96,7.5L12,4.15M6.04,7.5L12,10.85L13.96,9.75L8.08,6.35L6.04,7.5M5,15.91L11,19.29V12.58L5,9.21V15.91M19,15.91V9.21L13,12.58V19.29L19,15.91Z",
+      label: { x: 12, y: 13.5 },
+    },
+  };
+
   const SPACING = 100; // grid pitch, in SVG units
-  const SIDE = 64;     // a place's square
+  const SIDE = 68;     // a place's square
   const MARGIN = 24;
+  const PAD = 2;       // between a square's edge and its contents
+  const OFFSET = 0.2;  // a stacked item's offset, as a fraction of its size
 
   export function colorOf(problem: Problem, obj: string): string {
     let i = problem.trucks.indexOf(obj);
@@ -57,18 +79,62 @@ namespace Viz {
     return { x: cx + dx * t, y: cy + dy * t };
   }
 
-  /** N boxes of width W x H stacked in REGION, each further one offset up and
-   *  right by D, the stack kept inside the region (shrinking the boxes if it
-   *  has to).  Returns each box's top-left corner and the size used. */
-  function stack(n: number, region: { x: number; y: number; w: number; h: number }, w: number, h: number, d: number) {
-    const scale = Math.min(1, (region.w - (n - 1) * d) / w, (region.h - (n - 1) * d) / h);
-    const bw = w * Math.max(scale, 0.4);
-    const bh = h * Math.max(scale, 0.4);
+  interface Box { x: number; y: number; w: number; h: number }
+
+  /** N square items stacked in REGION as large as fits, each further one offset
+   *  up and to the right by OFFSET of its size; the stack is centered across the
+   *  region and sits on its bottom.  Each item's top-left corner and the size. */
+  export function stack(n: number, region: Box): { boxes: { x: number; y: number }[]; size: number } {
+    const k = 1 + OFFSET * (n - 1);
+    const size = Math.min(region.w, region.h) / k;
+    const d = size * OFFSET;
+    const span = size * k;
+    const x0 = region.x + (region.w - span) / 2;
+    const y0 = region.y + region.h - size;
     const boxes: { x: number; y: number }[] = [];
-    for (let k = 0; k < n; k++) {
-      boxes.push({ x: region.x + k * d, y: region.y + region.h - bh - k * d });
+    for (let i = 0; i < n; i++) boxes.push({ x: x0 + i * d, y: y0 - i * d });
+    return { boxes, size };
+  }
+
+  /** The parts of a square's inner area given to each kind present. */
+  export function regions(inner: Box, goals: boolean, packages: boolean, vehicles: boolean) {
+    const out: { goals?: Box; packages?: Box; vehicles?: Box } = {};
+    const top = goals || packages;
+    const topH = vehicles && top ? inner.h * 0.45 : inner.h;
+    const topBox: Box = { x: inner.x, y: inner.y, w: inner.w, h: topH };
+    if (vehicles) out.vehicles = top ? { x: inner.x, y: inner.y + topH, w: inner.w, h: inner.h - topH } : inner;
+    if (goals && packages) {
+      out.goals = { x: topBox.x, y: topBox.y, w: topBox.w / 2, h: topBox.h };
+      out.packages = { x: topBox.x + topBox.w / 2, y: topBox.y, w: topBox.w / 2, h: topBox.h };
+    } else if (goals) {
+      out.goals = topBox;
+    } else if (packages) {
+      out.packages = topBox;
     }
-    return { boxes, w: bw, h: bh };
+    return out;
+  }
+
+  /** An icon of KIND at (X, Y), SIZE square, in COLOR, with a haloed label. */
+  function icon(kind: keyof typeof ICONS, cls: string, x: number, y: number, size: number, color: string,
+                label: string, title: string, extra = ""): string {
+    const ic = ICONS[kind];
+    const u = size / 24;
+    const fs = Math.max(size * 0.3, 5);
+    const lx = x + ic.label.x * u;
+    const ly = y + ic.label.y * u;
+    // the package icon is line art, so its label sits on a solid tag; the
+    // vehicles' labels sit on their solid bodies, haloed in their color
+    const tag = kind === "package"
+      ? `<rect class="tag" x="${f(lx - fs * 0.62 * label.length / 2 - fs * 0.25)}" y="${f(ly - fs * 0.62)}" ` +
+        `width="${f(fs * 0.62 * label.length + fs * 0.5)}" height="${f(fs * 1.24)}" rx="${f(fs * 0.3)}" fill="${color}"/>`
+      : "";
+    return `<g class="${cls}" data-box="${f(x)} ${f(y)} ${f(size)}">` +
+      `<svg x="${f(x)}" y="${f(y)}" width="${f(size)}" height="${f(size)}" viewBox="0 0 24 24">` +
+      `<path d="${ic.d}" fill="${color}"/></svg>` + tag +
+      `<text class="label" x="${f(lx)}" y="${f(ly)}" font-size="${f(fs)}" ` +
+      `stroke="${color}" stroke-width="${f(fs * 0.28)}">${esc(label)}</text>` +
+      extra +
+      `<title>${esc(title)}</title></g>`;
   }
 
   export interface RenderOptions {
@@ -153,64 +219,60 @@ namespace Viz {
       out.push(`<rect class="square${airport ? " airport" : ""}" x="${f(c.x)}" y="${f(c.y)}" width="${SIDE}" height="${SIDE}">` +
                `<title>${esc(p)}${airport ? " (airport)" : ""}</title></rect>`);
       if (airport) {
-        out.push(`<text class="airport-mark" x="${f(c.x + SIDE / 2)}" y="${f(c.y + 9)}">✈</text>`);
+        out.push(`<text class="airport-mark" x="${f(c.x + SIDE - 7)}" y="${f(c.y + 8)}">✈</text>`);
       }
-      const pad = 3;
-      const half = SIDE / 2;
-
-      // goals: top-left quarter
       const goals = goalsAt.get(p) ?? [];
-      if (goals.length > 0) {
-        const s = stack(goals.length, { x: c.x + pad, y: c.y + pad, w: half - pad - 1, h: half - pad - 1 }, 22, 22, 4);
-        goals.forEach((g, k) => {
+      const pkgs = packagesAt.get(p) ?? [];
+      const vs = vehiclesAt.get(p) ?? [];
+      const inner: Box = { x: c.x + PAD, y: c.y + PAD, w: SIDE - 2 * PAD, h: SIDE - 2 * PAD };
+      const reg = regions(inner, goals.length > 0, pkgs.length > 0, vs.length > 0);
+
+      if (reg.goals) {
+        const s = stack(goals.length, reg.goals);
+        const g = s.size * 0.86; // a goal box sits inside its slot, its dashes clear of the next
+        goals.forEach((lit, k) => {
           const b = s.boxes[k];
-          const done = literalHolds(g, state) === true;
-          const col = colorOf(problem, g.args[0]);
-          out.push(`<g class="goal${done ? " achieved" : ""}">` +
-            `<rect x="${f(b.x)}" y="${f(b.y)}" width="${f(s.w)}" height="${f(s.h)}" rx="2" stroke="${col}" ` +
-            `fill="${done ? col : "var(--goal-fill)"}"/>` +
-            `<text x="${f(b.x + s.w / 2)}" y="${f(b.y + s.h / 2)}" fill="${done ? "#fff" : col}" ` +
-            `font-size="${f(s.h * 0.5)}">${esc(g.label)}</text>` +
-            `<title>${esc(g.label)}: ${esc(g.text)}${done ? " (achieved)" : ""}</title></g>`);
+          const x = b.x + (s.size - g) / 2;
+          const y = b.y + (s.size - g) / 2;
+          const done = literalHolds(lit, state) === true;
+          const col = colorOf(problem, lit.args[0]);
+          const fs = Math.max(g * 0.36, 5);
+          out.push(`<g class="goal${done ? " achieved" : ""}" data-box="${f(x)} ${f(y)} ${f(g)}">` +
+            `<rect x="${f(x)}" y="${f(y)}" width="${f(g)}" height="${f(g)}" rx="${f(g * 0.12)}" stroke="${col}" ` +
+            `stroke-width="${f(Math.max(g * 0.06, 1))}" fill="${done ? col : "var(--goal-fill)"}"/>` +
+            `<text x="${f(x + g / 2)}" y="${f(y + g / 2)}" fill="${done ? "#fff" : col}" ` +
+            `font-size="${f(fs)}">${esc(lit.label)}</text>` +
+            `<title>${esc(lit.label)}: ${esc(lit.text)}${done ? " (achieved)" : ""}</title></g>`);
         });
       }
 
-      // packages on the ground: top-right quarter
-      const pkgs = packagesAt.get(p) ?? [];
-      if (pkgs.length > 0) {
-        const s = stack(pkgs.length, { x: c.x + half + 1, y: c.y + pad, w: half - pad - 1, h: half - pad - 1 }, 22, 22, 4);
+      if (reg.packages) {
+        const s = stack(pkgs.length, reg.packages);
         pkgs.forEach((k, i) => {
           const b = s.boxes[i];
-          out.push(packageBox(problem, k, b.x, b.y, s.w, s.h, `${k} at ${p}`));
+          out.push(icon("package", "package", b.x, b.y, s.size, colorOf(problem, k),
+                        problem.labels.get(k) ?? k, `${k} at ${p}`));
         });
       }
 
-      // vehicles: the bottom half, each with its cargo as badges
-      const vs = vehiclesAt.get(p) ?? [];
-      if (vs.length > 0) {
-        const s = stack(vs.length, { x: c.x + pad, y: c.y + half + 1, w: SIDE - 2 * pad, h: half - pad - 1 }, 56, 24, 5);
+      if (reg.vehicles) {
+        const s = stack(vs.length, reg.vehicles);
         vs.forEach((v, i) => {
           const b = s.boxes[i];
-          const col = colorOf(problem, v);
-          const label = problem.labels.get(v) ?? v;
           const load = cargo.get(v) ?? [];
-          const plane = problem.airplanes.includes(v);
-          const labelW = s.w * 0.4;
-          out.push(`<g class="vehicle">` +
-            `<rect x="${f(b.x)}" y="${f(b.y)}" width="${f(s.w)}" height="${f(s.h)}" rx="${plane ? f(s.h / 2) : 3}" fill="${col}"/>` +
-            `<text x="${f(b.x + labelW / 2 + 1)}" y="${f(b.y + s.h / 2)}" fill="#fff" font-size="${f(s.h * 0.5)}">${esc(label)}</text>` +
-            `<title>${esc(v)} at ${esc(p)}${load.length ? ", carrying " + load.map(esc).join(", ") : ""}</title></g>`);
-          // cargo: badges in a row right of the label, inside the vehicle; when
-          // they do not fit they overlap, each further one up and to the right
-          const room = s.w - labelW - 3;
-          const bs = Math.min(s.h - 4, 15);
-          const step = load.length > 1 ? Math.min(bs + 1, (room - bs) / (load.length - 1)) : 0;
-          const lift = step < bs ? Math.min(2, (s.h - bs) / 2) : 0;
-          load.forEach((k, j) => {
-            const bx = b.x + labelW + 1 + j * step;
-            const by = b.y + (s.h - bs) / 2 - j * lift;
-            out.push(packageBox(problem, k, bx, by, bs, bs, `${k} in ${v}`, "badge"));
-          });
+          // cargo badges over the vehicle's top right, overlapping up and right
+          let badges = "";
+          if (load.length > 0) {
+            const bs = s.size * 0.42;
+            const step = bs * OFFSET * 1.5;
+            load.forEach((k, j) => {
+              badges += icon("package", "package badge", b.x + s.size * 0.56 + j * step, b.y - bs * 0.05 - j * step,
+                             bs, colorOf(problem, k), problem.labels.get(k) ?? k, `${k} in ${v}`);
+            });
+          }
+          const kind = problem.airplanes.includes(v) ? "airplane" : "truck";
+          out.push(icon(kind, "vehicle", b.x, b.y, s.size, colorOf(problem, v), problem.labels.get(v) ?? v,
+                        `${v} at ${p}${load.length ? ", carrying " + load.join(", ") : ""}`, badges));
         });
       }
       out.push(`</g>`);
@@ -218,15 +280,5 @@ namespace Viz {
     out.push(`</g>`);
     out.push(`</svg>`);
     return out.join("\n");
-  }
-
-  function packageBox(problem: Problem, k: string, x: number, y: number, w: number, h: number,
-                      title: string, extra = ""): string {
-    const col = colorOf(problem, k);
-    const label = problem.labels.get(k) ?? k;
-    return `<g class="package${extra ? " " + extra : ""}">` +
-      `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="2" fill="${col}"/>` +
-      `<text x="${f(x + w / 2)}" y="${f(y + h / 2)}" fill="#fff" font-size="${f(h * 0.5)}">${esc(label)}</text>` +
-      `<title>${esc(title)}</title></g>`;
   }
 }

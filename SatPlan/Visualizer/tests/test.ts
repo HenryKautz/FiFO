@@ -173,16 +173,41 @@ namespace VizTest {
     check("6x6 map: 2 trucks, 4 packages, 12 goal tokens",
           count(svg, /class="vehicle"/g) === 2 && count(svg, /class="package"/g) === 4 && count(svg, /class="goal/g) === 12);
     check("6x6 map: scales with its container (viewBox, no fixed size)",
-          /viewBox="0 0 \d+ \d+"/.test(svg) && !/<svg[^>]* width=/.test(svg));
+          /^<svg [^>]*viewBox="0 0 \d+ \d+"/.test(svg) && !/^<svg [^>]* width=/.test(svg));
+    // what a place's square holds: [kind, x, y, size] of each item, in order
+    const items = (svg: string, place: string) => {
+      const m = new RegExp(`<g class="place" data-place="${place}">([\\s\\S]*?)\\n</g>`).exec(svg);
+      return [...(m ? m[1] : "").matchAll(/<g class="([a-z ]+)" data-box="([\d.]+) ([\d.]+) ([\d.]+)"/g)]
+        .map((x) => ({ kind: x[1], x: Number(x[2]), y: Number(x[3]), size: Number(x[4]) }));
+    };
+    const at = (pairs: [string, string][], inside: [string, string][] = []): Viz.State =>
+      ({ at: new Map(pairs), inside: new Map(inside) });
     // two trucks in one place: both drawn, the second offset up and right
-    const both: Viz.State = { at: new Map([["truck1", "p1-1"], ["truck2", "p1-1"]]), inside: new Map([["pkg1", "truck2"]]) };
-    const s2 = Viz.renderMap(p6, both);
-    const place = /<g class="place" data-place="p1-1">([\s\S]*?)<\/g>\n<g class="place"/.exec(s2)![1];
-    const rects = [...place.matchAll(/<g class="vehicle"><rect x="([\d.]+)" y="([\d.]+)"/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    const s2 = Viz.renderMap(p6, at([["truck1", "p1-1"], ["truck2", "p1-1"]], [["pkg1", "truck2"]]));
+    const vs = items(s2, "p1-1").filter((i) => i.kind === "vehicle");
     check("two trucks in one place overlap, the second up and to the right",
-          rects.length === 2 && rects[1][0] > rects[0][0] && rects[1][1] < rects[0][1], JSON.stringify(rects));
+          vs.length === 2 && vs[1].x > vs[0].x && vs[1].y < vs[0].y && vs[1].x < vs[0].x + vs[0].size,
+          JSON.stringify(vs));
     check("a package in a truck is a badge, not on the ground",
-          count(s2, /class="package badge"/g) === 1 && /<title>pkg1 in truck2<\/title>/.test(s2));
+          count(s2, /class="package badge"/g) === 1 && /<title>pkg1 in truck2<\/title>/.test(s2) &&
+          count(s2, /class="package"/g) === 0);
+    // icon sizes: alone a truck nearly fills the square; it shrinks to share it
+    const side = Number(/<rect class="square" x="[\d.]+" y="[\d.]+" width="([\d.]+)"/.exec(s2)![1]);
+    const alone = items(Viz.renderMap(p6, at([["truck1", "p1-1"]])), "p1-1");
+    const shared = items(Viz.renderMap(p6, at([["truck1", "p2-4"], ["pkg1", "p2-4"]])), "p2-4");
+    check("a truck alone in its square nearly fills it",
+          alone.length === 1 && alone[0].size >= 0.9 * side, `${alone[0]?.size} of ${side}`);
+    check("with a package there, the truck shrinks and the package fits beside it",
+          shared.length === 2 && shared.every((i) => i.size < alone[0].size) &&
+          shared.every((i) => i.size >= 0.35 * side), JSON.stringify(shared));
+    check("two trucks are each smaller than one", vs.every((v) => v.size < alone[0].size));
+    const inside = (i: { x: number; y: number; size: number }, sq: { x: number; y: number }) =>
+      i.x >= sq.x - 0.01 && i.y >= sq.y - 0.01 && i.x + i.size <= sq.x + side + 0.01 && i.y + i.size <= sq.y + side + 0.01;
+    const crowd = Viz.renderMap(p6, at([["truck1", "p4-5"], ["truck2", "p4-5"], ["pkg1", "p4-5"], ["pkg2", "p4-5"], ["pkg3", "p4-5"]]));
+    const sq = /data-place="p4-5">\n<rect class="square" x="([\d.]+)" y="([\d.]+)"/.exec(crowd)!;
+    const all = items(crowd, "p4-5");
+    check("a crowded square (2 goals, 3 packages, 2 trucks) keeps every item inside it",
+          all.length === 7 && all.every((i) => inside(i, { x: Number(sq[1]), y: Number(sq[2]) })), JSON.stringify(all));
     const end = planA.states[planA.states.length - 1];
     const s5 = Viz.renderMap(p5, end);
     check("goals achieved at the end are drawn as achieved", count(s5, /class="goal achieved"/g) === 3);
@@ -193,6 +218,89 @@ namespace VizTest {
           Viz.colorOf(p6, "truck1") !== Viz.colorOf(p6, "truck2") &&
           new RegExp(`stroke="${Viz.colorOf(p6, "pkg2")}"[^>]*/><text[^>]*>G4<`).test(
             Viz.renderMap(p6, { at: new Map(p6.initAt), inside: new Map() })));
+  }
+
+  console.log("=== utility ===");
+  {
+    // The oracle: FiFO's MaxSAT objective is the weight of the violated
+    // preferences plus the plan's total cost, and the answer lists the violated
+    // ones (PREF-VIOLATED).
+    const objective = (t: string) => Number(/\(\*OBJECTIVE\* (\d+)\)/.exec(t)![1]);
+    const violated = (t: string) => new Set((t.match(/^\(PREF-VIOLATED (\S+)\)$/gm) ?? [])
+      .map((l: string) => /\(PREF-VIOLATED (\S+)\)/.exec(l)![1].toLowerCase()));
+    const handling = Viz.parseDomain(read("clara-logistics-handling.pddl"));
+    const plain = Viz.parseDomain(read("clara-logistics.pddl"));
+    const a6text = read("grid6x6-1.answer");
+    const a6 = Viz.parsePlan(a6text, p6);
+    const end6 = a6.steps.length;
+    const u6 = Viz.utilityAt(p6, handling, a6, end6);
+    const totalW = p6.preferences.reduce((s, p) => s + p.weight, 0);
+    const v6 = violated(a6text);
+    const achievedW = p6.preferences.filter((p) => !v6.has(p.name)).reduce((s, p) => s + p.weight, 0);
+    check(`6x6: ${p6.preferences.length} preferences read with their weights (${count(t6, /\(preference /g)} in the file)`,
+          p6.preferences.length === count(t6, /\(preference /g) && p6.preferences.every((p) => p.weight === 8));
+    check("6x6: Goals at the end = the weight of the preferences FiFO did not report violated",
+          u6.goals === achievedW && v6.size > 0, `${u6.goals} vs ${achievedW}`);
+    check(`6x6: unachieved weight + Costs = FiFO's objective (${objective(a6text)})`,
+          totalW - (u6.goals ?? NaN) + (u6.costs ?? NaN) === objective(a6text) && u6.costsExact,
+          `${totalW} - ${u6.goals} + ${u6.costs}`);
+    check("6x6: Total = Goals - Costs", u6.total === (u6.goals ?? 0) - (u6.costs ?? 0));
+    const run = a6.states.map((_, k) => Viz.utilityAt(p6, handling, a6, k).costs ?? NaN);
+    check("costs run from 0 at step 0 and never fall",
+          run[0] === 0 && run.every((c, k) => k === 0 || c >= run[k - 1]), JSON.stringify(run));
+    const load = { name: "load", args: ["pkg1", "truck2", "p2-4"], text: "(load pkg1 truck2 p2-4)" };
+    const drive = { name: "drive", args: ["truck2", "p2-3", "p2-4"], text: "(drive truck2 p2-3 p2-4)" };
+    check("the domain prices actions: a load 1 and a drive (drive-cost) = 2 in the handling domain, a load 0 in the plain one",
+          Viz.actionCost(p6, handling, load).cost === 1 && Viz.actionCost(p6, handling, drive).cost === 2 &&
+          Viz.actionCost(p6, plain, load).cost === 0 && Viz.actionCost(p6, plain, load).exact);
+    const est = Viz.utilityAt(p6, undefined, a6, end6);
+    check("without a domain, costs are estimated from the problem's drive-cost (and say so)",
+          est.costs === 2 * a6.steps.flat().filter((a) => a.name === "drive").length && !est.costsExact);
+
+    const a5text = read("grid5x5-air.answer");
+    const u5 = Viz.utilityAt(p5, plain, planA, planA.steps.length);
+    check(`5x5: no preferences, so no Goals utility; Costs = FiFO's objective (${objective(a5text)})`,
+          u5.goals === undefined && u5.costs === objective(a5text) && u5.total === -objective(a5text),
+          `${u5.goals} ${u5.costs}`);
+    const plainList = Viz.parsePlan(read("grid5x5-air.plan"), p5);
+    check("the same plan as a plain list has the same cost",
+          Viz.utilityAt(p5, plain, plainList, plainList.steps.length).costs === u5.costs);
+
+    // the standard PDDL3 forms: a weight in the metric, a cost from a function of the action's arguments
+    const pm = Viz.parseProblem(`(define (problem m) (:domain d)
+      (:objects a b c - place t - truck k - package)
+      (:init (at t a) (at k a) (road a b) (road b a) (road b c) (= (len a b) 7) (= (len b c) 3))
+      (:goal (and (at k c) (preference p1 (at k c)) (preference p2 (at t b))))
+      (:metric minimize (+ (total-cost) (* 5 (is-violated p1)) (* (is-violated p2) 2))))`);
+    const dm = Viz.parseDomain(`(define (domain d) (:requirements :action-costs)
+      (:action drive :parameters (?t - truck ?from ?to - place)
+         :effect (and (at ?t ?to) (increase (total-cost) (len ?from ?to)))))`);
+    const pmPlan = Viz.parsePlan("(drive t a b)\n(drive t b c)\n", pm);
+    const um = Viz.utilityAt(pm, dm, pmPlan, 1);
+    check("weights from the metric's (* w (is-violated p)); a cost (len ?from ?to) from :init",
+          pm.preferences.map((p) => `${p.name}=${p.weight}`).join() === "p1=5,p2=2" &&
+          um.goals === 2 && um.costs === 7 && Viz.utilityAt(pm, dm, pmPlan, 2).costs === 10,
+          `${pm.preferences.map((p) => p.name + "=" + p.weight)} ${um.goals} ${um.costs}`);
+  }
+
+  console.log("=== the Examples menu (examples.js) ===");
+  {
+    const js = fs.readFileSync(path.join(process.argv[2], "examples.js"), "utf8");
+    const exs = new Function(js + "\nreturn VIZ_EXAMPLES;")() as
+      { problem: { file: string; text: string }; domain?: { file: string };
+        solutions: { file: string; text: string }[] }[];
+    const pddl = fs.readdirSync(EX).filter((f: string) => f.endsWith(".pddl") && !Viz.isDomainText(read(f))).sort();
+    check(`one entry per example problem (${pddl.length}), domains left out`,
+          exs.map((e) => e.problem.file).join() === pddl.join());
+    check("each example has the domain its problem names",
+          exs.find((e) => e.problem.file === "grid6x6-1.pddl")!.domain?.file === "clara-logistics-handling.pddl" &&
+          exs.find((e) => e.problem.file === "grid5x5-air.pddl")!.domain?.file === "clara-logistics.pddl");
+    const air = exs.find((e) => e.problem.file === "grid5x5-air.pddl");
+    check("grid5x5-air has its three solutions; grid6x6-1 its one",
+          !!air && air.solutions.map((s) => s.file).join() === "grid5x5-air-at.answer,grid5x5-air.answer,grid5x5-air.plan" &&
+          exs.find((e) => e.problem.file === "grid6x6-1.pddl")!.solutions.map((s) => s.file).join() === "grid6x6-1.answer");
+    check("each bundled file is the file's exact text",
+          exs.every((e) => e.problem.text === read(e.problem.file) && e.solutions.every((s) => s.text === read(s.file))));
   }
 
   console.log(`\n=== summary: ${passed} passed, ${failed} failed ===`);

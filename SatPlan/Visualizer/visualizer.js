@@ -107,7 +107,7 @@ var Viz;
     }
     /** The hard goal's lines: preferences dropped, nested ANDs flattened, each
      *  conjunct an OR (one line of disjuncts) or a single literal (a line of one). */
-    function goalLines(goal, warnings) {
+    function goalLines(goal, warnings, prefs) {
         if (goal === undefined)
             return [];
         const conjuncts = [];
@@ -115,7 +115,7 @@ var Viz;
             if (Viz.isList(g) && g[0] === "and")
                 g.slice(1).forEach(flatten);
             else if (Viz.isList(g) && g[0] === "preference")
-                return;
+                prefs.push(g);
             else
                 conjuncts.push(g);
         })(goal);
@@ -180,7 +180,12 @@ var Viz;
         const initIn = new Map();
         const roadSet = new Set();
         const roadPairs = [];
+        const numbers = new Map();
         for (const f of ((_c = section(def, ":init")) !== null && _c !== void 0 ? _c : []).slice(1)) {
+            if (Viz.isList(f) && f[0] === "=" && Viz.isList(f[1]) && f.length === 3 && !Number.isNaN(Number(f[2]))) {
+                numbers.set(Viz.show(f[1]), Number(f[2]));
+                continue;
+            }
             if (!Viz.isList(f) || f.length !== 3 || Viz.isList(f[1]) || Viz.isList(f[2]))
                 continue;
             const [p, a, b] = f;
@@ -230,7 +235,8 @@ var Viz;
         const goalForm = section(def, ":goal");
         const literalByText = new Map();
         const goalLiterals = [];
-        const goal = goalLines(goalForm === null || goalForm === void 0 ? void 0 : goalForm[1], warnings).map((line) => line.map((x) => {
+        const prefForms = [];
+        const goal = goalLines(goalForm === null || goalForm === void 0 ? void 0 : goalForm[1], warnings, prefForms).map((line) => line.map((x) => {
             let negated = false;
             let atom = x;
             if (Viz.isList(atom) && atom[0] === "not") {
@@ -247,6 +253,38 @@ var Viz;
             }
             return lit;
         }));
+        // preferences: a weight written in the preference, else from the metric
+        const metricWeights = new Map();
+        const metric = section(def, ":metric");
+        (function walk(x, scale) {
+            var _a;
+            if (!Viz.isList(x))
+                return;
+            if (x[0] === "is-violated" && !Viz.isList(x[1])) {
+                metricWeights.set(x[1], ((_a = metricWeights.get(x[1])) !== null && _a !== void 0 ? _a : 0) + scale);
+            }
+            else if (x[0] === "*" && x.length === 3) {
+                const [a, b] = [x[1], x[2]];
+                if (!Viz.isList(a) && !Number.isNaN(Number(a)))
+                    walk(b, scale * Number(a));
+                else if (!Viz.isList(b) && !Number.isNaN(Number(b)))
+                    walk(a, scale * Number(b));
+            }
+            else if (x[0] === "+") {
+                x.slice(1).forEach((y) => walk(y, scale));
+            }
+        })(metric === null || metric === void 0 ? void 0 : metric[2], 1);
+        const preferences = [];
+        for (const pf of prefForms) {
+            // (preference NAME GD [WEIGHT]) or (preference GD [WEIGHT]) unnamed
+            const named = pf.length >= 3 && !Viz.isList(pf[1]);
+            const name = named ? pf[1] : "";
+            const formula = named ? pf[2] : pf[1];
+            const w = named ? pf[3] : pf[2];
+            const weight = w !== undefined && !Viz.isList(w) && !Number.isNaN(Number(w)) ? Number(w) : metricWeights.get(name);
+            if (formula !== undefined && weight !== undefined)
+                preferences.push({ name, formula, weight });
+        }
         // layout
         const layout = new Map();
         const cell = /^p(\d+)-(\d+)$/;
@@ -276,10 +314,100 @@ var Viz;
         }
         return {
             name, domain, kinds, places, airports, trucks, airplanes, packages, labels, roads,
-            initAt, initIn, goal, goalLiterals, layout, rows, cols, warnings,
+            initAt, initIn, goal, goalLiterals, preferences, numbers, layout, rows, cols, warnings,
         };
     }
     Viz.parseProblem = parseProblem;
+})(Viz || (Viz = {}));
+// What the visualizer needs from a PDDL domain: each action's parameters and
+// the amount its effect adds to (total-cost), so a solution's running cost can
+// be shown.  The amount is a number or a function term such as (drive-cost) or
+// (road-length ?from ?to), whose value the problem's :init gives.
+var Viz;
+(function (Viz) {
+    /** Parameter names of a typed list "?a ?b - t ?c - u". */
+    function paramNames(list) {
+        if (!Viz.isList(list))
+            return [];
+        return list.filter((x) => !Viz.isList(x) && x.startsWith("?"));
+    }
+    /** Every (increase (total-cost) X) anywhere in EFFECT, through and/when/forall. */
+    function costTerms(effect, out = []) {
+        if (!Viz.isList(effect))
+            return out;
+        if (effect[0] === "increase" && Viz.isList(effect[1]) && effect[1][0] === "total-cost" && effect[2] !== undefined) {
+            out.push(effect[2]);
+            return out;
+        }
+        for (const x of effect)
+            costTerms(x, out);
+        return out;
+    }
+    function isDomainText(text) {
+        return /\(\s*define\s*\(\s*domain\b/i.test(text.replace(/;[^\n]*/g, ""));
+    }
+    Viz.isDomainText = isDomainText;
+    function parseDomain(text) {
+        const forms = Viz.readAll(text);
+        const def = forms.find((f) => Viz.isList(f) && f[0] === "define");
+        if (!def || !Viz.isList(def[1]) || def[1][0] !== "domain") {
+            throw new Error("no (define (domain ...)) form: is this a PDDL domain file?");
+        }
+        const actions = new Map();
+        for (const x of def.slice(2)) {
+            if (!Viz.isList(x) || x[0] !== ":action")
+                continue;
+            const name = String(x[1]);
+            let params = [];
+            let effect;
+            for (let i = 2; i < x.length - 1; i++) {
+                if (x[i] === ":parameters")
+                    params = paramNames(x[i + 1]);
+                if (x[i] === ":effect")
+                    effect = x[i + 1];
+            }
+            actions.set(name, { name, params, costs: costTerms(effect) });
+        }
+        return { name: String(def[1][1]), actions };
+    }
+    Viz.parseDomain = parseDomain;
+    /** The cost of ACTION: from DOMAIN when given; otherwise guessed from the
+     *  problem's cost functions by name (drive-cost for a drive, fly-cost for a
+     *  fly, nothing for anything else). */
+    function actionCost(problem, domain, action) {
+        if (!domain) {
+            for (const [fn, v] of problem.numbers) {
+                const m = /^\(([a-z0-9_-]+)-cost\)$/.exec(fn);
+                if (m && action.name.includes(m[1]))
+                    return { cost: v, exact: false };
+            }
+            return { cost: 0, exact: false };
+        }
+        const da = domain.actions.get(action.name);
+        if (!da)
+            return { cost: 0, exact: false };
+        const bind = new Map(da.params.map((p, i) => [p, action.args[i]]));
+        let cost = 0;
+        let exact = true;
+        for (const term of da.costs) {
+            if (!Viz.isList(term)) {
+                const n = Number(term);
+                if (Number.isNaN(n))
+                    exact = false;
+                else
+                    cost += n;
+                continue;
+            }
+            const key = Viz.show(term.map((x) => (!Viz.isList(x) && bind.has(x) ? bind.get(x) : x)));
+            const v = problem.numbers.get(key);
+            if (v === undefined)
+                exact = false;
+            else
+                cost += v;
+        }
+        return { cost, exact };
+    }
+    Viz.actionCost = actionCost;
 })(Viz || (Viz = {}));
 // Solutions, in three formats, turned into one state per time step.
 //
@@ -489,6 +617,62 @@ var Viz;
     function dedupe(xs) {
         return [...new Set(xs)];
     }
+    /** Whether formula F (at/in literals under and/or/not) holds in STATE;
+     *  undefined when it mentions anything the visualizer does not track. */
+    function formulaHolds(f, state) {
+        if (!Viz.isList(f))
+            return undefined;
+        const parts = f.slice(1);
+        if (f[0] === "and" || f[0] === "or") {
+            const vs = parts.map((g) => formulaHolds(g, state));
+            if (f[0] === "and")
+                return vs.includes(false) ? false : vs.includes(undefined) ? undefined : true;
+            return vs.includes(true) ? true : vs.includes(undefined) ? undefined : false;
+        }
+        if (f[0] === "not") {
+            const v = formulaHolds(f[1], state);
+            return v === undefined ? undefined : !v;
+        }
+        if ((f[0] === "at" || f[0] === "in") && f.length === 3 && !Viz.isList(f[1]) && !Viz.isList(f[2])) {
+            return f[0] === "at" ? state.at.get(f[1]) === f[2] : state.inside.get(f[1]) === f[2];
+        }
+        return undefined;
+    }
+    Viz.formulaHolds = formulaHolds;
+    /** The running utility at STEP: achieved preference weights, minus the cost
+     *  of the actions taken before STEP. */
+    function utilityAt(problem, domain, plan, step) {
+        const state = plan ? plan.states[step] : { at: new Map(problem.initAt), inside: new Map(problem.initIn) };
+        let goals;
+        let undecided = 0;
+        if (problem.preferences.length > 0) {
+            goals = 0;
+            for (const p of problem.preferences) {
+                const v = formulaHolds(p.formula, state);
+                if (v === true)
+                    goals += p.weight;
+                else if (v === undefined)
+                    undecided++;
+            }
+        }
+        const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0)
+            : [...problem.numbers.keys()].some((k) => /-cost\)$/.test(k) && k !== "(total-cost)");
+        let costs;
+        let costsExact = !!domain;
+        if (hasCosts) {
+            costs = 0;
+            for (let k = 0; plan && k < step; k++) {
+                for (const a of plan.steps[k]) {
+                    const c = Viz.actionCost(problem, domain, a);
+                    costs += c.cost;
+                    if (!c.exact)
+                        costsExact = false;
+                }
+            }
+        }
+        return { goals, costs, costsExact, total: (goals !== null && goals !== void 0 ? goals : 0) - (costs !== null && costs !== void 0 ? costs : 0), undecided };
+    }
+    Viz.utilityAt = utilityAt;
     /** Whether goal literal LIT holds in STATE; undefined for a predicate the
      *  visualizer does not track. */
     function literalHolds(lit, state) {
@@ -505,21 +689,42 @@ var Viz;
 })(Viz || (Viz = {}));
 // The map as SVG markup: places as squares on the grid, roads as lines with an
 // arrowhead at each end they can be driven towards, and in each square its
-// trucks, packages and goal destinations.
+// trucks, airplanes, packages and goal destinations.
 //
-// Inside a place's square each kind has its own corner so none hides another:
-// goals top left, packages top right, vehicles along the bottom.  Several of one
-// kind in one place overlap, each further one offset up and to the right so its
-// edge shows.  A package in a vehicle is a badge on that vehicle.  The SVG has a
-// viewBox and no fixed size, so it scales with its container.
+// A square's contents fill it: one kind alone (say, a truck) gets the whole
+// square; vehicles share it with the others by taking the bottom part; goals
+// and packages split what is left side by side.  Several of one kind overlap,
+// each further one offset up and to the right so its edge shows, and they shrink
+// as there are more.  A package in a vehicle is a small badge on that vehicle.
+// The SVG has a viewBox and no fixed size, so it scales with its container.
+//
+// Icons: Material Design Icons (https://pictogrammers.com/library/mdi/),
+// Apache License 2.0 -- "truck", "airplane", "package-variant-closed".
 var Viz;
 (function (Viz) {
     const TRUCK_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#0891b2", "#ca8a04", "#db2777", "#475569"];
     const PACKAGE_COLORS = ["#ea580c", "#0d9488", "#c026d3", "#65a30d", "#4f46e5", "#e11d48", "#0284c7", "#a16207",
         "#7c3aed", "#059669", "#be123c", "#1d4ed8"];
+    /** Icon paths in a 24 x 24 box, and where on the icon its label sits. */
+    const ICONS = {
+        truck: {
+            d: "M18,18.5A1.5,1.5 0 0,1 16.5,17A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 19.5,17A1.5,1.5 0 0,1 18,18.5M19.5,9.5L21.46,12H17V9.5M6,18.5A1.5,1.5 0 0,1 4.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,17A1.5,1.5 0 0,1 6,18.5M20,8H17V4H3C1.89,4 1,4.89 1,6V17H3A3,3 0 0,0 6,20A3,3 0 0,0 9,17H15A3,3 0 0,0 18,20A3,3 0 0,0 21,17H23V12L20,8Z",
+            label: { x: 8.5, y: 10.5 },
+        },
+        airplane: {
+            d: "M20.56 3.91C21.15 4.5 21.15 5.45 20.56 6.03L16.67 9.92L18.79 19.11L17.38 20.53L13.5 13.1L9.6 17L9.96 19.47L8.89 20.53L7.13 17.35L3.94 15.58L5 14.5L7.5 14.87L11.37 11L3.94 7.09L5.36 5.68L14.55 7.8L18.44 3.91C19 3.33 20 3.33 20.56 3.91Z",
+            label: { x: 12, y: 12.5 },
+        },
+        package: {
+            d: "M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L10.11,5.22L16,8.61L17.96,7.5L12,4.15M6.04,7.5L12,10.85L13.96,9.75L8.08,6.35L6.04,7.5M5,15.91L11,19.29V12.58L5,9.21V15.91M19,15.91V9.21L13,12.58V19.29L19,15.91Z",
+            label: { x: 12, y: 13.5 },
+        },
+    };
     const SPACING = 100; // grid pitch, in SVG units
-    const SIDE = 64; // a place's square
+    const SIDE = 68; // a place's square
     const MARGIN = 24;
+    const PAD = 2; // between a square's edge and its contents
+    const OFFSET = 0.2; // a stacked item's offset, as a fraction of its size
     function colorOf(problem, obj) {
         let i = problem.trucks.indexOf(obj);
         if (i >= 0)
@@ -559,18 +764,63 @@ var Viz;
         const t = half / Math.max(Math.abs(dx), Math.abs(dy));
         return { x: cx + dx * t, y: cy + dy * t };
     }
-    /** N boxes of width W x H stacked in REGION, each further one offset up and
-     *  right by D, the stack kept inside the region (shrinking the boxes if it
-     *  has to).  Returns each box's top-left corner and the size used. */
-    function stack(n, region, w, h, d) {
-        const scale = Math.min(1, (region.w - (n - 1) * d) / w, (region.h - (n - 1) * d) / h);
-        const bw = w * Math.max(scale, 0.4);
-        const bh = h * Math.max(scale, 0.4);
+    /** N square items stacked in REGION as large as fits, each further one offset
+     *  up and to the right by OFFSET of its size; the stack is centered across the
+     *  region and sits on its bottom.  Each item's top-left corner and the size. */
+    function stack(n, region) {
+        const k = 1 + OFFSET * (n - 1);
+        const size = Math.min(region.w, region.h) / k;
+        const d = size * OFFSET;
+        const span = size * k;
+        const x0 = region.x + (region.w - span) / 2;
+        const y0 = region.y + region.h - size;
         const boxes = [];
-        for (let k = 0; k < n; k++) {
-            boxes.push({ x: region.x + k * d, y: region.y + region.h - bh - k * d });
+        for (let i = 0; i < n; i++)
+            boxes.push({ x: x0 + i * d, y: y0 - i * d });
+        return { boxes, size };
+    }
+    Viz.stack = stack;
+    /** The parts of a square's inner area given to each kind present. */
+    function regions(inner, goals, packages, vehicles) {
+        const out = {};
+        const top = goals || packages;
+        const topH = vehicles && top ? inner.h * 0.45 : inner.h;
+        const topBox = { x: inner.x, y: inner.y, w: inner.w, h: topH };
+        if (vehicles)
+            out.vehicles = top ? { x: inner.x, y: inner.y + topH, w: inner.w, h: inner.h - topH } : inner;
+        if (goals && packages) {
+            out.goals = { x: topBox.x, y: topBox.y, w: topBox.w / 2, h: topBox.h };
+            out.packages = { x: topBox.x + topBox.w / 2, y: topBox.y, w: topBox.w / 2, h: topBox.h };
         }
-        return { boxes, w: bw, h: bh };
+        else if (goals) {
+            out.goals = topBox;
+        }
+        else if (packages) {
+            out.packages = topBox;
+        }
+        return out;
+    }
+    Viz.regions = regions;
+    /** An icon of KIND at (X, Y), SIZE square, in COLOR, with a haloed label. */
+    function icon(kind, cls, x, y, size, color, label, title, extra = "") {
+        const ic = ICONS[kind];
+        const u = size / 24;
+        const fs = Math.max(size * 0.3, 5);
+        const lx = x + ic.label.x * u;
+        const ly = y + ic.label.y * u;
+        // the package icon is line art, so its label sits on a solid tag; the
+        // vehicles' labels sit on their solid bodies, haloed in their color
+        const tag = kind === "package"
+            ? `<rect class="tag" x="${f(lx - fs * 0.62 * label.length / 2 - fs * 0.25)}" y="${f(ly - fs * 0.62)}" ` +
+                `width="${f(fs * 0.62 * label.length + fs * 0.5)}" height="${f(fs * 1.24)}" rx="${f(fs * 0.3)}" fill="${color}"/>`
+            : "";
+        return `<g class="${cls}" data-box="${f(x)} ${f(y)} ${f(size)}">` +
+            `<svg x="${f(x)}" y="${f(y)}" width="${f(size)}" height="${f(size)}" viewBox="0 0 24 24">` +
+            `<path d="${ic.d}" fill="${color}"/></svg>` + tag +
+            `<text class="label" x="${f(lx)}" y="${f(ly)}" font-size="${f(fs)}" ` +
+            `stroke="${color}" stroke-width="${f(fs * 0.28)}">${esc(label)}</text>` +
+            extra +
+            `<title>${esc(title)}</title></g>`;
     }
     function renderMap(problem, state, opts = {}) {
         var _a, _b, _c, _d;
@@ -655,62 +905,57 @@ var Viz;
             out.push(`<rect class="square${airport ? " airport" : ""}" x="${f(c.x)}" y="${f(c.y)}" width="${SIDE}" height="${SIDE}">` +
                 `<title>${esc(p)}${airport ? " (airport)" : ""}</title></rect>`);
             if (airport) {
-                out.push(`<text class="airport-mark" x="${f(c.x + SIDE / 2)}" y="${f(c.y + 9)}">✈</text>`);
+                out.push(`<text class="airport-mark" x="${f(c.x + SIDE - 7)}" y="${f(c.y + 8)}">✈</text>`);
             }
-            const pad = 3;
-            const half = SIDE / 2;
-            // goals: top-left quarter
             const goals = (_b = goalsAt.get(p)) !== null && _b !== void 0 ? _b : [];
-            if (goals.length > 0) {
-                const s = stack(goals.length, { x: c.x + pad, y: c.y + pad, w: half - pad - 1, h: half - pad - 1 }, 22, 22, 4);
-                goals.forEach((g, k) => {
-                    const b = s.boxes[k];
-                    const done = Viz.literalHolds(g, state) === true;
-                    const col = colorOf(problem, g.args[0]);
-                    out.push(`<g class="goal${done ? " achieved" : ""}">` +
-                        `<rect x="${f(b.x)}" y="${f(b.y)}" width="${f(s.w)}" height="${f(s.h)}" rx="2" stroke="${col}" ` +
-                        `fill="${done ? col : "var(--goal-fill)"}"/>` +
-                        `<text x="${f(b.x + s.w / 2)}" y="${f(b.y + s.h / 2)}" fill="${done ? "#fff" : col}" ` +
-                        `font-size="${f(s.h * 0.5)}">${esc(g.label)}</text>` +
-                        `<title>${esc(g.label)}: ${esc(g.text)}${done ? " (achieved)" : ""}</title></g>`);
-                });
-            }
-            // packages on the ground: top-right quarter
             const pkgs = (_c = packagesAt.get(p)) !== null && _c !== void 0 ? _c : [];
-            if (pkgs.length > 0) {
-                const s = stack(pkgs.length, { x: c.x + half + 1, y: c.y + pad, w: half - pad - 1, h: half - pad - 1 }, 22, 22, 4);
-                pkgs.forEach((k, i) => {
-                    const b = s.boxes[i];
-                    out.push(packageBox(problem, k, b.x, b.y, s.w, s.h, `${k} at ${p}`));
+            const vs = (_d = vehiclesAt.get(p)) !== null && _d !== void 0 ? _d : [];
+            const inner = { x: c.x + PAD, y: c.y + PAD, w: SIDE - 2 * PAD, h: SIDE - 2 * PAD };
+            const reg = regions(inner, goals.length > 0, pkgs.length > 0, vs.length > 0);
+            if (reg.goals) {
+                const s = stack(goals.length, reg.goals);
+                const g = s.size * 0.86; // a goal box sits inside its slot, its dashes clear of the next
+                goals.forEach((lit, k) => {
+                    const b = s.boxes[k];
+                    const x = b.x + (s.size - g) / 2;
+                    const y = b.y + (s.size - g) / 2;
+                    const done = Viz.literalHolds(lit, state) === true;
+                    const col = colorOf(problem, lit.args[0]);
+                    const fs = Math.max(g * 0.36, 5);
+                    out.push(`<g class="goal${done ? " achieved" : ""}" data-box="${f(x)} ${f(y)} ${f(g)}">` +
+                        `<rect x="${f(x)}" y="${f(y)}" width="${f(g)}" height="${f(g)}" rx="${f(g * 0.12)}" stroke="${col}" ` +
+                        `stroke-width="${f(Math.max(g * 0.06, 1))}" fill="${done ? col : "var(--goal-fill)"}"/>` +
+                        `<text x="${f(x + g / 2)}" y="${f(y + g / 2)}" fill="${done ? "#fff" : col}" ` +
+                        `font-size="${f(fs)}">${esc(lit.label)}</text>` +
+                        `<title>${esc(lit.label)}: ${esc(lit.text)}${done ? " (achieved)" : ""}</title></g>`);
                 });
             }
-            // vehicles: the bottom half, each with its cargo as badges
-            const vs = (_d = vehiclesAt.get(p)) !== null && _d !== void 0 ? _d : [];
-            if (vs.length > 0) {
-                const s = stack(vs.length, { x: c.x + pad, y: c.y + half + 1, w: SIDE - 2 * pad, h: half - pad - 1 }, 56, 24, 5);
+            if (reg.packages) {
+                const s = stack(pkgs.length, reg.packages);
+                pkgs.forEach((k, i) => {
+                    var _a;
+                    const b = s.boxes[i];
+                    out.push(icon("package", "package", b.x, b.y, s.size, colorOf(problem, k), (_a = problem.labels.get(k)) !== null && _a !== void 0 ? _a : k, `${k} at ${p}`));
+                });
+            }
+            if (reg.vehicles) {
+                const s = stack(vs.length, reg.vehicles);
                 vs.forEach((v, i) => {
                     var _a, _b;
                     const b = s.boxes[i];
-                    const col = colorOf(problem, v);
-                    const label = (_a = problem.labels.get(v)) !== null && _a !== void 0 ? _a : v;
-                    const load = (_b = cargo.get(v)) !== null && _b !== void 0 ? _b : [];
-                    const plane = problem.airplanes.includes(v);
-                    const labelW = s.w * 0.4;
-                    out.push(`<g class="vehicle">` +
-                        `<rect x="${f(b.x)}" y="${f(b.y)}" width="${f(s.w)}" height="${f(s.h)}" rx="${plane ? f(s.h / 2) : 3}" fill="${col}"/>` +
-                        `<text x="${f(b.x + labelW / 2 + 1)}" y="${f(b.y + s.h / 2)}" fill="#fff" font-size="${f(s.h * 0.5)}">${esc(label)}</text>` +
-                        `<title>${esc(v)} at ${esc(p)}${load.length ? ", carrying " + load.map(esc).join(", ") : ""}</title></g>`);
-                    // cargo: badges in a row right of the label, inside the vehicle; when
-                    // they do not fit they overlap, each further one up and to the right
-                    const room = s.w - labelW - 3;
-                    const bs = Math.min(s.h - 4, 15);
-                    const step = load.length > 1 ? Math.min(bs + 1, (room - bs) / (load.length - 1)) : 0;
-                    const lift = step < bs ? Math.min(2, (s.h - bs) / 2) : 0;
-                    load.forEach((k, j) => {
-                        const bx = b.x + labelW + 1 + j * step;
-                        const by = b.y + (s.h - bs) / 2 - j * lift;
-                        out.push(packageBox(problem, k, bx, by, bs, bs, `${k} in ${v}`, "badge"));
-                    });
+                    const load = (_a = cargo.get(v)) !== null && _a !== void 0 ? _a : [];
+                    // cargo badges over the vehicle's top right, overlapping up and right
+                    let badges = "";
+                    if (load.length > 0) {
+                        const bs = s.size * 0.42;
+                        const step = bs * OFFSET * 1.5;
+                        load.forEach((k, j) => {
+                            var _a;
+                            badges += icon("package", "package badge", b.x + s.size * 0.56 + j * step, b.y - bs * 0.05 - j * step, bs, colorOf(problem, k), (_a = problem.labels.get(k)) !== null && _a !== void 0 ? _a : k, `${k} in ${v}`);
+                        });
+                    }
+                    const kind = problem.airplanes.includes(v) ? "airplane" : "truck";
+                    out.push(icon(kind, "vehicle", b.x, b.y, s.size, colorOf(problem, v), (_b = problem.labels.get(v)) !== null && _b !== void 0 ? _b : v, `${v} at ${p}${load.length ? ", carrying " + load.join(", ") : ""}`, badges));
                 });
             }
             out.push(`</g>`);
@@ -720,18 +965,10 @@ var Viz;
         return out.join("\n");
     }
     Viz.renderMap = renderMap;
-    function packageBox(problem, k, x, y, w, h, title, extra = "") {
-        var _a;
-        const col = colorOf(problem, k);
-        const label = (_a = problem.labels.get(k)) !== null && _a !== void 0 ? _a : k;
-        return `<g class="package${extra ? " " + extra : ""}">` +
-            `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="2" fill="${col}"/>` +
-            `<text x="${f(x + w / 2)}" y="${f(y + h / 2)}" fill="#fff" font-size="${f(h * 0.5)}">${esc(label)}</text>` +
-            `<title>${esc(title)}</title></g>`;
-    }
 })(Viz || (Viz = {}));
-// The page: choose a problem and optionally a solution, draw the map, list the
-// goal formula and the solution, and step through the solution.
+// The page: choose a problem and optionally a domain and a solution, draw the
+// map, show the goal formula, the running utility and the solution, and step
+// through the solution.
 var Viz;
 (function (Viz) {
     const app = { step: 0 };
@@ -751,12 +988,20 @@ var Viz;
             return app.plan.states[app.step];
         return { at: new Map(app.problem.initAt), inside: new Map(app.problem.initIn) };
     }
+    function domainWarnings() {
+        const p = app.problem;
+        const d = app.domain;
+        if (!p || !d || !p.domain || p.domain === d.name)
+            return [];
+        return [`the domain file ${app.domainFile} is "${d.name}", but the problem names "${p.domain}"`];
+    }
     function showMessages() {
         var _a, _b, _c, _d;
-        const msgs = [...((_b = (_a = app.problem) === null || _a === void 0 ? void 0 : _a.warnings) !== null && _b !== void 0 ? _b : []), ...((_d = (_c = app.plan) === null || _c === void 0 ? void 0 : _c.warnings) !== null && _d !== void 0 ? _d : [])];
+        const msgs = [...((_b = (_a = app.problem) === null || _a === void 0 ? void 0 : _a.warnings) !== null && _b !== void 0 ? _b : []), ...domainWarnings(), ...((_d = (_c = app.plan) === null || _c === void 0 ? void 0 : _c.warnings) !== null && _d !== void 0 ? _d : [])];
         const box = $("messages");
-        box.hidden = msgs.length === 0;
-        box.innerHTML = msgs.slice(0, 20).map((m) => `<div>⚠ ${esc(m)}</div>`).join("") +
+        const err = app.error ? `<div class="error">✖ ${esc(app.error)}</div>` : "";
+        box.hidden = msgs.length === 0 && !err;
+        box.innerHTML = err + msgs.slice(0, 20).map((m) => `<div>⚠ ${esc(m)}</div>`).join("") +
             (msgs.length > 20 ? `<div>… and ${msgs.length - 20} more</div>` : "");
     }
     function renderGoals(state) {
@@ -770,7 +1015,11 @@ var Viz;
             const lits = line.map((lit) => {
                 const v = Viz.literalHolds(lit, state);
                 const col = lit.args.length > 0 ? Viz.colorOf(p, lit.args[0]) : "inherit";
-                const cls = v === true ? "lit true" : v === false ? "lit false" : "lit";
+                // an achieved goal is highlighted in its package's color, as on the map
+                if (v === true) {
+                    return `<span class="lit true" style="background:${col}" title="achieved"><b>${esc(lit.label)}</b> ${esc(lit.text)}</span>`;
+                }
+                const cls = v === false ? "lit false" : "lit";
                 return `<span class="${cls}"><b style="color:${col}">${esc(lit.label)}</b> ${esc(lit.text)}</span>`;
             });
             const vals = line.map((lit) => Viz.literalHolds(lit, state));
@@ -782,6 +1031,35 @@ var Viz;
         });
         const conj = p.goal.length > 1 ? `<p class="hint">All lines must hold (∧); each line is a disjunction (∨).</p>` : "";
         box.innerHTML = conj + lines.join("");
+    }
+    function num(x) {
+        if (x === undefined)
+            return "–";
+        const r = Math.round(x * 1000) / 1000;
+        return (r < 0 ? "−" + Math.abs(r) : String(r));
+    }
+    function renderUtility() {
+        const p = app.problem;
+        const u = Viz.utilityAt(p, app.domain, app.plan, app.step);
+        const goalsNote = u.goals === undefined
+            ? "the problem gives its goals no utility"
+            : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
+                (u.undecided ? `; ${u.undecided} not tracked` : "");
+        const costsNote = u.costs === undefined
+            ? "the problem has no action costs"
+            : !app.plan
+                ? "no solution loaded"
+                : u.costsExact ? `from the domain${app.domainFile ? " " + app.domainFile : ""}`
+                    : app.domain ? "some costs unknown (counted as 0)"
+                        : "estimated: load the domain for exact costs";
+        $("utility").innerHTML =
+            `<div class="u-item"><span class="u-label">Goals</span><span class="u-value">${num(u.goals)}</span>` +
+                `<span class="u-note">${esc(goalsNote)}</span></div>` +
+                `<div class="u-item"><span class="u-label">Costs</span>` +
+                `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span>` +
+                `<span class="u-note">${esc(costsNote)}</span></div>` +
+                `<div class="u-item total"><span class="u-label">Total</span><span class="u-value">${num(u.total)}</span>` +
+                `<span class="u-note">Goals + Costs</span></div>`;
     }
     function renderSolution() {
         const box = $("solution");
@@ -814,6 +1092,7 @@ var Viz;
     }
     function redraw() {
         var _a, _b;
+        showMessages();
         const p = app.problem;
         if (!p)
             return;
@@ -821,15 +1100,16 @@ var Viz;
         const next = (_b = (_a = app.plan) === null || _a === void 0 ? void 0 : _a.steps[app.step]) !== null && _b !== void 0 ? _b : [];
         $("map").innerHTML = Viz.renderMap(p, state, { next });
         renderGoals(state);
+        renderUtility();
         renderSolution();
         const counts = `${p.rows}×${p.cols} grid · ${p.trucks.length} truck${p.trucks.length === 1 ? "" : "s"}` +
             (p.airplanes.length ? ` · ${p.airplanes.length} airplane${p.airplanes.length === 1 ? "" : "s"}` : "") +
             ` · ${p.packages.length} package${p.packages.length === 1 ? "" : "s"}`;
+        const dom = app.domain ? ` · domain ${app.domainFile}` : "";
         const sol = app.plan
-            ? ` · solution ${app.planFile} (${app.plan.format}${app.plan.objective ? ", cost " + app.plan.objective : ""})`
+            ? ` · solution ${app.planFile} (${app.plan.format}${app.plan.objective ? ", objective " + app.plan.objective : ""})`
             : "";
-        $("summary").textContent = `${p.name} · ${counts}${sol}`;
-        showMessages();
+        $("summary").textContent = `${p.name} · ${counts}${dom}${sol}`;
     }
     function go(step) {
         if (!app.plan)
@@ -838,19 +1118,32 @@ var Viz;
         redraw();
     }
     function fail(where, e) {
-        const box = $("messages");
-        box.hidden = false;
-        box.innerHTML = `<div class="error">✖ ${esc(where)}: ${esc(e instanceof Error ? e.message : String(e))}</div>`;
+        app.error = `${where}: ${e instanceof Error ? e.message : String(e)}`;
+        showMessages();
     }
     function loadProblem(name, text) {
         try {
-            app.problem = Viz.parseProblem(text);
+            const problem = Viz.parseProblem(text);
+            app.problem = problem;
             app.problemFile = name;
             app.plan = undefined;
             app.planFile = undefined;
             app.step = 0;
+            app.error = undefined;
             $("solution-file").value = "";
-            document.body.classList.add("loaded");
+            redraw();
+            return true;
+        }
+        catch (e) {
+            fail(name, e);
+            return false;
+        }
+    }
+    function loadDomain(name, text) {
+        try {
+            app.domain = Viz.parseDomain(text);
+            app.domainFile = name;
+            app.error = undefined;
             redraw();
         }
         catch (e) {
@@ -866,33 +1159,88 @@ var Viz;
             app.plan = Viz.parsePlan(text, app.problem);
             app.planFile = name;
             app.step = 0;
+            app.error = undefined;
             redraw();
         }
         catch (e) {
             fail(name, e);
         }
     }
-    /** Show a problem (and a solution, at STEP) given as text: for a page that
-     *  gets its files some other way than the file choosers, e.g. from a server. */
-    function load(problemName, problemText, planName, planText, step = 0) {
-        loadProblem(problemName, problemText);
+    /** Show a problem (and a solution, at STEP; and a domain, for costs) given as
+     *  text: for a page that gets its files some other way than the file
+     *  choosers, e.g. from a server. */
+    function load(problemName, problemText, planName, planText, step = 0, domainName, domainText) {
+        if (domainName !== undefined && domainText !== undefined)
+            loadDomain(domainName, domainText);
+        if (!loadProblem(problemName, problemText))
+            return;
         if (planName !== undefined && planText !== undefined) {
             loadPlan(planName, planText);
             go(step);
         }
     }
     Viz.load = load;
-    function readFile(file, then) {
-        const r = new FileReader();
-        r.onload = () => then(file.name, String(r.result));
-        r.onerror = () => fail(file.name, r.error);
-        r.readAsText(file);
+    function readText(file) {
+        return new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve({ name: file.name, text: String(r.result) });
+            r.onerror = () => reject(r.error);
+            r.readAsText(file);
+        });
+    }
+    function readInto(input, then) {
+        var _a;
+        const file = (_a = input.files) === null || _a === void 0 ? void 0 : _a[0];
+        if (!file)
+            return;
+        readText(file).then((f) => then(f.name, f.text), (e) => fail(file.name, e));
+    }
+    function initExamples() {
+        const sel = $("examples");
+        const list = typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES;
+        if (list.length === 0) {
+            sel.parentElement.hidden = true;
+            return;
+        }
+        list.forEach((ex, i) => {
+            const group = document.createElement("optgroup");
+            group.label = ex.problem.file;
+            const only = document.createElement("option");
+            only.value = `${i}`;
+            only.textContent = `${ex.problem.file} (no solution)`;
+            group.appendChild(only);
+            ex.solutions.forEach((s, j) => {
+                const o = document.createElement("option");
+                o.value = `${i}:${j}`;
+                o.textContent = `${ex.problem.file} + ${s.file}`;
+                group.appendChild(o);
+            });
+            sel.appendChild(group);
+        });
+        sel.addEventListener("change", () => {
+            var _a, _b;
+            if (!sel.value)
+                return;
+            const [i, j] = sel.value.split(":").map(Number);
+            const ex = list[i];
+            const s = j === undefined ? undefined : ex.solutions[j];
+            for (const id of ["problem-file", "domain-file", "solution-file"])
+                $(id).value = "";
+            app.domain = undefined;
+            app.domainFile = undefined;
+            load(ex.problem.file, ex.problem.text, s === null || s === void 0 ? void 0 : s.file, s === null || s === void 0 ? void 0 : s.text, 0, (_a = ex.domain) === null || _a === void 0 ? void 0 : _a.file, (_b = ex.domain) === null || _b === void 0 ? void 0 : _b.text);
+            sel.value = "";
+            sel.blur();
+        });
     }
     function init() {
+        initExamples();
         const pf = $("problem-file");
+        const df = $("domain-file");
         const sf = $("solution-file");
-        pf.addEventListener("change", () => { var _a; return ((_a = pf.files) === null || _a === void 0 ? void 0 : _a[0]) && readFile(pf.files[0], loadProblem); });
-        sf.addEventListener("change", () => { var _a; return ((_a = sf.files) === null || _a === void 0 ? void 0 : _a[0]) && readFile(sf.files[0], loadPlan); });
+        pf.addEventListener("change", () => readInto(pf, loadProblem));
+        df.addEventListener("change", () => readInto(df, loadDomain));
+        sf.addEventListener("change", () => readInto(sf, loadPlan));
         $("first").addEventListener("click", () => go(0));
         $("prev").addEventListener("click", () => go(app.step - 1));
         $("next").addEventListener("click", () => go(app.step + 1));
@@ -903,7 +1251,8 @@ var Viz;
                 go(Number(li.dataset.step));
         });
         document.addEventListener("keydown", (ev) => {
-            if (ev.target.tagName === "INPUT")
+            const tag = ev.target.tagName;
+            if (tag === "INPUT" || tag === "SELECT")
                 return;
             if (ev.key === "ArrowRight")
                 go(app.step + 1);
@@ -917,24 +1266,25 @@ var Viz;
                 return;
             ev.preventDefault();
         });
-        // drop files anywhere: a .pddl is the problem, anything else the solution
+        // drop files anywhere: a PDDL domain, a PDDL problem, and anything else is
+        // the solution -- told apart by content, then loaded in that order
         document.addEventListener("dragover", (ev) => ev.preventDefault());
         document.addEventListener("drop", (ev) => {
             var _a, _b;
             ev.preventDefault();
             const files = [...((_b = (_a = ev.dataTransfer) === null || _a === void 0 ? void 0 : _a.files) !== null && _b !== void 0 ? _b : [])];
-            const prob = files.find((x) => /\.pddl$/i.test(x.name));
-            const sol = files.find((x) => x !== prob);
-            if (prob) {
-                readFile(prob, (n, t) => {
-                    loadProblem(n, t);
-                    if (sol)
-                        readFile(sol, loadPlan);
-                });
-            }
-            else if (sol) {
-                readFile(sol, loadPlan);
-            }
+            Promise.all(files.map(readText)).then((texts) => {
+                const isPddl = (t) => /\.pddl$/i.test(t.name) || /\(\s*define\s*\(/i.test(t.text);
+                const dom = texts.find((t) => isPddl(t) && Viz.isDomainText(t.text));
+                const prob = texts.find((t) => isPddl(t) && t !== dom);
+                const sol = texts.find((t) => t !== dom && t !== prob);
+                if (dom)
+                    loadDomain(dom.name, dom.text);
+                if (prob && !loadProblem(prob.name, prob.text))
+                    return;
+                if (sol)
+                    loadPlan(sol.name, sol.text);
+            }, (e) => fail("dropped files", e));
         });
     }
     if (typeof document !== "undefined") {

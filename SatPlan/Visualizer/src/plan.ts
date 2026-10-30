@@ -219,6 +219,70 @@ namespace Viz {
     return [...new Set(xs)];
   }
 
+  /** Whether formula F (at/in literals under and/or/not) holds in STATE;
+   *  undefined when it mentions anything the visualizer does not track. */
+  export function formulaHolds(f: SExpr, state: State): boolean | undefined {
+    if (!isList(f)) return undefined;
+    const parts = f.slice(1);
+    if (f[0] === "and" || f[0] === "or") {
+      const vs = parts.map((g) => formulaHolds(g, state));
+      if (f[0] === "and") return vs.includes(false) ? false : vs.includes(undefined) ? undefined : true;
+      return vs.includes(true) ? true : vs.includes(undefined) ? undefined : false;
+    }
+    if (f[0] === "not") {
+      const v = formulaHolds(f[1], state);
+      return v === undefined ? undefined : !v;
+    }
+    if ((f[0] === "at" || f[0] === "in") && f.length === 3 && !isList(f[1]) && !isList(f[2])) {
+      return f[0] === "at" ? state.at.get(f[1] as string) === f[2] : state.inside.get(f[1] as string) === f[2];
+    }
+    return undefined;
+  }
+
+  export interface Utility {
+    /** utility of the preferences achieved in the displayed state; undefined
+     *  when the problem weights none */
+    goals?: number;
+    /** cost of the actions taken so far; undefined when the problem has no costs */
+    costs?: number;
+    /** false when some cost was guessed (no domain, or a cost term without a value) */
+    costsExact: boolean;
+    total: number;
+    /** preferences whose truth could not be decided (not counted) */
+    undecided: number;
+  }
+
+  /** The running utility at STEP: achieved preference weights, minus the cost
+   *  of the actions taken before STEP. */
+  export function utilityAt(problem: Problem, domain: Domain | undefined, plan: Plan | undefined, step: number): Utility {
+    const state = plan ? plan.states[step] : { at: new Map(problem.initAt), inside: new Map(problem.initIn) };
+    let goals: number | undefined;
+    let undecided = 0;
+    if (problem.preferences.length > 0) {
+      goals = 0;
+      for (const p of problem.preferences) {
+        const v = formulaHolds(p.formula, state);
+        if (v === true) goals += p.weight;
+        else if (v === undefined) undecided++;
+      }
+    }
+    const hasCosts = domain ? [...domain.actions.values()].some((a) => a.costs.length > 0)
+                            : [...problem.numbers.keys()].some((k) => /-cost\)$/.test(k) && k !== "(total-cost)");
+    let costs: number | undefined;
+    let costsExact = !!domain;
+    if (hasCosts) {
+      costs = 0;
+      for (let k = 0; plan && k < step; k++) {
+        for (const a of plan.steps[k]) {
+          const c = actionCost(problem, domain, a);
+          costs += c.cost;
+          if (!c.exact) costsExact = false;
+        }
+      }
+    }
+    return { goals, costs, costsExact, total: (goals ?? 0) - (costs ?? 0), undecided };
+  }
+
   /** Whether goal literal LIT holds in STATE; undefined for a predicate the
    *  visualizer does not track. */
   export function literalHolds(lit: Literal, state: State): boolean | undefined {
