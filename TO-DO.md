@@ -52,7 +52,15 @@ systematically with instance size** signals misspecification (not noise), and th
 fix stays linear — `θ_a(d) = α_a + β_a·g(d)` for a size function `g(d)`, adding
 size-modulated features.
 
-## 3. Regression tests to update for the new clara-logistics (2026-10-30)
+## 3. Regression tests to update for the new clara-logistics (2026-10-30) — DONE
+
+Done 2026-10-30 by way (a): `clara-logistics-old.pddl` declares `(handle-cost)`
+(never charged) so it accepts ppgen's current output, and both suites now plan
+against it (evgen 110/110, evidence 42/42).  `SatPlan/pb1.pddl` has its
+`handle-cost` line and the new proved optimum (10 slices, cost 20).  The
+visualizer example and CLARA SimpleGrid/TwoPackage items below remain.
+
+The original note:
 
 `pddl/clara-logistics.pddl` changed: `load` and `unload` now cost `(handle-cost)`
 each (ppgen `--handle-cost`, default 1) and `transfer` is gone (a package changes

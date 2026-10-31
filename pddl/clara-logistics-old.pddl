@@ -2,7 +2,9 @@
 ;; unload were given a cost (handle-cost) and transfer was removed.  Kept so
 ;; problems and results made with it (CLARA's SimpleGrid and TwoPackage) can be
 ;; reproduced: give such a problem (:domain clara-logistics-old), or pass
-;; --domain clara-logistics-old.pddl.
+;; --domain clara-logistics-old.pddl.  It also declares (handle-cost), unused,
+;; so problems from the current ppgen.sh plan with it too (handling free).  The
+;; evgen and evidence test suites use it: their cases are calibrated to its plans.
 ;;
 ;; clara-logistics domain -- places, trucks, airplanes, and packages.
 ;;
@@ -43,7 +45,11 @@
   (:functions
         (total-cost)
         (drive-cost)
-        (fly-cost))
+        (fly-cost)
+        ;; declared but never charged, so a problem from the current ppgen.sh,
+        ;; which always writes (= (handle-cost) R), is accepted -- and planned
+        ;; with this domain's free handling
+        (handle-cost))
 
   ;; --- loading and unloading -----------------------------------------------
   ;; One pair of actions covers trucks and airplanes alike, since both are
