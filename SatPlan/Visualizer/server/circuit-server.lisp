@@ -8,11 +8,13 @@
 ;;;;
 ;;;; Commands (only these; nothing else is evaluated):
 ;;;;
-;;;;   (cv-load "<circuit>" ("(at pkg1 p1-3)" ...))
-;;;;       load a circuit saved by marginals.sh --save-circuit (text or binary)
-;;;;       and resolve each goal literal to its hypothesis atom (HOLDS <goal> H),
-;;;;       H the highest slice of any HOLDS atom in the circuit; evaluate once
-;;;;       without evidence (Z and every atom's true-weight, kept for P(E|h)).
+;;;;   (cv-load "<circuit>" "<problem.pddl>")
+;;;;       load a circuit saved by marginals.sh --save-circuit (text or binary);
+;;;;       take the problem's hypotheses by recognize.sh's rule (the disjuncts of
+;;;;       the goal's one (or ...), recognition-goal.lisp) and resolve each to
+;;;;       (HOLDS <hypothesis> H), H the highest slice of any HOLDS atom in the
+;;;;       circuit; evaluate once without evidence (Z and every atom's
+;;;;       true-weight, kept for P(E|h)).
 ;;;;   (cv-actions)
 ;;;;       the OCCURS atoms the circuit keeps, for entering evidence by hand.
 ;;;;   (cv-query ("(occurs (drive truck1 p2-3 p3-3) 1)" "(not (occurs ...))" ...))
@@ -45,9 +47,14 @@
                     (write-char c out)))))
   (write-char #\" out))
 
+(defun cv--obj (&rest plist)
+  "A JSON object: (cv--obj :key value ...).  Marked, so that no plain list --
+say a list of probabilities starting with :null -- is ever taken for one."
+  (cons :object plist))
+
 (defun cv--json (x out)
-  "Write X as JSON: a plist with keyword keys is an object, :null/nil-as-false
-by key convention is handled by the caller, a vector or list an array."
+  "Write X as JSON: (:object k v ...) an object (see CV--OBJ), any other list or
+vector an array, :null/:true/:false the literals."
   (cond ((eq x :null) (write-string "null" out))
         ((eq x :true) (write-string "true" out))
         ((eq x :false) (write-string "false" out))
@@ -60,9 +67,9 @@ by key convention is handled by the caller, a vector or list an array."
                ;; ~E keeps full precision and stays valid JSON (1.5e-300, 2.0e+30)
                (let ((*read-default-float-format* 'double-float))
                  (write-string (substitute #\e #\d (format nil "~,16,3E" d)) out)))))
-        ((and (consp x) (keywordp (car x)))
+        ((and (consp x) (eq (car x) :object))
          (write-char #\{ out)
-         (loop for (k v) on x by #'cddr for first = t then nil
+         (loop for (k v) on (cdr x) by #'cddr for first = t then nil
                do (unless first (write-char #\, out))
                   (cv--json-string (string-downcase (symbol-name k)) out)
                   (write-char #\: out)
@@ -80,10 +87,11 @@ by key convention is handled by the caller, a vector or list an array."
         (t (cv--json-string (princ-to-string x) out))))
 
 (defun cv--reply (plist)
-  (format t "~&@@REPLY ")
-  (cv--json plist *standard-output*)
-  (terpri)
-  (finish-output))
+  "Reply with the object PLIST.  The whole line is built first, so an encoding
+error never leaves half a reply in the pipe (the error then replies instead)."
+  (let ((line (with-output-to-string (s) (cv--json (cons :object plist) s))))
+    (format t "~&@@REPLY ~A~%" line)
+    (finish-output)))
 
 (defun cv--text (atom)
   "An atom as lower-case text, the way the page and PDDL write it."
@@ -113,33 +121,55 @@ by key convention is handled by the caller, a vector or list an array."
 
 ;;; -------------------------------------------------------------- commands
 
-(defun cv-load (path goals)
+(defun cv--hypotheses (problem)
+  "The hypotheses of the PDDL PROBLEM file, by recognize.sh's own rule
+(lisp/recognition-goal.lisp, rg--classify): the disjuncts of the goal's ONE
+(or ...), exclusivity clauses dropped, preferences ignored.  A goal it refuses
+-- a plain conjunction, two hypothesis sets, a hard goal beside the set -- is an
+error here too (rg--die, which would exit the process, signals instead)."
+  (let ((old (fdefinition 'rg--die)))
+    (unwind-protect
+         (progn
+           (setf (fdefinition 'rg--die)
+                 (lambda (fmt &rest args)
+                   (error "~A" (let ((*print-pretty* nil)) (format nil "~?" fmt args)))))
+           (values (rg--classify (rg--goal (rg--read problem)))))
+      (setf (fdefinition 'rg--die) old))))
+
+(defun cv-load (path problem)
+  "Load the circuit at PATH and the hypotheses of PROBLEM.  Everything is
+computed first; the globals change only once all of it has succeeded, so a
+failed load leaves the previous circuit in place, whole."
   (let ((start (get-internal-real-time)))
-    (setf *cv* (ddnnf-load path) *cv-path* path)
-    (let* ((h (cv--horizon))
-           (a2i (ddnnf-a2i *cv*)))
-      (setf *cv-hyps*
-            (loop for g in goals
-                  for atom = (and h (list 'holds (cv--read g) h))
-                  for v = (and atom (gethash atom a2i))
-                  collect (list g atom (and v (cv--kept-p v) v))))
-      (multiple-value-bind (z zt) (ddnnf-query *cv*)
-        (setf *cv-z0* z *cv-zt0* zt))
-      (cv--reply
-       (list :ok :true
-             :path (namestring path)
-             :nvars (ddnnf-nvars *cv*)
-             :nodes (dns-n (ddnnf-nodes *cv*))
-             :projected (let ((p (ddnnf-projected *cv*))) (if p (count 1 p) :null))
-             :horizon (or h :null)
-             :z0 *cv-z0*
-             :actions (cv--count-actions)
-             :hypotheses (loop for (g atom v) in *cv-hyps*
-                               collect (list :goal g
-                                             :atom (if atom (cv--text atom) :null)
-                                             :present (if v :true :false)))
-             :ms (round (* 1000 (- (get-internal-real-time) start))
-                        internal-time-units-per-second))))))
+  (let* ((forms (cv--hypotheses problem))
+         (circuit (ddnnf-load path))
+         (h (let ((*cv* circuit)) (cv--horizon)))
+         (a2i (ddnnf-a2i circuit))
+         (proj (ddnnf-projected circuit))
+         (hyps (loop for g in forms
+                     ;; an atom hypothesis is (HOLDS atom H); a compound one --
+                     ;; recognize.sh gives it a derived atom -- is not looked up
+                     for atom = (and h (rg--atom-p g) (list 'holds g h))
+                     for v = (and atom (gethash atom a2i))
+                     collect (list (cv--text g) atom
+                                   (and v (or (null proj) (= 1 (sbit proj v))) v)))))
+    (multiple-value-bind (z zt) (ddnnf-query circuit)
+      (setf *cv* circuit *cv-path* path *cv-hyps* hyps *cv-z0* z *cv-zt0* zt)))
+  (cv--reply
+   (list :ok :true
+         :path (namestring path)
+         :nvars (ddnnf-nvars *cv*)
+         :nodes (dns-n (ddnnf-nodes *cv*))
+         :projected (let ((p (ddnnf-projected *cv*))) (if p (count 1 p) :null))
+         :horizon (or (cv--horizon) :null)
+         :z0 *cv-z0*
+         :actions (cv--count-actions)
+         :hypotheses (loop for (g atom v) in *cv-hyps*
+                           collect (cv--obj :goal g
+                                            :atom (if atom (cv--text atom) :null)
+                                            :present (if v :true :false)))
+         :ms (round (* 1000 (- (get-internal-real-time) start))
+                    internal-time-units-per-second)))))
 
 (defun cv--occurs-p (atom)
   (and (consp atom) (string= (symbol-name (first atom)) "OCCURS")))
@@ -186,7 +216,7 @@ it would need the circuit recompiled with it, which this page does not do"
     (dolist (text literals)
       (multiple-value-bind (v sign problem) (cv--literal text)
         (cond ((eq problem :unknown) (push text unknown))
-              (problem (push (list :literal text :reason problem) refused))
+              (problem (push (cv--obj :literal text :reason problem) refused))
               (t (let ((old (gethash v clamp)))
                    (when (and old (/= old sign)) (setf conflict t))
                    (setf (gethash v clamp) sign))))))

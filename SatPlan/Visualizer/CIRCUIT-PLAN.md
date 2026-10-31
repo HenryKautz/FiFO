@@ -21,8 +21,11 @@ evaluates the SAME circuit with those literals clamped (`ddnnf-query :clamp`):
 one upward and one downward pass, no recompilation, giving Z(E) and, for every
 atom, the weight of the models where it is true.
 
-For each hypothesis h — a disjunct of the problem's goal, read at the final
-slice, `(holds (at pkg1 p1-3) H)` — the page shows
+For each hypothesis h — a disjunct of the goal's ONE `(or ...)`, by
+recognize.sh's own rule (`lisp/recognition-goal.lisp`, `rg--classify`:
+exclusivity clauses dropped, preferences ignored, a plain conjunction or a
+second hypothesis set refused), read at the final slice,
+`(holds (at pkg1 p1-3) H)` — the page shows
 
 - **P(h | E)** = Z(E ∧ h) / Z(E), the marginal (the number recognize.sh's
   `--method marginals` reports per hypothesis), and
@@ -76,7 +79,7 @@ Python writes one command per line; Lisp answers with any number of log lines
 
 | Command | Reply |
 |---|---|
-| `(cv-load "<circuit path>" ("(at pkg1 p1-3)" ...))` | `{nvars, nodes, projected: n or null, horizon, z0, hypotheses: [{goal, atom, present}], actions: n}` — the hypothesis atoms are `(HOLDS <goal> H)`, H the highest slice of any HOLDS atom in the circuit |
+| `(cv-load "<circuit path>" "<problem.pddl>")` | `{nvars, nodes, projected: n or null, horizon, z0, hypotheses: [{goal, atom, present}], actions: n}` — the hypotheses by `rg--classify`, their atoms `(HOLDS <goal> H)`, H the highest slice of any HOLDS atom in the circuit.  Atomic: computed in full before the loaded circuit is replaced, so a failed load leaves the previous one whole |
 | `(cv-actions)` | `{actions: ["(occurs (drive ...) 1)", ...]}` — the kept OCCURS atoms, for manual entry |
 | `(cv-query ("(occurs ...)" "(not (occurs ...))" ...))` | `{ok, z, z0, pe, unsat, probs: [p per hypothesis], unknown: [...], refused: [...], ms}` |
 | `(cv-quit)` | — |
@@ -94,8 +97,8 @@ the circuit's map holds.
 | `POST /api/load {id}` | loads that session's circuit; replies with the problem text (for the map), the Lisp `cv-load` reply, and the session's evidence file list |
 | `GET /api/evidence?id=&file=` | `{items: [{literal, slice, positive}], unsupported: [...], text}` — the file parsed into pinned literals in slice order |
 | `POST /api/parse-evidence {text}` | the same, for a file the user chose in the browser |
-| `GET /api/actions` | the kept action atoms |
-| `POST /api/query {literals: [...]}` | the Lisp `cv-query` reply |
+| `GET /api/actions?id=` | the kept action atoms |
+| `POST /api/query {id, literals: [...]}` | the Lisp `cv-query` reply.  It names its session: if another tab has loaded a different one meanwhile, that session is reloaded first, so a page never gets another circuit's numbers |
 
 ### Sessions
 

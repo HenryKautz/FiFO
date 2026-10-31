@@ -1135,6 +1135,11 @@ var Viz;
                 `(Z = 0).  Remove or step back an observation.</p>`;
             return;
         }
+        if (!r && cs.errors.length) {
+            box.innerHTML = `<p class="unsat">No probabilities: the evidence could not be applied ` +
+                `(see the message above).  Fix or remove the observation, or step back.</p>`;
+            return;
+        }
         const rows = c.hypotheses.map((h, i) => {
             var _a, _b, _c, _d;
             return ({ h, i,
@@ -1235,13 +1240,14 @@ var Viz;
         renderAll();
         try {
             const literals = cs.observations.slice(0, cs.step).map((o) => o.literal);
-            const r = await api("/api/query", { literals });
+            const r = await api("/api/query", { id: cs.sessionId, literals });
             if (!r.ok) {
                 const parts = [
                     ...((_a = r.unknown) !== null && _a !== void 0 ? _a : []).map((u) => `${u}: not an atom of this circuit (check the spelling and the slice)`),
                     ...((_b = r.refused) !== null && _b !== void 0 ? _b : []).map((x) => `${x.literal} ${x.reason}`),
                 ];
                 cs.errors = parts;
+                cs.reply = undefined; // no numbers for evidence that was not applied
             }
             else {
                 cs.errors = [];
@@ -1250,6 +1256,7 @@ var Viz;
         }
         catch (e) {
             cs.errors = [String(e instanceof Error ? e.message : e)];
+            cs.reply = undefined;
         }
         finally {
             cs.busy = false;
@@ -1287,7 +1294,7 @@ var Viz;
             const sel = $("evidence-file");
             sel.innerHTML = `<option value="">Choose an evidence file…</option>` +
                 r.session.evidence.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
-            const a = await api("/api/actions");
+            const a = await api(`/api/actions?id=${encodeURIComponent(id)}`);
             cs.actions = a.actions;
             $("action-list").innerHTML =
                 a.actions.map((x) => `<option value="${esc(x.replace(/^\(occurs /, "").replace(/ \d+\)$/, ""))}">`).join("");

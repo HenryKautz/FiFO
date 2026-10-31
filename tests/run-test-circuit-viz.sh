@@ -31,7 +31,7 @@ EX="$VIZ/circuit-examples"
 SERVER="$VIZ/server/circuit_server.py"
 TMP="$(mktemp -d /tmp/fifo-cviz-XXXXXX)"; TMP="$(cd "$TMP" && pwd -P)"
 SPID=""
-cleanup() { [ -n "$SPID" ] && kill "$SPID" 2>/dev/null; pkill -f "$TMP/" 2>/dev/null; rm -rf "$TMP"; }
+cleanup() { [ -n "$SPID" ] && { pkill -P "$SPID" 2>/dev/null; kill "$SPID" 2>/dev/null; }; rm -rf "$TMP"; }
 trap cleanup EXIT
 
 for t in python3 sbcl; do
@@ -65,11 +65,6 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import circuit_server as S
 ex = sys.argv[2]
-g = S.goal_literals(open(ex + "/grid3x3-1.pddl").read())
-assert g == ["(at pkg1 p1-3)", "(at pkg1 p2-1)", "(at pkg2 p2-1)", "(at pkg2 p1-1)"], g
-g2 = S.goal_literals("(define (problem x) (:goal (and (or (at a p) (at b q)) (at c r) "
-                     "(preference w (at d s)) (or (at a p) (at e t)))))")
-assert g2 == ["(at a p)", "(at b q)", "(at c r)", "(at e t)"], g2
 items, un = S.parse_evidence(open(ex + "/grid3x3-1-pkg1-p1-3-obs5.txt").read())
 assert [i["slice"] for i in items] == [1, 2, 3, 4, 5] and not un, (items, un)
 assert items[1]["literal"] == "(occurs (load pkg1 truck1 p3-3) 2)", items[1]
@@ -80,14 +75,19 @@ items, un = S.parse_evidence(open(ex + "/grid3x3-1-pkg1-p1-3-ord1.txt").read())
 assert not items and un == ["(occur-in-order (drive truck1 p2-3 p3-3))"], (items, un)
 items, un = S.parse_evidence("(or (occurs (a) 1) (occurs (b) 1))")
 assert not items and len(un) == 1, (items, un)
-try:
-    S.parse_evidence("(and (occurs (a) 1)")
-    raise SystemExit("an unclosed list was accepted")
-except ValueError:
-    pass
+for bad, why in (("(and (occurs (a) 1)", "an unclosed list"),
+                 ("(occurs (a) 1)\n(occurs (b) 2)", "a multi-form file (FiFO reads only the first)")):
+    try:
+        S.parse_evidence(bad)
+        raise SystemExit(why + " was accepted")
+    except ValueError:
+        pass
+# (not A B) reads as (not A) elsewhere in FiFO: here it is refused, not half-used
+items, un = S.parse_evidence("(and (not (occurs (a) 1) (occurs (b) 2)) (occurs (c) 3))")
+assert [i["slice"] for i in items] == [3] and len(un) == 1 and "one argument" in un[0], (items, un)
 assert S.lisp_string('a"b\\c') == '"a\\"b\\\\c"'
 EOF
-name "goal hypotheses and evidence files parse as specified"
+name "evidence files parse as specified; multi-form and (not A B) refused"
 if out=$(python3 "$TMP/parse.py" "$VIZ/server" "$EX" 2>&1); then pass; else fail "$(tail -2 <<<"$out")"; fi
 
 # ------------------------------------------------------------- the numbers
@@ -97,11 +97,13 @@ sys.path.insert(0, sys.argv[1])
 import circuit_server as S
 ex, tmp, fifo_lisp = sys.argv[2], sys.argv[3], sys.argv[4]
 oracle = sys.argv[5] == "1"
-goals = S.goal_literals(open(ex + "/grid3x3-1.pddl").read())
 lisp = S.Lisp(fifo_lisp, heap_mb=2048)
 lisp.start()
-info = lisp.load(os.path.join(ex, "grid3x3-1.dnnf"), goals)
+circuit = os.path.join(ex, "grid3x3-1.dnnf")
+info = lisp.load(circuit, os.path.join(ex, "grid3x3-1.pddl"))
 H = info["horizon"]
+goals = [h["goal"] for h in info["hypotheses"]]
+assert goals == ["(at pkg1 p1-3)", "(at pkg1 p2-1)", "(at pkg2 p2-1)", "(at pkg2 p1-1)"], goals
 assert H == 7 and all(h["present"] for h in info["hypotheses"]), info
 atoms = [f"(holds {g} {H})" for g in goals]
 obs5 = [i["literal"] for i in S.parse_evidence(open(ex + "/grid3x3-1-pkg1-p1-3-obs5.txt").read())[0]]
@@ -165,6 +167,34 @@ assert not r["ok"] and len(r["refused"]) == 2 and r["unknown"] == ["(occurs (fly
 assert "recompil" in r["refused"][0]["reason"], r
 r = lisp.call(S.query_command(obs5[:1]))
 assert r["ok"] and abs(r["marginal"][0] - results["one"]["marginal"][0]) < 1e-12, "the process stopped answering"
+
+# hypotheses by recognize.sh's rule (recognition-goal.lisp), on the same circuit
+base = open(os.path.join(ex, "grid3x3-1.pddl")).read()
+def problem_with(goal, name):
+    i = base.index("(:goal")
+    j = base.index("(:metric")
+    path = os.path.join(tmp, name + ".pddl")
+    open(path, "w").write(base[:i] + "(:goal " + goal + ")\n\n  " + base[j:])
+    return path
+# exclusivity clauses are dropped, not taken for hypotheses
+r = lisp.load(circuit, problem_with("(and (or (at pkg1 p1-3) (at pkg1 p2-1)) "
+                                    "(or (not (at pkg1 p1-3)) (not (at pkg1 p2-1))))", "excl"))
+assert [h["goal"] for h in r["hypotheses"]] == ["(at pkg1 p1-3)", "(at pkg1 p2-1)"], r["hypotheses"]
+# a FIRST hypothesis with no atom in the circuit: its marginal is null, the
+# reply still valid JSON with one entry per hypothesis
+r = lisp.load(circuit, problem_with("(or (at pkg9 p1-1) (at pkg1 p1-3))", "missing"))
+assert [h["present"] for h in r["hypotheses"]] == [False, True], r["hypotheses"]
+q = lisp.call(S.query_command(obs5[:1]))
+assert q["marginal"][0] is None and q["posterior"][0] is None and q["marginal"][1] > 0.5, q
+# a plain conjunction is refused (both required, not alternatives) -- and a
+# failed load leaves the loaded circuit and hypotheses whole
+try:
+    lisp.load(circuit, problem_with("(and (at pkg1 p1-3) (at pkg2 p2-1))", "conj"))
+    raise SystemExit("a plain conjunction was taken for a hypothesis set")
+except S.LispError as e:
+    assert "conjunction" in str(e), e
+q2 = lisp.call(S.query_command(obs5[:1]))
+assert q2["marginal"] == q["marginal"], ("a failed load disturbed the loaded circuit", q2, q)
 lisp.stop()
 print(json.dumps(report))
 EOF
@@ -180,17 +210,32 @@ fi
 name "P(h|E) and the likelihood posterior equal SharpSAT-TD's, 5 evidence sets"
 if out=$(python3 "$TMP/numbers.py" "$VIZ/server" "$EX" "$TMP" "$FIFO_LISP" "$ORACLE" 2>&1); then
   if [ "$ORACLE" = 1 ]; then pass; else skip "no sharpSAT, or the theory did not instantiate; numbers not checked"; fi
-  name "contradiction unsat; ordering, compound, unknown refused; still answers"
+  name "unsat, refusals; hypotheses by FiFO rule; failed load leaves circuit whole"
   pass
 else
   fail "$(tail -3 <<<"$out")"
-  name "contradiction unsat; ordering, compound, unknown refused; still answers"
+  name "unsat, refusals; hypotheses by FiFO rule; failed load leaves circuit whole"
   fail "see above"
 fi
 
 # -------------------------------------------------------------------- HTTP
-name "HTTP: page, script, every API route; recovers from a killed Lisp"
-python3 "$SERVER" --port 0 > "$TMP/server.log" 2>&1 &
+name "a session naming a missing file is refused at startup"
+if out=$(python3 "$SERVER" --port 0 --session "$TMP/no-such.pddl" "$EX/grid3x3-1.dnnf" 2>&1); then
+  fail "the server started"
+elif grep -q "does not exist" <<<"$out"; then pass; else fail "$(tail -1 <<<"$out")"; fi
+
+name "HTTP: page, script, every API route; per-session queries; recovers from a killed Lisp"
+# two sessions on one circuit with DIFFERENT hypothesis sets (4 and 2), so the
+# reply shows which one a query ran on: one naming the session not loaded must
+# reload it first
+mkdir -p "$TMP/two"
+python3 - "$EX/grid3x3-1.pddl" "$TMP/two/grid3x3-1.pddl" <<'EOF'
+import sys
+s = open(sys.argv[1]).read(); i, j = s.index("(:goal"), s.index("(:metric")
+open(sys.argv[2], "w").write(s[:i] + "(:goal (or (at pkg1 p1-3) (at pkg1 p2-1)))\n\n  " + s[j:])
+EOF
+python3 "$SERVER" --port 0 --session "$EX/grid3x3-1.pddl" "$EX/grid3x3-1.dnnf" "$EX" \
+        --session "$TMP/two/grid3x3-1.pddl" "$EX/grid3x3-1.dnnf" "$EX" > "$TMP/server.log" 2>&1 &
 SPID=$!
 URL=""
 for _ in $(seq 1 60); do
@@ -200,7 +245,7 @@ for _ in $(seq 1 60); do
 done
 cat > "$TMP/http_check.py" <<'EOF'
 import json, os, subprocess, sys, urllib.request, urllib.error
-url = sys.argv[1]
+url, server_pid = sys.argv[1], sys.argv[2]
 def get(path):
     with urllib.request.urlopen(url + path, timeout=120) as r:
         return r.read().decode(), r.headers.get("Content-Type", "")
@@ -224,22 +269,30 @@ try:
 except urllib.error.HTTPError:
     pass
 sessions = json.loads(get("api/sessions")[0])
-assert sessions and sessions[0]["name"] == "grid3x3-1", sessions
-sid = sessions[0]["id"]
+assert len(sessions) == 2 and sessions[0]["name"] == "grid3x3-1", sessions
+sid, other = sessions[0]["id"], sessions[1]["id"]
 r = post("api/load", {"id": sid})
 assert r["circuit"]["horizon"] == 7 and "(:goal" in r["problem"], list(r)
-acts = json.loads(get("api/actions")[0])["actions"]
+acts = json.loads(get(f"api/actions?id={sid}")[0])["actions"]
 assert "(occurs (drive truck1 p2-3 p3-3) 1)" in acts, len(acts)
 ev = json.loads(get(f"api/evidence?id={sid}&file=grid3x3-1-pkg1-p1-3-obs5.txt")[0])
 assert len(ev["items"]) == 5, ev
-q1 = post("api/query", {"literals": [ev["items"][0]["literal"]]})
+lit = ev["items"][0]["literal"]
+q1 = post("api/query", {"id": sid, "literals": [lit]})
 assert q1["ok"] and q1["marginal"][0] > 0.5, q1
-bad = post("api/query", {"literals": "not a list"})
-assert "error" in bad, bad
-# kill the Lisp child: the next query restarts it, reloads the circuit, answers
-subprocess.run(["pkill", "-f", "cv-serve"], check=False)
+for bad in ({"id": sid, "literals": "not a list"}, {"literals": [lit]}, {"id": "99", "literals": [lit]}):
+    assert "error" in post("api/query", bad), bad
+# a query for the session not loaded loads it first (another tab's view), and
+# back again: each answers with its own hypotheses
+qo = post("api/query", {"id": other, "literals": [lit]})
+assert qo["ok"] and len(qo["marginal"]) == 2 and abs(qo["marginal"][0] - q1["marginal"][0]) < 1e-12, qo
+qb = post("api/query", {"id": sid, "literals": [lit]})
+assert qb["ok"] and len(qb["marginal"]) == 4, qb
+# kill THIS server's Lisp child (not any other's): the next query restarts it,
+# reloads the circuit, and answers the same
+subprocess.run(["pkill", "-KILL", "-P", server_pid], check=False)
 for attempt in range(2):
-    q2 = post("api/query", {"literals": [ev["items"][0]["literal"]]})
+    q2 = post("api/query", {"id": sid, "literals": [lit]})
     if q2.get("ok"):
         break
 assert q2.get("ok") and abs(q2["marginal"][0] - q1["marginal"][0]) < 1e-12, q2
@@ -247,7 +300,7 @@ print("ok")
 EOF
 if [ -z "$URL" ]; then
   fail "the server did not start: $(tail -3 "$TMP/server.log")"
-elif out=$(python3 "$TMP/http_check.py" "$URL" 2>&1); then pass
+elif out=$(python3 "$TMP/http_check.py" "$URL" "$SPID" 2>&1); then pass
 else fail "$(tail -3 <<<"$out") | server: $(tail -2 "$TMP/server.log")"; fi
 
 echo

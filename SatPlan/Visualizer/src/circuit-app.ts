@@ -115,6 +115,11 @@ namespace Viz {
         `(Z = 0).  Remove or step back an observation.</p>`;
       return;
     }
+    if (!r && cs.errors.length) {
+      box.innerHTML = `<p class="unsat">No probabilities: the evidence could not be applied ` +
+        `(see the message above).  Fix or remove the observation, or step back.</p>`;
+      return;
+    }
     const rows = c.hypotheses.map((h, i) => ({ h, i,
       m: r?.marginal?.[i] ?? null, post: r?.posterior?.[i] ?? null }));
     const best = rows.reduce((b, x) => ((x.m ?? -1) > (b?.m ?? -1) ? x : b), rows[0]);
@@ -211,19 +216,21 @@ namespace Viz {
     renderAll();
     try {
       const literals = cs.observations.slice(0, cs.step).map((o) => o.literal);
-      const r: QueryReply = await api("/api/query", { literals });
+      const r: QueryReply = await api("/api/query", { id: cs.sessionId, literals });
       if (!r.ok) {
         const parts = [
           ...(r.unknown ?? []).map((u) => `${u}: not an atom of this circuit (check the spelling and the slice)`),
           ...(r.refused ?? []).map((x) => `${x.literal} ${x.reason}`),
         ];
         cs.errors = parts;
+        cs.reply = undefined;      // no numbers for evidence that was not applied
       } else {
         cs.errors = [];
         cs.reply = r;
       }
     } catch (e) {
       cs.errors = [String(e instanceof Error ? e.message : e)];
+      cs.reply = undefined;
     } finally {
       cs.busy = false;
     }
@@ -262,7 +269,7 @@ namespace Viz {
       const sel = $("evidence-file") as HTMLSelectElement;
       sel.innerHTML = `<option value="">Choose an evidence file…</option>` +
         r.session.evidence.map((f: string) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
-      const a = await api("/api/actions");
+      const a = await api(`/api/actions?id=${encodeURIComponent(id)}`);
       cs.actions = a.actions;
       ($("action-list") as HTMLElement).innerHTML =
         a.actions.map((x: string) => `<option value="${esc(x.replace(/^\(occurs /, "").replace(/ \d+\)$/, ""))}">`).join("");
