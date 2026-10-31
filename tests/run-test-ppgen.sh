@@ -340,7 +340,8 @@ goals=re.findall(r'\(at (pkg\d+) ([\w-]+)\)',prob.split('(:goal')[1])
 assert len(goals)==4, goals
 last=max(int(m) for m in re.findall(r'\(HOLDS \(AT \w+ [\w-]+\) (\d+)\)',ans))
 held={(p.lower(),l.lower()) for p,l in re.findall(rf'\(HOLDS \(AT (\w+) ([\w-]+)\) {last}\)',ans)}
-# at least one delivered (zero-cost loads may carry another along)
+# at least one delivered (--require some asks no more; a plan may deliver
+# another on the way, so "exactly one" would be too strong)
 assert len([g for g in goals if g in held])>=1, held
 EOF
   then pass; else fail "solution delivered nothing; see $TMP/rqs.log"; fi
@@ -671,15 +672,16 @@ def strongly_connected(E,net):
                 if y not in r: r.add(y); st.append(y)
         return r
     return reach(fw)==net and reach(bw)==net
-total=0; short=False
+total=0; short=0; wanted=0
 for net in comps(B):
     two=[(a,b) for a,b in B if a<b and a in net and (b,a) in B]
     one=[(a,b) for a,b in two if ((a,b) in R)!=((b,a) in R)]
     want=len(two)*n//100
+    wanted+=want
     assert len(one)<=want, (min(net),len(one),want)
     assert strongly_connected(R,net), ('not strongly connected',min(net))
     if len(one)<want:
-        short=True
+        short+=1
         for a,b in two:
             if (a,b) in R and (b,a) in R:
                 for d in ((a,b),(b,a)):
@@ -687,7 +689,10 @@ for net in comps(B):
     total+=len(one)
 m=re.search(r'^;; One-way (\d+)%: (\d+) of (\d+) two-way roads made one-way(.*)$',ow,re.M)
 assert m and int(m.group(1))==n and int(m.group(2))==total, (m and m.groups(),total)
-assert short==('all that could be' in m.group(4)), 'header and shortfall disagree'
+# a shortfall is reported per network: how many fell short, and the total asked
+s=re.search(r'\((\d+) were asked for: in (\d+) networks? every road that could be turned was\)',m.group(4))
+assert (s is not None)==(short>0), ('header and shortfall disagree',short,m.group(4))
+assert not s or (int(s.group(1)),int(s.group(2)))==(wanted,short), (s.groups(),wanted,short)
 assert n==0 or total>0, 'vacuous: nothing was turned'
 EOF
 ow_check() { python3 "$TMP/ow_check.py" "$@"; }
@@ -710,6 +715,23 @@ for n in 25 50; do for s in 1 2 3; do
 done; done
 [ -z "$OW_BAD" ] && pass || fail "$OW_BAD"
 
+# With knocked-out cliques some fall short and some do not: the shortfall is
+# counted per network (the review's case: a global "only N could be" was wrong
+# whenever another network had roads to spare).
+# Knockout 50 leaves each 5-place clique its spanning tree plus one road: only
+# the roads on that one cycle can turn, so how many can varies by clique, and at
+# 80% some cliques fall short while others do not.
+name "--oneway (cliques, knocked out): shortfall counted per network"
+OW_BAD=""; SAW_SOME=""
+for s in 1 2 3 4 5 6; do
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --knockout 50 > "$TMP/of.pddl"
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --knockout 50 --oneway 80 > "$TMP/ow.pddl"
+  ow_check "$TMP/ow.pddl" "$TMP/of.pddl" 80 2>"$TMP/ow.err" || { OW_BAD="seed=$s: $(tail -1 "$TMP/ow.err")"; break; }
+  grep -q 'in [12] networks\{0,1\} every road' "$TMP/ow.pddl" && SAW_SOME=1
+done
+[ -z "$OW_BAD" ] && [ -n "$SAW_SOME" ] && pass \
+  || fail "${OW_BAD:-vacuous: no seed had some cliques short and others not}"
+
 # 100% cannot be met on a knocked-out grid (its bridges must stay two-way):
 # every road that can be turned is, the rest provably cannot, and both the
 # header and stderr say so.
@@ -717,7 +739,8 @@ name "--oneway 100: as many as possible, the rest provably bridges, warned"
 gen --style grid --dimensions 5 5 --seed 2 --knockout 30 > "$TMP/of.pddl"
 WARN="$(bash "$PPGEN" --style grid --dimensions 5 5 --seed 2 --knockout 30 --oneway 100 -o "$TMP/ow.pddl" 2>&1 >/dev/null)"
 if ow_check "$TMP/ow.pddl" "$TMP/of.pddl" 100 2>"$TMP/ow.err" \
-   && grep -q 'all that could be' "$TMP/ow.pddl" && grep -q 'without cutting a place off' <<<"$WARN"; then pass
+   && grep -q 'were asked for: in 1 network every road' "$TMP/ow.pddl" \
+   && grep -q 'in 1 road network fewer than 100% of the roads can be one-way without cutting a place off' <<<"$WARN"; then pass
 else fail "$(tail -1 "$TMP/ow.err") | header: $(grep '^;; One-way' "$TMP/ow.pddl") | stderr: $WARN"; fi
 
 name "--oneway 0 is byte-identical to omitting it"
@@ -993,6 +1016,8 @@ err "--knockout above 100 is rejected"     "0 to 100"             --style grid -
 err "a negative --knockout is rejected"    "non-negative"         --style grid --dimensions 4 4 --knockout -5
 err "--oneway above 100 is rejected"       "0 to 100"             --style grid --dimensions 4 4 --oneway 101
 err "a negative --oneway is rejected"      "non-negative"         --style grid --dimensions 4 4 --oneway -5
+err "a negative --handle-cost is rejected" "handle-cost must be a non-negative number" --style grid --dimensions 4 4 --handle-cost -1
+err "a negative --drive-cost is rejected"  "drive-cost must be a non-negative number"  --style grid --dimensions 4 4 --drive-cost -2
 # 3x3 with one airport: road distances 0..4, and one place at 4
 err "--mindist beyond the farthest place is rejected" "only 0 places are at least 5 steps from the origin p1-1 by road (the farthest is 4)" --style grid --dimensions 3 3 --airports 1 --mindist 5
 err "--maxdist too near for the destinations is rejected" "only 2 places are at most 1 step from" --style grid --dimensions 3 3 --airports 1 --destinations 3 --maxdist 1
@@ -1074,20 +1099,22 @@ EOF
      grep -q 'SOLVED' "$TMP/ks.log"
   then pass; else fail "knocked-out problem did not solve; see $TMP/ks.log"; fi
 
-  # every drive in the plan follows a road as written: (drive t a b) needs
-  # (road a b), so a one-way road is never driven against its direction
-  name "grid --oneway: solves, and no drive goes against a one-way road"
+  # The one-way roads are real roads to the planner: a generated one-way grid
+  # solves, and its plan drives at least one one-way road (in its direction --
+  # the domain's (road ?from ?to) precondition allows no other).  ppgen's own
+  # one-way invariants are checked above, independently of any planner.
+  name "grid --oneway: solves, and the plan drives a one-way road"
   gen --style grid --dimensions 4 4 --airports 0 --trucks 1 --packages 2 --oneway 60 --seed 12 > "$TMP/os.pddl"
   if (cd "$TMP" && WEIGHTED_SOLVER="$SOLVER" bash "$REPO/bin/planner.sh" os.pddl \
         --domain "$DOMAIN" --maxslices 24 >"$TMP/os.log" 2>&1) && grep -q 'SOLVED' "$TMP/os.log" &&
-     python3 - "$TMP/os.pddl" "$TMP/os.answer" <<'EOF'
+     pycheck "$TMP/os.pddl" "$TMP/os.answer" <<'EOF'
 import sys,re
 p,a=open(sys.argv[1]).read().lower(),open(sys.argv[2]).read().lower()
 roads=set(re.findall(r'\(road ([\w-]+) ([\w-]+)\)',p))
-one=[r for r in roads if (r[1],r[0]) not in roads]
+one={r for r in roads if (r[1],r[0]) not in roads}
 drives=re.findall(r'\(occurs \(drive [\w-]+ ([\w-]+) ([\w-]+)\) \d+\)',a)
 assert one and drives, ('vacuous', len(one), len(drives))
-assert all(d in roads for d in drives), [d for d in drives if d not in roads]
+assert any(d in one for d in drives), 'the plan uses no one-way road'
 EOF
   then pass; else fail "see $TMP/os.log"; fi
 
