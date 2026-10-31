@@ -36,7 +36,13 @@ second hypothesis set refused), read at the final slice,
   equal to P(h | E) / P(h) normalized.  It is free: P(E | h) = Z(E ∧ h) / Z(h),
   and Z(h) comes from the one evidence-free pass made when the circuit loads.
   It removes the model's implicit prior P(h), which the marginal keeps; with
-  no evidence it is uniform by construction.
+  no evidence it is uniform by construction.  Caution, shown on the page:
+  with slice-pinned evidence and a fixed horizon it favours the goal whose
+  plans have the least slack (an on-time action is nearly certain under it),
+  and a short horizon overemphasizes this.  On TwoPackage/grid6x6-4, whose
+  recognition horizon 14 is exactly G2's shortest plan, P(E | G2) = 1 for
+  the first four drives toward pkg1, and the column ranks G2 above the
+  cheaper G1 though both are on an optimal path.
 
 The marginals need not sum to 1 (two packages can both be delivered); the
 uniform-prior column does, within each goal line.

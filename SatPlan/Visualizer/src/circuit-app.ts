@@ -171,6 +171,12 @@ namespace Viz {
       `P(E | h), and normalizes${groups > 1 ? " within each goal line" : ""}: the posterior if every ` +
       `goal were equally likely beforehand.  It is P(h | E) / P(h), normalized.  With no evidence ` +
       `it is uniform.</p>` +
+      `<p class="hint"><b>Caution:</b> the horizon${c.horizon !== null ? ` (${c.horizon} slices)` : ""} ` +
+      `is fixed, and the evidence pins actions to slices.  A goal whose plans fill the horizon has ` +
+      `little slack, so every on-time action is nearly certain under it, while a goal with spare ` +
+      `slices could also have waited or detoured.  The uniform-prior column then favours the goal ` +
+      `with the least slack, and a short horizon overemphasizes this: a goal that needs the whole ` +
+      `horizon has P(E | h) = 1 for any evidence on its one plan.</p>` +
       (r?.pe !== undefined
         ? `<p class="hint">Probability of the evidence under the model: P(E) = ${fmt(r.pe, 4)}` +
           // the reply's own evidence count: cs.step may already be ahead of it
