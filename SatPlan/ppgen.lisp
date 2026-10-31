@@ -14,9 +14,10 @@
 ;;;;            uniformly at random, airplanes spread evenly over the airports.
 ;;;;
 ;;;; In both styles every pair of airports is joined by a two-way route, so an
-;;;; airplane can reach any airport from any other, and the two travel costs are
-;;;; single values: the domain declares (drive-cost) and (fly-cost) with no
-;;;; arguments, so one number in :init prices every drive and every flight.
+;;;; airplane can reach any airport from any other, and the costs are single
+;;;; values: the domain declares (drive-cost), (fly-cost) and (handle-cost) with
+;;;; no arguments, so one number in :init prices every drive, every flight, and
+;;;; every load or unload.
 ;;;;
 ;;;; Goals name a place for each package, drawn at random but never the package's
 ;;;; own starting place, so no package is already where it needs to be.  Three
@@ -42,6 +43,17 @@
 ;;;; clique, or the whole grid -- while keeping it connected: a random spanning
 ;;;; tree is kept and random other roads are added back.  If the tree alone is
 ;;;; more than (100-N)% of the roads, N is refused.
+;;;;
+;;;; :oneway N then turns N percent of each network's remaining two-way roads
+;;;; one-way, each in a random direction, keeping every place reachable from
+;;;; every other; a bridge stays two-way (see the oneway section).  Roads are
+;;;; two-way unless :oneway turns them.
+;;;;
+;;;; Every generated file records its settings, so ppgen regenerates it byte for
+;;;; byte -- with the ppgen of that file's time.  Since load and unload got a
+;;;; cost (commit 4947c7d) every file has an (= (handle-cost) R) line and a
+;;;; --handle-cost setting, so a file made before then replays only with the
+;;;; ppgen of before (git show 4947c7d^:SatPlan/ppgen.lisp).
 ;;;;
 ;;;; :mindist N and :maxdist M (grid only, either or both) start every goal
 ;;;; object -- the packages, or with :packages 0 the trucks -- at the origin
@@ -222,17 +234,36 @@ style generates."
           (error "internal: a road network is not connected"))
         tree))))
 
-(defun knockout-random-state (seed)
-  "The knockout's own random state.  A VECTOR seed, so it never coincides with the
-main stream's integer seeding: SEED's low two 32-bit words, a marker word, then
-any higher words -- all of SEED counts, so seeds differing above bit 64 still
-knock out different roads, while a seed below 2^64 gets the same state it always
-did (knockout files made before this replay byte for byte)."
+(defun pass-random-state (seed marker)
+  "The random state of a pass over the roads (--knockout, --oneway) that must not
+disturb the main stream.  A VECTOR seed, so it never coincides with the main
+stream's integer seeding: SEED's low two 32-bit words, the pass's MARKER word,
+then any higher words -- all of SEED counts, so seeds differing above bit 64
+still draw differently, while a seed below 2^64 gets the state it always did."
   (let ((high (loop for s = (ash seed -64) then (ash s -32)
                     while (plusp s) collect (ldb (byte 32 0) s))))
     (sb-ext:seed-random-state
-     (coerce (list* (ldb (byte 32 0) seed) (ldb (byte 32 32) seed) #x4b4f high)
+     (coerce (list* (ldb (byte 32 0) seed) (ldb (byte 32 32) seed) marker high)
              '(vector (unsigned-byte 32))))))
+
+(defun knockout-random-state (seed)
+  "The knockout's own random state (knockout files made before the high words
+counted replay byte for byte)."
+  (pass-random-state seed #x4b4f))
+
+(defun network-edges (edges networks)
+  "EDGES split by road network, in their own order: a list with one edge list per
+place list of NETWORKS.  One linear pass over a place -> network table (a MEMBER
+per endpoint was quadratic: ~10^8 comparisons on a 100x100 grid)."
+  (let ((net-of (make-hash-table))
+        (v (make-array (length networks) :initial-element '())))
+    (loop for places in networks for i from 0
+          do (dolist (p places) (setf (gethash p net-of) i)))
+    (dolist (e edges)
+      (let ((i (gethash (first e) net-of)))
+        (when (and i (eql i (gethash (second e) net-of)))
+          (push e (aref v i)))))
+    (map 'list #'nreverse v)))
 
 (defun knockout-roads (roads networks percent seed)
   "ROADS with PERCENT of each network's two-way roads removed, every network still
@@ -240,19 +271,7 @@ connected.  NETWORKS is a list of place lists (one per clique, or the grid's
 places).  Returns (values kept-roads kept-edges total-edges)."
   (let* ((*rng* (knockout-random-state seed))
          (edges (road-edges roads))
-         ;; each place's network, so splitting the edges is one linear pass (a
-         ;; MEMBER per endpoint was quadratic: ~10^8 comparisons on a 100x100 grid)
-         (net-of (let ((h (make-hash-table)))
-                   (loop for places in networks for i from 0
-                         do (dolist (p places) (setf (gethash p h) i)))
-                   h))
-         (net-edges (let ((v (make-array (length networks) :initial-element '())))
-                      (dolist (e edges)
-                        (let ((i (gethash (first e) net-of)))
-                          (when (and i (eql i (gethash (second e) net-of)))
-                            (push e (aref v i)))))
-                      (map 'list #'nreverse v)))
-         (per-net (mapcar #'cons networks net-edges))
+         (per-net (mapcar #'cons networks (network-edges edges networks)))
          (total (length edges)))
     ;; The spanning tree is each network's floor: fewer roads cannot keep it
     ;; connected.  Checked PER NETWORK -- a global check would let a small,
@@ -281,6 +300,121 @@ places).  Returns (values kept-roads kept-edges total-edges)."
       (values (remove-if-not (lambda (r) (or (gethash r kept) (gethash (reverse r) kept)))
                              roads)
               n-kept total))))
+
+;;; ----------------------------------------------------------------- oneway
+;;;
+;;; :oneway N turns N percent of each road network's two-way roads (those left
+;;; after --knockout) into one-way roads, each in a random direction, while
+;;; keeping every place reachable from every other.  Roads are tried in random
+;;; order; dropping the direction u->v keeps the network strongly connected
+;;; exactly when u can still reach v without it (any route through u->v can then
+;;; go round), so each candidate costs one search, usually a short one.  When a
+;;; direction cannot go, the other is tried; when neither can (a bridge, whose
+;;; loss would cut the network in two), the road stays two-way.  If too few roads
+;;; can be made one-way, every one that can is, and the header says how many.
+;;;
+;;; Like --knockout it draws from its OWN random state, derived from the seed, so
+;;; the rest of the instance is identical with and without --oneway.
+
+(defun oneway-random-state (seed)
+  "The one-way pass's own random state, with its own marker word, so it never
+draws what the knockout draws."
+  (pass-random-state seed #x4f57))
+
+(defun bridges (edges)
+  "The bridges of the undirected graph EDGES (a list of (a b)): a hash table with
+each bridge edge, as it appears in EDGES, mapped to T.  Tarjan's low-link
+method, iterative (a 100x100 grid would overflow a recursive one), O(V+E)."
+  (let ((adj (make-hash-table)) (disc (make-hash-table)) (low (make-hash-table))
+        (out (make-hash-table :test #'equal)) (clock 0)
+        (ev (coerce edges 'vector)))
+    (loop for e across ev for i from 0
+          do (push (cons (second e) i) (gethash (first e) adj))
+             (push (cons (first e) i) (gethash (second e) adj)))
+    (dolist (root (loop for k being the hash-keys of adj collect k))
+      (unless (gethash root disc)
+        (setf (gethash root disc) clock (gethash root low) clock)
+        (incf clock)
+        ;; frames: (node edge-in pending-neighbours)
+        (let ((stack (list (list root -1 (gethash root adj)))))
+          (loop while stack
+                do (let ((frame (first stack)))
+                     (destructuring-bind (u in pending) frame
+                       (if pending
+                           (destructuring-bind (v . i) (first pending)
+                             (setf (third frame) (rest pending))
+                             (cond ((= i in))                       ; the edge we came by
+                                   ((gethash v disc)
+                                    (setf (gethash u low) (min (gethash u low) (gethash v disc))))
+                                   (t (setf (gethash v disc) clock (gethash v low) clock)
+                                      (incf clock)
+                                      (push (list v i (gethash v adj)) stack))))
+                           (progn
+                             (pop stack)
+                             (when stack
+                               (let ((p (first (first stack))))
+                                 (setf (gethash p low) (min (gethash p low) (gethash u low)))
+                                 (when (> (gethash u low) (gethash p disc))
+                                   (setf (gethash (aref ev in) out) t))))))))))))
+    out))
+
+(defun oneway-roads (roads networks percent seed)
+  "ROADS with PERCENT of each network's two-way roads made one-way, every network
+still strongly connected.  Returns (values roads n-oneway n-two-way n-wanted
+n-short), N-SHORT the number of networks where fewer could be turned than asked."
+  (let* ((*rng* (oneway-random-state seed))
+         (edges (road-edges roads))
+         (adj (make-hash-table))
+         (present (make-hash-table :test #'equal))
+         (removed (make-hash-table :test #'equal))
+         (n-oneway 0) (n-wanted 0) (n-two-way 0) (n-short 0))
+    (dolist (r roads)
+      (setf (gethash r present) t)
+      (push (second r) (gethash (first r) adj)))
+    (labels ((reaches (from to)
+               ;; breadth-first over the roads as they now stand, stopping at TO
+               (let ((seen (make-hash-table))
+                     (queue (make-array 16 :adjustable t :fill-pointer 0)) (head 0))
+                 (setf (gethash from seen) t)
+                 (vector-push-extend from queue)
+                 (loop while (< head (fill-pointer queue))
+                       do (let ((x (aref queue head)))
+                            (incf head)
+                            (when (eq x to) (return-from reaches t))
+                            (dolist (y (gethash x adj))
+                              (unless (gethash y seen)
+                                (setf (gethash y seen) t)
+                                (vector-push-extend y queue)))))
+                 nil))
+             (drop (u v)
+               ;; remove u->v; keep the removal if u still reaches v
+               (setf (gethash u adj) (remove v (gethash u adj) :count 1))
+               (if (reaches u v)
+                   (progn (setf (gethash (list u v) removed) t) t)
+                   (progn (push v (gethash u adj)) nil))))
+      (dolist (net-es (network-edges edges networks))
+        (let* ((es (remove-if-not (lambda (e) (gethash (list (second e) (first e)) present))
+                                  net-es))
+               (want (floor (* (length es) percent) 100))
+               ;; a bridge's loss in either direction cuts the network, and
+               ;; turning other roads only removes directions, so a bridge never
+               ;; becomes turnable: skip them without a search (each would cost
+               ;; two failed ones, up to the whole network apiece)
+               (bridge (bridges es))
+               (made 0))
+          (incf n-two-way (length es))
+          (incf n-wanted want)
+          (loop for e in (shuffled es)
+                while (< made want)
+                ;; the direction is drawn for a bridge too, so the draws -- and
+                ;; the files of a seed -- are those of the search-every-road pass
+                do (destructuring-bind (a b) (if (zerop (rnd 2)) e (reverse e))
+                     (when (and (not (gethash e bridge)) (or (drop a b) (drop b a)))
+                       (incf made)
+                       (incf n-oneway))))
+          (when (< made want) (incf n-short)))))
+    (values (remove-if (lambda (r) (gethash r removed)) roads)
+            n-oneway n-two-way n-wanted n-short)))
 
 ;;; ------------------------------------------------------- mindist, maxdist
 
@@ -420,7 +554,7 @@ case every weight is NIL."
 (defun write-problem (stream &key name domain place-names airport-names roads routes
                                   trucks airplanes packages
                                   truck-at airplane-at package-at goals
-                                  drive-cost fly-cost header parameters pref-weights
+                                  drive-cost fly-cost handle-cost header parameters pref-weights
                                   (require :all) (goal-verb "deliver"))
   (let ((*print-case* :downcase))
     (format stream ";; ~a~%" name)
@@ -453,10 +587,12 @@ case every weight is NIL."
     (dolist (r roads)  (format stream "        (road ~(~a~) ~(~a~))~%" (first r) (second r)))
     (terpri stream)
     (dolist (r routes) (format stream "        (route ~(~a~) ~(~a~))~%" (first r) (second r)))
-    (format stream "~%        ;; travel prices: one value for every drive, one for every flight~%")
+    (format stream "~%        ;; prices: one value for every drive, one for every flight, one for~%")
+    (format stream "        ;; every load or unload~%")
     (format stream "        (= (total-cost) 0)~%")
     (format stream "        (= (drive-cost) ~a)~%" drive-cost)
-    (format stream "        (= (fly-cost) ~a))~%~%" fly-cost)
+    (format stream "        (= (fly-cost) ~a)~%" fly-cost)
+    (format stream "        (= (handle-cost) ~a))~%~%" handle-cost)
     ;; goal: the hard forms for REQUIRE, then with PREF-WEIGHTS one preference
     ;; per goal, its weight charged when that goal does not hold.
     (let* ((atoms (mapcar (lambda (g) (format nil "(at ~(~a~) ~(~a~))" (car g) (cdr g)))
@@ -489,9 +625,9 @@ in the generated file and can be reproduced exactly."
        (expt 2 31)))
 
 (defun ppgen (&key (style :clique) clique-size number-cliques rows cols airports
-                   trucks airplanes packages (drive-cost 1) (fly-cost 3)
+                   trucks airplanes packages (drive-cost 1) (fly-cost 3) (handle-cost 1)
                    pref-low pref-high (destinations 1) (require "all")
-                   (knockout 0) mindist maxdist
+                   (knockout 0) (oneway 0) mindist maxdist
                    seed (domain "clara-logistics") name
                    (stream *standard-output*)
               ;; No packages: the goals move the trucks instead.  (An empty goal
@@ -504,11 +640,23 @@ though AIRPLANES may still ask for some), and every goal option applies per
 truck.  DESTINATIONS is the number of alternatives per goal object; REQUIRE
 (all or some) whether every object must reach one or at least one; PREF-LOW..PREF-HIGH
 weights every goal as a preference.  KNOCKOUT (0-100) deletes that percent of
-each road network's roads, keeping it connected.  MINDIST and MAXDIST (grid
-only, either or both) start the goal objects at the origin p1-1 and send them
-only to places at least MINDIST and at most MAXDIST steps away."
+each road network's roads, keeping it connected; ONEWAY (0-100) then makes that
+percent of the remaining roads one-way, keeping every place reachable from
+every other.  MINDIST and MAXDIST (grid only, either or both) start the goal
+objects at the origin p1-1 and send them only to places at least MINDIST and at
+most MAXDIST steps away, following one-way roads' directions.  DRIVE-COST,
+FLY-COST and HANDLE-COST (non-negative) price a drive, a flight, and a load or
+unload."
   (unless (and (integerp knockout) (<= 0 knockout 100))
     (error "--knockout must be an integer from 0 to 100, got ~a" knockout))
+  (unless (and (integerp oneway) (<= 0 oneway 100))
+    (error "--oneway must be an integer from 0 to 100, got ~a" oneway))
+  ;; a negative cost makes a cost-optimal plan pad itself with pointless actions
+  ;; (a load/unload pair, a drive back and forth) to lower its total
+  (loop for (flag value) in (list (list "--drive-cost" drive-cost) (list "--fly-cost" fly-cost)
+                                  (list "--handle-cost" handle-cost))
+        unless (and (realp value) (>= value 0))
+          do (error "~a must be a non-negative number, got ~a" flag value))
   (loop for (flag value) in (list (list "--mindist" mindist) (list "--maxdist" maxdist))
         when value
           do (unless (and (integerp value) (>= value 1))
@@ -558,7 +706,7 @@ only to places at least MINDIST and at most MAXDIST steps away."
                networks by-clique
                header (list (format nil "~d clique~:p of ~d place~:p, ~
                                          ~:[fully connected by roads~;connected by roads~];"
-                                    number-cliques clique-size (plusp knockout))
+                                    number-cliques clique-size (or (plusp knockout) (plusp oneway)))
                             (format nil "one airport per clique, all airports joined by routes.")
                             (format nil "~d truck~:p, ~d airplane~:p, ~d package~:p, spread evenly over the cliques."
                                     trucks airplanes packages)))
@@ -650,6 +798,27 @@ only to places at least MINDIST and at most MAXDIST steps away."
                                                 stays reachable by road~:[~; within its clique~]."
                                            knockout n-kept total
                                            (eq style :clique) (eq style :clique)))))))
+    ;; --oneway: after --knockout (it turns some of the roads that remain), from
+    ;; its own random state.  0 does nothing, keeping recorded seeds identical.
+    (when (plusp oneway)
+      ;; the quota is per network, so a shortfall is per network too: in N-SHORT
+      ;; networks every road that could be turned was, and still too few
+      (multiple-value-bind (kept n-oneway n-two-way n-wanted n-short)
+          (oneway-roads roads networks oneway seed)
+        (when (plusp n-short)
+          (format *error-output* "ppgen: --oneway ~d asked for ~d one-way road~:p but made ~d: in ~
+                                  ~d road network~:p fewer than ~d% of the roads can be one-way ~
+                                  without cutting a place off, and every one that could be was.~%"
+                  oneway n-wanted n-oneway n-short oneway))
+        (setf roads kept
+              header (append header
+                             (list (format nil "One-way ~d%: ~d of ~d two-way roads made one-way~
+                                                ~:[~2*~; (~d were asked for: in ~d network~:p ~
+                                                every road that could be turned was)~], each ~
+                                                in a random direction, so every place can still ~
+                                                reach every other~:[~; within its clique~]."
+                                           oneway n-oneway n-two-way (plusp n-short) n-wanted n-short
+                                           (eq style :clique)))))))
     (when truck-goals
       (setf header
             (append header
@@ -739,14 +908,16 @@ only to places at least MINDIST and at most MAXDIST steps away."
                            (cons "--packages" (length packages))
                            (cons "--drive-cost" drive-cost)
                            (cons "--fly-cost" fly-cost)
+                           (cons "--handle-cost" handle-cost)
                            (cons "--preferences"
                                  (if pref-low
                                      (format nil "~a ~a" pref-low pref-high)
                                      "none"))
                            (cons "--destinations" destinations)
                            (cons "--require" (string-downcase require)))
-                     ;; these three are recorded only when set
+                     ;; these are recorded only when set
                      (when (plusp knockout) (list (cons "--knockout" knockout)))
+                     (when (plusp oneway) (list (cons "--oneway" oneway)))
                      (when mindist (list (cons "--mindist" mindist)))
                      (when maxdist (list (cons "--maxdist" maxdist)))
                      (list (cons "--seed" seed)))))
@@ -758,7 +929,7 @@ only to places at least MINDIST and at most MAXDIST steps away."
                    :trucks trucks :airplanes airplanes :packages packages
                    :truck-at truck-at :airplane-at airplane-at :package-at package-at
                    :goals goals
-                   :drive-cost drive-cost :fly-cost fly-cost
+                   :drive-cost drive-cost :fly-cost fly-cost :handle-cost handle-cost
                    :header header :parameters parameters
                    :pref-weights weights :require require
                    :goal-verb (if truck-goals "reach" "deliver"))))

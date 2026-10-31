@@ -340,7 +340,8 @@ goals=re.findall(r'\(at (pkg\d+) ([\w-]+)\)',prob.split('(:goal')[1])
 assert len(goals)==4, goals
 last=max(int(m) for m in re.findall(r'\(HOLDS \(AT \w+ [\w-]+\) (\d+)\)',ans))
 held={(p.lower(),l.lower()) for p,l in re.findall(rf'\(HOLDS \(AT (\w+) ([\w-]+)\) {last}\)',ans)}
-# at least one delivered (zero-cost loads may carry another along)
+# at least one delivered (--require some asks no more; a plan may deliver
+# another on the way, so "exactly one" would be too strong)
 assert len([g for g in goals if g in held])>=1, held
 EOF
   then pass; else fail "solution delivered nothing; see $TMP/rqs.log"; fi
@@ -625,6 +626,136 @@ name "--knockout is recorded when set"
 grep -qx ';;   --knockout 50' "$TMP/kk.pddl" && ! grep -q -- '--knockout' "$TMP/kf.pddl" && pass \
   || fail "$(grep -- '--knockout' "$TMP/kk.pddl" "$TMP/kf.pddl")"
 
+# ------------------------------------------------------------------ oneway ---
+#
+# ow_check <oneway.pddl> <base.pddl> <N> : the --oneway file against the SAME seed
+# and options without --oneway.  The oracle is its own graph code:
+#   - every road of the base survives in at least one direction, and nothing but
+#     road lines (and comments) differs;
+#   - per road network (the components of the base's roads), at most
+#     floor(E*N/100) of its E two-way roads are one-way, and the header's count
+#     is the total; when fewer than asked for, the header says so and every
+#     road left two-way truly cannot be turned (dropping either direction
+#     would leave some place unable to reach another);
+#   - every place reaches every other in its network, following directions.
+# It refuses to pass vacuously: with N > 0 some road must have been turned.
+cat > "$TMP/ow_check.py" <<'EOF'
+import sys,re
+ow,base,n=open(sys.argv[1]).read(),open(sys.argv[2]).read(),int(sys.argv[3])
+def roads(t): return set(re.findall(r'^\s+\(road ([\w-]+) ([\w-]+)\)$',t,re.M))
+def body(t): return [l for l in t.splitlines()
+                     if not l.startswith(';;') and not re.match(r'^\s+\(road ',l)]
+R,B=roads(ow),roads(base)
+assert R<=B, R-B
+assert all((a,b) in R or (b,a) in R for a,b in B), 'a road vanished in both directions'
+assert body(ow)==body(base), 'something besides the roads changed'
+def comps(E):
+    adj={}
+    for a,b in E: adj.setdefault(a,set()).add(b); adj.setdefault(b,set()).add(a)
+    seen,out=set(),[]
+    for s in adj:
+        if s in seen: continue
+        c,st={s},[s]
+        while st:
+            for y in adj[st.pop()]:
+                if y not in c: c.add(y); st.append(y)
+        seen|=c; out.append(c)
+    return out
+def strongly_connected(E,net):
+    fw,bw={},{}
+    for a,b in E:
+        if a in net: fw.setdefault(a,[]).append(b); bw.setdefault(b,[]).append(a)
+    def reach(adj):
+        s=min(net); r,st={s},[s]
+        while st:
+            for y in adj.get(st.pop(),[]):
+                if y not in r: r.add(y); st.append(y)
+        return r
+    return reach(fw)==net and reach(bw)==net
+total=0; short=0; wanted=0
+for net in comps(B):
+    two=[(a,b) for a,b in B if a<b and a in net and (b,a) in B]
+    one=[(a,b) for a,b in two if ((a,b) in R)!=((b,a) in R)]
+    want=len(two)*n//100
+    wanted+=want
+    assert len(one)<=want, (min(net),len(one),want)
+    assert strongly_connected(R,net), ('not strongly connected',min(net))
+    if len(one)<want:
+        short+=1
+        for a,b in two:
+            if (a,b) in R and (b,a) in R:
+                for d in ((a,b),(b,a)):
+                    assert not strongly_connected(R-{d},net), ('could have turned',d)
+    total+=len(one)
+m=re.search(r'^;; One-way (\d+)%: (\d+) of (\d+) two-way roads made one-way(.*)$',ow,re.M)
+assert m and int(m.group(1))==n and int(m.group(2))==total, (m and m.groups(),total)
+# a shortfall is reported per network: how many fell short, and the total asked
+s=re.search(r'\((\d+) were asked for: in (\d+) networks? every road that could be turned was\)',m.group(4))
+assert (s is not None)==(short>0), ('header and shortfall disagree',short,m.group(4))
+assert not s or (int(s.group(1)),int(s.group(2)))==(wanted,short), (s.groups(),wanted,short)
+assert n==0 or total>0, 'vacuous: nothing was turned'
+EOF
+ow_check() { python3 "$TMP/ow_check.py" "$@"; }
+
+name "--oneway (grid): count, every place reaches every other, over seeds"
+OW_BAD=""
+for n in 10 30 60; do for k in 0 20; do for s in 1 2 3 4; do
+  gen --style grid --dimensions 5 5 --seed "$s" --knockout "$k" > "$TMP/of.pddl"
+  gen --style grid --dimensions 5 5 --seed "$s" --knockout "$k" --oneway "$n" > "$TMP/ow.pddl"
+  ow_check "$TMP/ow.pddl" "$TMP/of.pddl" "$n" 2>"$TMP/ow.err" || { OW_BAD="N=$n knockout=$k seed=$s: $(tail -1 "$TMP/ow.err")"; break 3; }
+done; done; done
+[ -z "$OW_BAD" ] && pass || fail "$OW_BAD"
+
+name "--oneway (clique): per clique, still strongly connected"
+OW_BAD=""
+for n in 25 50; do for s in 1 2 3; do
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" > "$TMP/of.pddl"
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --oneway "$n" > "$TMP/ow.pddl"
+  ow_check "$TMP/ow.pddl" "$TMP/of.pddl" "$n" 2>"$TMP/ow.err" || { OW_BAD="N=$n seed=$s: $(tail -1 "$TMP/ow.err")"; break 2; }
+done; done
+[ -z "$OW_BAD" ] && pass || fail "$OW_BAD"
+
+# With knocked-out cliques some fall short and some do not: the shortfall is
+# counted per network (the review's case: a global "only N could be" was wrong
+# whenever another network had roads to spare).
+# Knockout 50 leaves each 5-place clique its spanning tree plus one road: only
+# the roads on that one cycle can turn, so how many can varies by clique, and at
+# 80% some cliques fall short while others do not.
+name "--oneway (cliques, knocked out): shortfall counted per network"
+OW_BAD=""; SAW_SOME=""
+for s in 1 2 3 4 5 6; do
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --knockout 50 > "$TMP/of.pddl"
+  gen --style clique --clique-size 5 --number-cliques 3 --seed "$s" --knockout 50 --oneway 80 > "$TMP/ow.pddl"
+  ow_check "$TMP/ow.pddl" "$TMP/of.pddl" 80 2>"$TMP/ow.err" || { OW_BAD="seed=$s: $(tail -1 "$TMP/ow.err")"; break; }
+  grep -q 'in [12] networks\{0,1\} every road' "$TMP/ow.pddl" && SAW_SOME=1
+done
+[ -z "$OW_BAD" ] && [ -n "$SAW_SOME" ] && pass \
+  || fail "${OW_BAD:-vacuous: no seed had some cliques short and others not}"
+
+# 100% cannot be met on a knocked-out grid (its bridges must stay two-way):
+# every road that can be turned is, the rest provably cannot, and both the
+# header and stderr say so.
+name "--oneway 100: as many as possible, the rest provably bridges, warned"
+gen --style grid --dimensions 5 5 --seed 2 --knockout 30 > "$TMP/of.pddl"
+WARN="$(bash "$PPGEN" --style grid --dimensions 5 5 --seed 2 --knockout 30 --oneway 100 -o "$TMP/ow.pddl" 2>&1 >/dev/null)"
+if ow_check "$TMP/ow.pddl" "$TMP/of.pddl" 100 2>"$TMP/ow.err" \
+   && grep -q 'were asked for: in 1 network every road' "$TMP/ow.pddl" \
+   && grep -q 'in 1 road network fewer than 100% of the roads can be one-way without cutting a place off' <<<"$WARN"; then pass
+else fail "$(tail -1 "$TMP/ow.err") | header: $(grep '^;; One-way' "$TMP/ow.pddl") | stderr: $WARN"; fi
+
+name "--oneway 0 is byte-identical to omitting it"
+gen --style grid --dimensions 4 4 --seed 11 --knockout 20 > "$TMP/o0a.pddl"
+gen --style grid --dimensions 4 4 --seed 11 --knockout 20 --oneway 0 > "$TMP/o0b.pddl"
+cmp -s "$TMP/o0a.pddl" "$TMP/o0b.pddl" && pass || fail "--oneway 0 changed the file"
+
+name "--oneway is recorded when set, and replays"
+gen --style grid --dimensions 5 5 --seed 7 --oneway 40 > "$TMP/ow.pddl"
+ARGS_OW=$(sed -n 's/^;;   \(--.*\)$/\1/p' "$TMP/ow.pddl" | tr '\n' ' ')
+# shellcheck disable=SC2086
+gen $ARGS_OW > "$TMP/ow2.pddl"
+grep -qx ';;   --oneway 40' "$TMP/ow.pddl" && cmp -s "$TMP/ow.pddl" "$TMP/ow2.pddl" && pass \
+  || fail "not recorded, or the recorded settings do not replay"
+
 # --------------------------------------------------------- mindist, maxdist ---
 #
 # md_check <file> <LO> <HI> <kind> [roads] : the oracle is its own BFS over the
@@ -761,6 +892,18 @@ for s in 1 2 3 4 5 6; do
 done
 [ -z "$MD_BAD" ] && pass || fail "$MD_BAD"
 
+# md_check's BFS follows each (road a b) from a to b only, so it measures
+# one-way roads in their direction.  --airports 1: no routes, roads alone.
+name "--mindist measures over one-way roads in their direction"
+MD_BAD=""
+for s in 1 2 3 4 5 6; do
+  gen --style grid --dimensions 6 6 --airports 1 --packages 3 --oneway 50 \
+      --mindist 7 --maxdist 7 --seed "$s" > "$TMP/md.pddl"
+  grep -q '^;; One-way 50%' "$TMP/md.pddl" || { MD_BAD="seed $s: no one-way roads made"; break; }
+  md_check "$TMP/md.pddl" 7 7 pkg 2>"$TMP/md.err" || { MD_BAD="seed $s: $(tail -1 "$TMP/md.err")"; break; }
+done
+[ -z "$MD_BAD" ] && pass || fail "$MD_BAD"
+
 # Only the goal objects' starts, the goals and the comments change: trucks,
 # airports, airplanes and roads are those of the same seed without the option.
 name "--mindist / --maxdist change only the starts and goals"
@@ -871,6 +1014,10 @@ err "--knockout above the tree bound (grid) names M" "Knockout value set too hig
 err "--knockout above the tree bound (clique) names M" "Knockout value set too high, 50% required to maintain connectivity" --style clique --clique-size 4 --number-cliques 2 --knockout 51
 err "--knockout above 100 is rejected"     "0 to 100"             --style grid --dimensions 4 4 --knockout 101
 err "a negative --knockout is rejected"    "non-negative"         --style grid --dimensions 4 4 --knockout -5
+err "--oneway above 100 is rejected"       "0 to 100"             --style grid --dimensions 4 4 --oneway 101
+err "a negative --oneway is rejected"      "non-negative"         --style grid --dimensions 4 4 --oneway -5
+err "a negative --handle-cost is rejected" "handle-cost must be a non-negative number" --style grid --dimensions 4 4 --handle-cost -1
+err "a negative --drive-cost is rejected"  "drive-cost must be a non-negative number"  --style grid --dimensions 4 4 --drive-cost -2
 # 3x3 with one airport: road distances 0..4, and one place at 4
 err "--mindist beyond the farthest place is rejected" "only 0 places are at least 5 steps from the origin p1-1 by road (the farthest is 4)" --style grid --dimensions 3 3 --airports 1 --mindist 5
 err "--maxdist too near for the destinations is rejected" "only 2 places are at most 1 step from" --style grid --dimensions 3 3 --airports 1 --destinations 3 --maxdist 1
@@ -951,6 +1098,25 @@ EOF
        --domain "$DOMAIN" --maxslices 16 >"$TMP/ks.log" 2>&1 &&
      grep -q 'SOLVED' "$TMP/ks.log"
   then pass; else fail "knocked-out problem did not solve; see $TMP/ks.log"; fi
+
+  # The one-way roads are real roads to the planner: a generated one-way grid
+  # solves, and its plan drives at least one one-way road (in its direction --
+  # the domain's (road ?from ?to) precondition allows no other).  ppgen's own
+  # one-way invariants are checked above, independently of any planner.
+  name "grid --oneway: solves, and the plan drives a one-way road"
+  gen --style grid --dimensions 4 4 --airports 0 --trucks 1 --packages 2 --oneway 60 --seed 12 > "$TMP/os.pddl"
+  if (cd "$TMP" && WEIGHTED_SOLVER="$SOLVER" bash "$REPO/bin/planner.sh" os.pddl \
+        --domain "$DOMAIN" --maxslices 24 >"$TMP/os.log" 2>&1) && grep -q 'SOLVED' "$TMP/os.log" &&
+     pycheck "$TMP/os.pddl" "$TMP/os.answer" <<'EOF'
+import sys,re
+p,a=open(sys.argv[1]).read().lower(),open(sys.argv[2]).read().lower()
+roads=set(re.findall(r'\(road ([\w-]+) ([\w-]+)\)',p))
+one={r for r in roads if (r[1],r[0]) not in roads}
+drives=re.findall(r'\(occurs \(drive [\w-]+ ([\w-]+) ([\w-]+)\) \d+\)',a)
+assert one and drives, ('vacuous', len(one), len(drives))
+assert any(d in one for d in drives), 'the plan uses no one-way road'
+EOF
+  then pass; else fail "see $TMP/os.log"; fi
 
   name "grid --mindist N --maxdist N: a generated problem still solves"
   gen --style grid --dimensions 3 3 --airports 1 --packages 2 --mindist 3 --maxdist 3 --seed 13 > "$TMP/mds.pddl"

@@ -20,7 +20,9 @@
 # place each package somewhere other than where it started -- or, with
 # --packages 0, send each truck somewhere.  --destinations, --require and
 # --preferences shape the goal independently.  --knockout N
-# deletes N percent of each road network's roads, keeping it connected.
+# deletes N percent of each road network's roads, keeping it connected;
+# --oneway N then makes N percent of the remaining roads one-way, keeping every
+# place reachable from every other.
 # --mindist N and --maxdist M (grid) start the goal objects at p1-1 and put every
 # destination at least N and at most M steps away.
 #
@@ -76,12 +78,20 @@ both styles:
                                applies per truck
   --drive-cost <R>          cost of one drive, default 1
   --fly-cost <R>            cost of one flight, default 3
+  --handle-cost <R>         cost of one load or unload, default 1
   --knockout <N>            delete N percent (0-100) of the roads of each road
                                network -- each clique, or the whole grid --
                                keeping it connected: a random spanning tree is
                                kept and random other roads added back.  Refused
                                when the tree alone exceeds (100-N)% of the
                                roads.  Default 0
+  --oneway <N>              make N percent (0-100) of each road network's
+                               two-way roads (after --knockout) one-way, each
+                               in a random direction, keeping every place
+                               reachable from every other.  A road whose loss
+                               of either direction would cut a place off stays
+                               two-way; if too few can be turned, all that can
+                               are, with a warning.  Default 0
   --seed <N>                seed the generator, so a run is reproducible.
                                With no --seed the clock supplies one, and the
                                value used is recorded in the generated file
@@ -121,9 +131,9 @@ EOF
 }
 
 STYLE="" CLIQUE_SIZE="" NUMBER_CLIQUES="" ROWS="" COLS="" AIRPORTS=""
-TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3"
+TRUCKS="" AIRPLANES="" PACKAGES="" DRIVE_COST="1" FLY_COST="3" HANDLE_COST="1"
 SEED="" NAME="" DOMAIN="clara-logistics" OUTPUT="" PREF_L="" PREF_H=""
-DESTINATIONS="" REQUIRE="" KNOCKOUT="" MINDIST="" MAXDIST=""
+DESTINATIONS="" REQUIRE="" KNOCKOUT="" ONEWAY="" MINDIST="" MAXDIST=""
 
 die() { echo "ppgen.sh: $1" >&2; exit 2; }
 
@@ -151,6 +161,7 @@ while [[ $# -gt 0 ]]; do
     --packages)       need "$@"; want_int "$1" "$2"; PACKAGES="$2"; shift 2 ;;
     --drive-cost)     need "$@"; want_num "$1" "$2"; DRIVE_COST="$2"; shift 2 ;;
     --fly-cost)       need "$@"; want_num "$1" "$2"; FLY_COST="$2"; shift 2 ;;
+    --handle-cost)    need "$@"; want_num "$1" "$2"; HANDLE_COST="$2"; shift 2 ;;
     --preferences)
       need "$@"
       if [[ "$2" == "none" ]]; then
@@ -166,6 +177,7 @@ while [[ $# -gt 0 ]]; do
       [[ "$2" == all || "$2" == some ]] || die "--require takes all or some, got '$2'"
       REQUIRE="$2"; shift 2 ;;
     --knockout)       need "$@"; want_int "$1" "$2"; KNOCKOUT="$2"; shift 2 ;;
+    --oneway)         need "$@"; want_int "$1" "$2"; ONEWAY="$2"; shift 2 ;;
     --mindist)        need "$@"; want_int "$1" "$2"; MINDIST="$2"; shift 2 ;;
     --maxdist)        need "$@"; want_int "$1" "$2"; MAXDIST="$2"; shift 2 ;;
     --seed)           need "$@"; want_int "$1" "$2"; SEED="$2"; shift 2 ;;
@@ -179,6 +191,9 @@ done
 
 if [[ -n "$KNOCKOUT" && "$KNOCKOUT" -gt 100 ]]; then
   die "--knockout is a percentage, 0 to 100, got $KNOCKOUT"
+fi
+if [[ -n "$ONEWAY" && "$ONEWAY" -gt 100 ]]; then
+  die "--oneway is a percentage, 0 to 100, got $ONEWAY"
 fi
 if [[ -n "$MINDIST" && "$MINDIST" -lt 1 ]]; then
   die "--mindist must be at least 1, got $MINDIST"
@@ -235,11 +250,13 @@ ARGS+="$(kw :airplanes "$AIRPLANES")"
 ARGS+="$(kw :packages "$PACKAGES")"
 ARGS+="$(kw :drive-cost "$DRIVE_COST")"
 ARGS+="$(kw :fly-cost "$FLY_COST")"
+ARGS+="$(kw :handle-cost "$HANDLE_COST")"
 ARGS+="$(kw :destinations "$DESTINATIONS")"
 if [[ -n "$REQUIRE" ]]; then ARGS+=" :require \"$REQUIRE\""; fi
 ARGS+="$(kw :pref-low "$PREF_L")"
 ARGS+="$(kw :pref-high "$PREF_H")"
 ARGS+="$(kw :knockout "$KNOCKOUT")"
+ARGS+="$(kw :oneway "$ONEWAY")"
 ARGS+="$(kw :mindist "$MINDIST")"
 ARGS+="$(kw :maxdist "$MAXDIST")"
 ARGS+="$(kw :seed "$SEED")"

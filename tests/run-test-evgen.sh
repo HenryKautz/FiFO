@@ -25,7 +25,10 @@ EVGEN="$REPO/SatPlan/evgen.sh"
 PPGEN="$REPO/SatPlan/ppgen.sh"
 export REPO
 PLANNER="$REPO/bin/planner.sh"
-DOMAIN="$REPO/pddl/clara-logistics.pddl"
+# The cases below are calibrated to this domain's plans (observed actions, slices
+# and costs of a fixed-seed fixture): the clara-logistics of before load/unload
+# had a cost and transfer was removed.  It accepts ppgen's handle-cost line.
+DOMAIN="$REPO/pddl/clara-logistics-old.pddl"
 SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
