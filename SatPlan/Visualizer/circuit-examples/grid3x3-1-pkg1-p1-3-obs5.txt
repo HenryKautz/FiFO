@@ -1,0 +1,10 @@
+;; All five actions of the plan delivering pkg1 to p1-3 (CLARA TwoPackage,
+;; goals/grid3x3-1-pkg1-p1-3-clean.answer), pinned to their slices.  For the
+;; circuit visualizer: step through it to watch the hypotheses converge.
+
+(and
+  (occurs (drive truck1 p2-3 p3-3) 1)
+  (occurs (load pkg1 truck1 p3-3) 2)
+  (occurs (drive truck1 p3-3 p2-3) 3)
+  (occurs (drive truck1 p2-3 p1-3) 4)
+  (occurs (unload pkg1 truck1 p1-3) 5))

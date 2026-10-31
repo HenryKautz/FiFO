@@ -41,3 +41,6 @@ SatPlan/**/*-maxterm.wcnf
 SatPlan/**/*-maxterm.satout
 SatPlan/**/*-maxterm-v.cnf
 SatPlan/**/*-maxterm-v.satout
+
+# Python bytecode caches anywhere, even under the !SatPlan/** exception above
+**/__pycache__/

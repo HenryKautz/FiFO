@@ -159,7 +159,7 @@ preprocessor-techniques timeout)`.
   `bash run-test-solve.sh <name>` (`tests_solve/` → `.answer`, compare
   `gold_solve/<name>_gold.answer`). Instantiate output is deterministic.
 - Behavioural suites `tests/run-test-*.sh`, runnable from anywhere: action-costs,
-  cleanup, cli, ddnnf-eval, docs, evgen, evidence, hypotheses, maxsat, maxterm, mcc-dialect,
+  circuit-viz, cleanup, cli, ddnnf-eval, docs, evgen, evidence, hypotheses, maxsat, maxterm, mcc-dialect,
   if, mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, restrict,
   sharpsat, solvers, tseitin, visualizer, weight-formula. Each skips cleanly (exit 0) when its optional binary is
   missing. `run-test-pddl.sh` diffs translations against checked-in wffs — update

@@ -154,6 +154,41 @@ aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .solution li.current { background: var(--current); }
 .solution li .noop { color: var(--muted); font-style: italic; }
 
+/* circuit visualizer: observed actions and goal probabilities on the map */
+.map-caption { font-size: 12px; color: var(--muted); padding: 2px 6px 0; }
+.obs-move line { stroke-width: 3.5; opacity: .8; }
+.obs-move text { font-weight: 700; }
+.obs-tag rect { fill: var(--panel); stroke: var(--square-stroke); stroke-width: .8; }
+.map .obs-tag text { fill: var(--text); font-weight: 600; }
+.map .goal.prob rect { stroke-dasharray: none; }
+.map text.pnum { font-weight: 500; }
+
+/* circuit visualizer: hypotheses table */
+.hypotheses { overflow: auto; max-height: 48vh; }
+table.hyp { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.hyp th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; padding: 2px 4px; }
+table.hyp td { padding: 3px 4px; border-top: 1px solid var(--border); vertical-align: middle; }
+table.hyp td.lit { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+table.hyp td.prob { position: relative; width: 26%; min-width: 70px; }
+table.hyp td.prob .bar { position: absolute; left: 0; top: 3px; bottom: 3px; opacity: .28; border-radius: 3px; }
+table.hyp td.prob .bar.post { opacity: .16; }
+table.hyp td.prob .num { position: relative; font-variant-numeric: tabular-nums; font-weight: 600; padding-left: 4px; }
+table.hyp tr.best td { background: var(--current); }
+table.hyp tr.missing td { color: var(--muted); font-style: italic; }
+.unsat { color: #dc2626; font-weight: 600; margin: 0; }
+
+/* circuit visualizer: entering an observation */
+.add-obs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px;
+           padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.add-obs input#add-action { flex: 1 1 14em; min-width: 10em; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.add-obs input#add-slice { width: 4em; }
+.add-obs button, .solution li button.remove {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 6px; cursor: pointer;
+}
+.add-obs button { padding: 3px 10px; }
+.solution li button.remove { grid-column: 3; grid-row: 1; padding: 0 5px; font-size: 11px; opacity: .6; }
+.circuit-page .solution li { grid-template-columns: 2.4em 1fr auto; }
+
 @media (max-width: 800px) {
   main { grid-template-columns: 1fr; grid-template-rows: minmax(60vh, 1fr) auto; }
 }

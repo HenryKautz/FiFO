@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Circuit Visualizer</title>
+  <link rel="stylesheet" href="visualizer.css">
+</head>
+<body class="circuit-page">
+  <header>
+    <h1>Circuit Visualizer</h1>
+    <label class="file">Session
+      <select id="session"><option value="">Loading…</option></select>
+    </label>
+    <label class="file">Evidence file
+      <select id="evidence-file"><option value="">Choose a session first</option></select>
+    </label>
+    <label class="file">…or a local one
+      <input type="file" id="evidence-upload" accept=".txt,.ev,*">
+    </label>
+    <span id="summary" class="summary">Connecting to the circuit server…</span>
+  </header>
+  <div id="messages" class="messages" hidden></div>
+  <main>
+    <section class="panel map-panel">
+      <div class="map-caption">The initial state.  Observed drives are arrows labelled with
+        their slice; loads (L) and unloads (U) are tags on their place.  Each goal is shaded
+        by its probability given the evidence.</div>
+      <div id="map" class="map-box">
+        <div class="placeholder">
+          <p>The problem's map appears here, with each goal destination shaded by its
+            probability and the observed actions drawn in their vehicle's color
+            (labelled with their slice).</p>
+        </div>
+      </div>
+    </section>
+    <aside>
+      <section class="panel">
+        <h2>Hypotheses</h2>
+        <div id="hypotheses" class="hypotheses"><p class="empty">No circuit loaded.</p></div>
+      </section>
+      <section class="panel solution-panel">
+        <h2>Evidence</h2>
+        <div id="controls" class="controls" hidden>
+          <button id="first" title="No observations">⏮</button>
+          <button id="prev" title="One fewer (←)">◀</button>
+          <button id="next" title="One more (→)">▶</button>
+          <button id="last" title="All observations">⏭</button>
+          <span id="step-label" class="step-label"></span>
+        </div>
+        <div id="evidence" class="solution"></div>
+        <div class="add-obs">
+          <input id="add-action" list="action-list" placeholder="action, e.g. drive truck1 p2-3 p3-3"
+                 autocomplete="off" spellcheck="false">
+          <datalist id="action-list"></datalist>
+          <label>at slice <input id="add-slice" type="number" min="1" value="1"></label>
+          <label title="observe that the action did NOT occur"><input id="add-negated" type="checkbox"> not</label>
+          <button id="add">Add</button>
+          <button id="clear" title="Remove every observation">Clear</button>
+        </div>
+      </section>
+    </aside>
+  </main>
+  <script src="circuit.js"></script>
+</body>
+</html>

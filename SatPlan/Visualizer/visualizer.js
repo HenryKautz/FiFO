@@ -846,7 +846,7 @@ var Viz;
             `<title>${esc(title)}</title></g>`;
     }
     function renderMap(problem, state, opts = {}) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e, _f;
         const W = MARGIN * 2 + problem.cols * SPACING;
         const H = MARGIN * 2 + problem.rows * SPACING;
         const out = [];
@@ -891,6 +891,53 @@ var Viz;
                 `x2="${f(q.x)}" y2="${f(q.y)}"><title>next: ${esc(a.text)}</title></line>`);
         }
         out.push(`</g>`);
+        // observed actions: drives as arrows labelled with their slice; loads,
+        // unloads and the rest as a tag on their place
+        const tags = new Map();
+        out.push(`<g class="observed">`);
+        for (const { action: a, label } of (_b = opts.observed) !== null && _b !== void 0 ? _b : []) {
+            const vehicle = a.args.find((o) => problem.trucks.includes(o) || problem.airplanes.includes(o));
+            const places = a.args.filter((o) => problem.layout.has(o));
+            const isMove = !!vehicle && places.length >= 2 && !a.name.startsWith("load") && !a.name.startsWith("unload");
+            const from = isMove ? center(problem, places[0]) : undefined;
+            const to = isMove ? center(problem, places[1]) : undefined;
+            if (from && to && (from.x !== to.x || from.y !== to.y)) {
+                // offset to the right of the direction of travel, so the two
+                // directions of one road (a drive out and back) do not overlap
+                const len = Math.hypot(to.x - from.x, to.y - from.y);
+                const ox = (-(to.y - from.y) / len) * 6;
+                const oy = ((to.x - from.x) / len) * 6;
+                const p0 = exitPoint(from.x, from.y, to.x - from.x, to.y - from.y, 2);
+                const q0 = exitPoint(to.x, to.y, from.x - to.x, from.y - to.y, 2);
+                const p = { x: p0.x + ox, y: p0.y + oy };
+                const q = { x: q0.x + ox, y: q0.y + oy };
+                const col = colorOf(problem, vehicle);
+                out.push(`<g class="obs-move"><line stroke="${col}" x1="${f(p.x)}" y1="${f(p.y)}" ` +
+                    `x2="${f(q.x)}" y2="${f(q.y)}" marker-end="url(#arrow)"/>` +
+                    `<circle cx="${f((p.x + q.x) / 2)}" cy="${f((p.y + q.y) / 2)}" r="7" fill="${col}"/>` +
+                    `<text x="${f((p.x + q.x) / 2)}" y="${f((p.y + q.y) / 2)}" fill="#fff" font-size="8">${esc(label)}</text>` +
+                    `<title>observed at ${esc(label)}: ${esc(a.text)}</title></g>`);
+            }
+            else if (places.length >= 1) {
+                const verb = a.name.startsWith("unload") ? "U" : a.name.startsWith("load") ? "L" : a.name[0].toUpperCase();
+                const l = (_c = tags.get(places[0])) !== null && _c !== void 0 ? _c : [];
+                l.push(`${verb}${label}`);
+                tags.set(places[0], l);
+            }
+        }
+        out.push(`</g>`);
+        // the tags go on top of the squares, after them
+        const tagOut = [];
+        for (const [place, ls] of tags) {
+            const c = corner(problem, place);
+            if (!c)
+                continue;
+            const text = ls.join(" ");
+            const w = 6 + text.length * 5;
+            tagOut.push(`<g class="obs-tag"><rect x="${f(c.x - 2)}" y="${f(c.y - 8)}" width="${f(w)}" height="11" rx="3"/>` +
+                `<text x="${f(c.x - 2 + w / 2)}" y="${f(c.y - 2.5)}" font-size="8">${esc(text)}</text>` +
+                `<title>observed: ${esc(text)} (L load, U unload, then the slice)</title></g>`);
+        }
         // what is where
         const vehiclesAt = new Map();
         const packagesAt = new Map();
@@ -932,21 +979,36 @@ var Viz;
             if (airport) {
                 out.push(`<text class="airport-mark" x="${f(c.x + SIDE - 7)}" y="${f(c.y + 8)}">✈</text>`);
             }
-            const goals = (_b = goalsAt.get(p)) !== null && _b !== void 0 ? _b : [];
-            const pkgs = (_c = packagesAt.get(p)) !== null && _c !== void 0 ? _c : [];
-            const vs = (_d = vehiclesAt.get(p)) !== null && _d !== void 0 ? _d : [];
+            const goals = (_d = goalsAt.get(p)) !== null && _d !== void 0 ? _d : [];
+            const pkgs = (_e = packagesAt.get(p)) !== null && _e !== void 0 ? _e : [];
+            const vs = (_f = vehiclesAt.get(p)) !== null && _f !== void 0 ? _f : [];
             const inner = { x: c.x + PAD, y: c.y + PAD, w: SIDE - 2 * PAD, h: SIDE - 2 * PAD };
             const reg = regions(inner, goals.length > 0, pkgs.length > 0, vs.length > 0);
             if (reg.goals) {
                 const s = stack(goals.length, reg.goals);
                 const g = s.size * 0.86; // a goal box sits inside its slot, its dashes clear of the next
                 goals.forEach((lit, k) => {
+                    var _a;
                     const b = s.boxes[k];
                     const x = b.x + (s.size - g) / 2;
                     const y = b.y + (s.size - g) / 2;
-                    const done = Viz.literalHolds(lit, state) === true;
                     const col = colorOf(problem, lit.args[0]);
                     const fs = Math.max(g * 0.36, 5);
+                    const prob = (_a = opts.goalProb) === null || _a === void 0 ? void 0 : _a.get(lit.label);
+                    if (prob !== undefined) {
+                        // shaded by probability; the number under the label
+                        const strong = prob >= 0.5;
+                        out.push(`<g class="goal prob" data-box="${f(x)} ${f(y)} ${f(g)}" data-prob="${f(prob)}">` +
+                            `<rect x="${f(x)}" y="${f(y)}" width="${f(g)}" height="${f(g)}" rx="${f(g * 0.12)}" stroke="${col}" ` +
+                            `stroke-width="${f(Math.max(g * 0.06, 1))}" fill="${col}" fill-opacity="${f(0.08 + 0.92 * prob)}"/>` +
+                            `<text x="${f(x + g / 2)}" y="${f(y + g * 0.38)}" fill="${strong ? "#fff" : col}" ` +
+                            `font-size="${f(fs * 0.9)}">${esc(lit.label)}</text>` +
+                            `<text class="pnum" x="${f(x + g / 2)}" y="${f(y + g * 0.72)}" fill="${strong ? "#fff" : col}" ` +
+                            `font-size="${f(fs * 0.75)}">${prob.toFixed(2)}</text>` +
+                            `<title>${esc(lit.label)}: ${esc(lit.text)} -- P = ${prob.toFixed(4)}</title></g>`);
+                        return;
+                    }
+                    const done = Viz.literalHolds(lit, state) === true;
                     out.push(`<g class="goal${done ? " achieved" : ""}" data-box="${f(x)} ${f(y)} ${f(g)}">` +
                         `<rect x="${f(x)}" y="${f(y)}" width="${f(g)}" height="${f(g)}" rx="${f(g * 0.12)}" stroke="${col}" ` +
                         `stroke-width="${f(Math.max(g * 0.06, 1))}" fill="${done ? col : "var(--goal-fill)"}"/>` +
@@ -986,6 +1048,8 @@ var Viz;
             out.push(`</g>`);
         }
         out.push(`</g>`);
+        if (tagOut.length)
+            out.push(`<g class="observed-tags">`, ...tagOut, `</g>`);
         out.push(`</svg>`);
         return out.join("\n");
     }

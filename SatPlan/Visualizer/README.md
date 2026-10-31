@@ -75,6 +75,46 @@ each problem alone and with each solution whose file name starts with the
 problem's name followed by `.` or `-`, and loads the problem's domain with it.
 To add an example, put its files in `examples/` and run `build.sh`.
 
+## The circuit visualizer
+
+`circuit.html` is a second page, for **plan recognition over a compiled
+circuit**: a problem together with the d-DNNF circuit of its recognition theory
+(`marginals.sh --solver ddnnf|d4 --save-circuit`, or CLARA's `*/circuits/`).
+Add observations -- step through an evidence file, or enter them by hand -- and
+it shows, for every hypothesis (a disjunct of the goal, at the final slice),
+P(h | E) and the likelihood posterior P(E | h) / Σ P(E | h′) with a uniform
+prior.  The map shows the initial state with the observed actions on it and
+each goal shaded by its probability.  The design, the protocols and what is
+not supported yet are in [CIRCUIT-PLAN.md](CIRCUIT-PLAN.md).
+
+It needs a server, which holds the circuit in FiFO's Lisp:
+
+```sh
+python3 SatPlan/Visualizer/server/circuit_server.py --open
+    # the bundled example (circuit-examples/: CLARA TwoPackage grid3x3-1)
+python3 SatPlan/Visualizer/server/circuit_server.py --clara ~/Programming/CLARA --open
+    # every CLARA problem with a saved circuit, with its evidence files
+python3 SatPlan/Visualizer/server/circuit_server.py \
+    --session PROBLEM.pddl CIRCUIT.dnnf EVIDENCE-DIR-or-FILES... --open
+```
+
+then open http://127.0.0.1:8765/ (`--open` does it).  The server needs python3
+(standard library only) and SBCL with FiFO: the installed one (`~/lib/fifo/lisp`)
+or `FIFO_LISP`.  `?session=NAME&evidence=FILE&step=K` in the page's address
+opens that view directly.
+
+Evidence must be **pinned unit literals** over atoms the circuit keeps -- e.g.
+`(occurs (drive truck1 p2-3 p3-3) 1)` or its `(not ...)`: each is a clamp on
+the compiled circuit, so a query is two passes over it (milliseconds for a
+3x3, about a second for a million-node circuit).  Ordering evidence
+(`occur-in-order`, CLARA's `-ordK.txt`), compound formulas and atoms a
+projected circuit dropped would need a recompile per change and are refused
+with the reason.
+
+`tests/run-test-circuit-viz.sh` checks the numbers against SharpSAT-TD counting
+the example's theory (regenerated from its `.wff`) with the same evidence, plus
+the parsing, the refusals and the HTTP routes.
+
 ## Code
 
 TypeScript in `src/`, compiled to the single script `visualizer.js`; the
@@ -89,13 +129,17 @@ other files itself). Both are checked in, so the page works without building:
 | `src/plan.ts` | the three solution formats, plan simulation, goal evaluation, running utility |
 | `src/render.ts` | the map as SVG |
 | `src/app.ts` | the page: file loading, panels, stepping; `Viz.load(...)` for programmatic use |
+| `src/circuit-app.ts` | the circuit visualizer page (built into `circuit.js` with the shared modules) |
+| `server/circuit_server.py` | the circuit visualizer's HTTP server, sessions, evidence files; drives the Lisp |
+| `server/circuit-server.lisp` | the Lisp side: load a circuit, find the hypotheses, clamp and evaluate |
 | `tools/bundle-examples.ts` | writes `examples.js` from `examples/` |
 
 After changing anything in `src/` or `examples/`, rebuild and test:
 
 ```sh
-bash SatPlan/Visualizer/build.sh      # writes visualizer.js and examples.js
-bash tests/run-test-visualizer.sh     # also fails if either is stale
+bash SatPlan/Visualizer/build.sh      # writes visualizer.js, circuit.js and examples.js
+bash tests/run-test-visualizer.sh     # also fails if visualizer.js or examples.js is stale
+bash tests/run-test-circuit-viz.sh    # the circuit visualizer; fails if circuit.js is stale
 ```
 
 The icons are from [Material Design Icons](https://pictogrammers.com/library/mdi/)
