@@ -85,8 +85,11 @@ preprocessor-techniques timeout)`.
   `clauses-with-definitions`; never return them inside a formula (an enclosing OR
   switches them off). TSEITIN and WEIGHTED-FORMULA are reserved names.
 - `mutex` (`parse-mutex`): its chain atoms are TSEITIN atoms with 3-clause
-  biconditionals. Negate a formula from its CLAUSES, never by parsing `(not φ)`:
-  `parse-not` reads `(not (if <false> …))` as true.
+  biconditionals; it negates a member from its CLAUSES.
+- `(if test φ)` is test → φ: a false test is TRUE, so `(not (if <false> …))` is
+  FALSE (the empty clause). `parse-not` once returned TRUE there, silently
+  dropping any false-test `if` under not/implies/equiv/a negated quantifier
+  (fixed 2026-10-30; `run-test-if.sh`).
 - Evidence parsed separately is namespaced (`wmc--evidence-namespace`, first unused
   EVIDENCE/EVIDENCE2/…). Readers refuse gensyms (`scnf-check-no-gensyms`).
 - `Weights` is a global special reset by `parse`: never bind a weight list to that
@@ -157,7 +160,7 @@ preprocessor-techniques timeout)`.
   `gold_solve/<name>_gold.answer`). Instantiate output is deterministic.
 - Behavioural suites `tests/run-test-*.sh`, runnable from anywhere: action-costs,
   cleanup, cli, ddnnf-eval, docs, evgen, evidence, hypotheses, maxsat, maxterm, mcc-dialect,
-  mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, restrict,
+  if, mcsat, mutex, odds, options, paths, pddl, ppgen, project, recognize, restrict,
   sharpsat, solvers, tseitin, weight-formula. Each skips cleanly (exit 0) when its optional binary is
   missing. `run-test-pddl.sh` diffs translations against checked-in wffs — update
   them when emitter output legitimately changes. `run-test-restrict.sh`'s

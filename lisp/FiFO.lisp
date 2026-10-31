@@ -1582,8 +1582,12 @@ solve.sh / map.sh flag."
           ((eql op 'and) (parse-formula (cons 'or (negate-list (cdr F)))))
           ((eql op 'or) (parse-formula (cons 'and (negate-list (cdr F)))))
           ((eql op 'implies) (parse-formula (list 'and (cadr F) (list 'not (caddr F)))))
+          ;; (if test body) is test -> body: with the test false it is TRUE
+          ;; (parse-if asserts nothing), so its negation is FALSE -- the empty
+          ;; clause.  Returning NIL (no clauses, TRUE) here once made every
+          ;; false-test if under not/implies/equiv/a negated quantifier vanish.
           ((eql op 'if) (cond ((is-true (parse-numeric-expression (cadr F))) (parse-formula `(not ,(caddr F))))
-                              (t nil)))
+                              (t (list nil))))
           ((eql op 'equiv) (append (parse-formula `(or ,(cadr F) ,(caddr F)))
                              (parse-formula `(or (not ,(cadr F)) (not ,(caddr F))))))
           ((eql op 'all) (parse-formula `(exists ,(cadr F) ,(caddr F) ,(cadddr F) (not ,(car (cddddr F))))))
@@ -1798,9 +1802,9 @@ then excludes nothing).  A single literal is itself.  Otherwise, under the
 compact encoding, a (TSEITIN n) atom defined as the conjunction of BODY's
 clauses; with the compact encoding off LITERAL is NIL, and NEGATION-CLAUSES --
 the negation of BODY's clauses, multiplied out -- are what the pairwise
-expansion multiplies.  The negation is taken from the clauses, never by parsing
-(not BODY): parse-not reads (not (if <false> ...)) as true, so a member with a
-vacuous if would be negated wrongly."
+expansion multiplies.  The negation is taken from the clauses already parsed,
+which also spares parsing BODY a second time.  (It was first adopted because
+parse-not then read (not (if <false> ...)) as true; that is fixed.)"
   (let ((clauses (parse-formula BODY)))
     (cond ((member nil clauses) :false)
           ((and clauses (null (cdr clauses)) (null (cdr (car clauses))))
