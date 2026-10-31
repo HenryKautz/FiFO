@@ -10,7 +10,11 @@ See CIRCUIT-PLAN.md.
                       [--session ...] [--clara DIR] [--port 8765] [--open]
 
 EVIDENCE is evidence files or directories; a directory contributes the files
-whose names start with the problem's name.  --clara DIR adds every problem of
+whose names start with the problem's name.  Offered are only the files with a
+literal the page can clamp, and not those a longer file for the same solution
+extends (the page steps through the longer one): see useful_evidence.  Every
+file stays available by name (the page's ?evidence=FILE), and files named one
+by one are always offered.  --clara DIR adds every problem of
 CLARA's TwoPackage, SimpleGrid and ThreePackage that has a saved circuit, with
 its evidence/ files.  Without any session the bundled example
 (../circuit-examples/) is served.
@@ -237,14 +241,74 @@ def evidence_files(name, sources):
     return out
 
 
+def evidence_stem(path):
+    """The solution an evidence file observes: its name without -obsK.txt
+    (evgen's NAME-obsK.txt holds the first K observations of one solution);
+    any other file is its own."""
+    m = re.fullmatch(r"(.*)-obs\d+\.txt", os.path.basename(path))
+    return m.group(1) if m else path
+
+
+def useful_evidence(paths):
+    """The evidence files worth offering: PATHS minus those the page could do
+    nothing with -- no literal it can clamp (an -ordK.txt file is one ordering
+    form) -- and those whose literals are a prefix of a longer file's for the
+    SAME solution (obs1 and obs2 when obs3 extends them: the page steps through
+    obs3 anyway).  Files for different solutions are all kept, even when one
+    starts like another.  A file that does not parse is kept, so choosing it
+    shows why.  Returns (kept, hidden count)."""
+    parsed = {}
+    by_stem = {}
+    for p in paths:
+        try:
+            items, _ = parse_evidence(open(p).read())
+            parsed[p] = [(it["literal"], it["slice"]) for it in items]
+        except (OSError, ValueError, UnicodeDecodeError):
+            parsed[p] = None
+        by_stem.setdefault(evidence_stem(p), []).append(p)
+    kept = []
+    for p in paths:
+        mine = parsed[p]
+        if mine is None:
+            kept.append(p)
+            continue
+        if not mine:
+            continue
+        if any(q != p and parsed[q] is not None and len(parsed[q]) > len(mine)
+               and parsed[q][:len(mine)] == mine
+               for q in by_stem[evidence_stem(p)]):
+            continue
+        kept.append(p)
+    return kept, len(paths) - len(kept)
+
+
 def make_session(sid, problem, circuit, evidence):
+    """A session: the problem, its circuit, and its evidence files -- ALL of
+    them, any of which the page may open by name; the menu's list (menu_files)
+    is worked out when the session is first loaded.  Files named one by one
+    (not found in a directory) are always offered."""
     for what, path in (("problem", problem), ("circuit", circuit)):
         if not os.path.isfile(path):
             raise ValueError(f"the {what} {path!r} does not exist")
     name = os.path.splitext(os.path.basename(problem))[0]
+    named = [os.path.abspath(e) for e in evidence if os.path.isfile(e)]
     return {"id": sid, "name": name, "problem": os.path.abspath(problem),
             "circuit": os.path.abspath(circuit),
-            "evidence": [os.path.abspath(e) for e in evidence_files(name, evidence)]}
+            # once each, though a file be named and also in a directory given
+            "evidence": list(dict.fromkeys(os.path.abspath(e) for e in evidence_files(name, evidence))),
+            "named": named, "menu": None}
+
+
+def menu_files(s):
+    """The evidence files the session's menu offers (useful_evidence, the
+    files named one by one kept regardless), and how many it leaves out;
+    computed once, on first use, so startup does not read every file."""
+    if s["menu"] is None:
+        kept, _ = useful_evidence(s["evidence"])
+        kept = set(kept) | set(s["named"])
+        menu = [e for e in s["evidence"] if e in kept]
+        s["menu"] = (menu, len(s["evidence"]) - len(menu))
+    return s["menu"]
 
 
 def clara_sessions(clara, start):
@@ -339,9 +403,8 @@ def make_handler(state):
             if url.path.lstrip("/") in STATIC:
                 return self.static(url.path.lstrip("/"))
             if url.path == "/api/sessions":
-                return self.send_json([{"id": i, "name": state.sessions[i]["name"],
-                                        "evidence": [os.path.basename(e)
-                                                     for e in state.sessions[i]["evidence"]]}
+                # the evidence menu comes with /api/load (menu_files)
+                return self.send_json([{"id": i, "name": state.sessions[i]["name"]}
                                        for i in state.order])
             if url.path == "/api/evidence":
                 s = state.session(q.get("id", [""])[0])
@@ -363,10 +426,11 @@ def make_handler(state):
             if url.path == "/api/load":
                 with state.lock:
                     s, reply = state.load(req.get("id"))
+                menu, hidden = menu_files(s)
                 return self.send_json({"session": {"id": s["id"], "name": s["name"],
                                                    "circuit": os.path.basename(s["circuit"]),
-                                                   "evidence": [os.path.basename(e)
-                                                                for e in s["evidence"]]},
+                                                   "evidence": [os.path.basename(e) for e in menu],
+                                                   "hidden": hidden},
                                        "problemName": os.path.basename(s["problem"]),
                                        "problem": open(s["problem"]).read(), "circuit": reply})
             if url.path == "/api/parse-evidence":

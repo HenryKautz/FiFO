@@ -27,17 +27,30 @@ exclusivity clauses dropped, preferences ignored, a plain conjunction or a
 second hypothesis set refused), read at the final slice,
 `(holds (at pkg1 p1-3) H)` — the page shows
 
+- **P(h)** = Z(h) / Z(∅), the prior the model itself implies (a goal with more
+  and cheaper plans gets more),
 - **P(h | E)** = Z(E ∧ h) / Z(E), the marginal (the number recognize.sh's
   `--method marginals` reports per hypothesis), and
-- the **likelihood posterior** P(E | h) / Σ P(E | h') — Ramírez and Geffner's
-  posterior with a uniform prior (recognize.sh's `--baseline per-hypothesis`).
-  It is free: P(E | h) = Z(E ∧ h) / Z(h), and Z(h) comes from the one
-  evidence-free pass made when the circuit loads.  It removes the model's
-  implicit prior P(h) — how many cheap plans each goal has — which the
-  marginal keeps.
+- **uniform prior**: P(E | h) / Σ P(E | h') — Ramírez and Geffner's
+  posterior with a uniform prior (recognize.sh's `--baseline per-hypothesis`),
+  equal to P(h | E) / P(h) normalized.  It is free: P(E | h) = Z(E ∧ h) / Z(h),
+  and Z(h) comes from the one evidence-free pass made when the circuit loads.
+  It removes the model's implicit prior P(h), which the marginal keeps; with
+  no evidence it is uniform by construction.
 
 The marginals need not sum to 1 (two packages can both be delivered); the
-posterior column does.
+uniform-prior column does, within each goal line.
+
+**Goals recognize.sh refuses** (a conjunction of several `(or ...)` sets, a
+plain conjunction, a hard goal beside the set) are shown literal by literal
+instead: every goal literal is a hypothesis atom, numbered by its conjunct
+(`group`), and the uniform-prior column is normalized within each conjunct.
+The goal is split as the page splits it (nested ANDs flattened); an `(or ...)`
+of negations only is dropped as an exclusivity clause only when another
+`(or ...)` is there for it to accompany; a `(not A)` hypothesis is scored as
+A's complement.  The load reply's `note` says why, and the page shows it
+(kept while the evidence changes).  The page highlights the most probable
+hypothesis of each line.
 
 Also shown: Z(E) / Z(∅), the probability of the evidence under the model; and
 "inconsistent" when Z(E) = 0 (the evidence contradicts every plan).
@@ -79,9 +92,9 @@ Python writes one command per line; Lisp answers with any number of log lines
 
 | Command | Reply |
 |---|---|
-| `(cv-load "<circuit path>" "<problem.pddl>")` | `{nvars, nodes, projected: n or null, horizon, z0, hypotheses: [{goal, atom, present}], actions: n}` — the hypotheses by `rg--classify`, their atoms `(HOLDS <goal> H)`, H the highest slice of any HOLDS atom in the circuit.  Atomic: computed in full before the loaded circuit is replaced, so a failed load leaves the previous one whole |
+| `(cv-load "<circuit path>" "<problem.pddl>")` | `{nvars, nodes, projected: n or null, horizon, z0, note, hypotheses: [{goal, atom, present, group}], actions: n}` — the hypotheses by `rg--classify` (else literal by literal, `note` saying why), their atoms `(HOLDS <goal> H)`, H the highest slice of any HOLDS atom in the circuit.  Atomic: computed in full before the loaded circuit is replaced, so a failed load leaves the previous one whole |
 | `(cv-actions)` | `{actions: ["(occurs (drive ...) 1)", ...]}` — the kept OCCURS atoms, for manual entry |
-| `(cv-query ("(occurs ...)" "(not (occurs ...))" ...))` | `{ok, z, z0, pe, unsat, probs: [p per hypothesis], unknown: [...], refused: [...], ms}` |
+| `(cv-query ("(occurs ...)" "(not (occurs ...))" ...))` | `{ok, z, z0, pe, unsat, prior, marginal, likelihood, posterior: [one per hypothesis], unknown: [...], refused: [...], ms}` |
 | `(cv-quit)` | — |
 
 Errors come back as `@@REPLY {"error": "..."}`; the loop never exits on a bad
@@ -109,7 +122,14 @@ The server is started with the problem/circuit pairs it serves:
 
 `--clara ~/Programming/CLARA` adds every TwoPackage (and SimpleGrid,
 ThreePackage) problem that has a circuit, with its evidence files
-(`evidence/NAME-*-obsK.txt`).  A self-contained small example ships in
+(`evidence/NAME-*-obsK.txt`).  Only useful files are offered
+(`useful_evidence`): none with no literal the page can clamp (the `-ordK.txt`
+files are one ordering form each), and none whose literals a longer file for
+the same solution extends (`-obs1`, `-obs2` beside `-obs3`: the page steps
+through `-obs3`).  Files for different solutions are all kept, even when one
+starts like another, and so is every file named one by one.  The menu is
+worked out when a session is first loaded, not at startup; a file left out of
+it still opens by name (`?evidence=FILE`).  A self-contained small example ships in
 `SatPlan/Visualizer/circuit-examples/` so the page and the tests work without
 CLARA.
 
@@ -120,17 +140,24 @@ Same layout and style as the plan visualizer:
 - **Header**: a Session menu (from `/api/sessions`), the evidence-file menu of
   that session plus a file chooser for a local evidence file, and a summary
   line (problem, circuit size, horizon, projected or not).
-- **Map** (left): the plan visualizer's map of the problem's initial state.
-  The observed actions so far are drawn as moves in their vehicle's color (the
-  renderer's `next` highlight, extended to carry slice labels); each goal
-  destination is shaded by its probability (a new `goalProb` render option:
-  fill opacity = P(h|E), label "G3 0.42").
-- **Hypotheses** (right, top — where the Goal panel was): one row per
-  hypothesis: its label and literal in its package's color, a bar and the
-  number P(h|E), and the normalized share; sorted by probability, with the
-  most probable highlighted.  P(E) and the query time underneath.
+- **Map** (left): the plan visualizer's map of the state the applied
+  observations lead to — the initial state with each observed action applied
+  in slice order (`applyActions`), so vehicles drive and packages ride, are
+  loaded and unloaded; unobserved slices are skipped over.  The observed
+  actions so far are drawn as moves in their vehicle's color with slice
+  labels; each goal destination is shaded by its probability (the `goalProb`
+  render option: fill opacity = P(h|E), label "G3 0.42").  Goals sharing a
+  place are tiled, shrunk to fit, never overlapping (both visualizers).
+- **Goal** (right, top): the goal formula as in the plan visualizer (shared
+  `goalHtml`), one line per conjunct; a literal achieved in the displayed
+  state is highlighted, with each literal's P(h|E) beside it.
+- **Hypotheses**: one row per hypothesis, in label order (G1, G2, …): its
+  label and literal in its package's color, P(h), a bar and the number
+  P(h|E), and the uniform-prior share; the most probable highlighted.
+  Underneath, what the columns mean, P(E) and the query time.
 - **Evidence** (right, bottom — where the Solution panel was): the list of
-  observations with ◀ ▶ ⏮ ⏭ to step through them (step k applies the first k),
+  observations with ◀ ▶ ⏮ ⏭ to step through them (step k applies the first k;
+  a chosen file starts at step 0, before any observation),
   click a row to jump, ✕ to remove one; an "Add observation" form with an
   action box (autocompleted from the kept actions), a slice number and a
   negate checkbox; "Clear".  Each change re-queries.

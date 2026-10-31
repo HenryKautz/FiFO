@@ -716,9 +716,11 @@ var Viz;
 //
 // A square's contents fill it: one kind alone (say, a truck) gets the whole
 // square; vehicles share it with the others by taking the bottom part; goals
-// and packages split what is left side by side.  Several of one kind overlap,
-// each further one offset up and to the right so its edge shows, and they shrink
-// as there are more.  A package in a vehicle is a small badge on that vehicle.
+// and packages split what is left side by side.  Several vehicles or packages
+// overlap, each further one offset up and to the right so its edge shows, and
+// they shrink as there are more; several goals are tiled side by side, shrunk to
+// fit, so every label stays readable.  A package in a vehicle is a small badge
+// on that vehicle.
 // The SVG has a viewBox and no fixed size, so it scales with its container.
 //
 // Icons: Material Design Icons (https://pictogrammers.com/library/mdi/),
@@ -803,6 +805,26 @@ var Viz;
         return { boxes, size };
     }
     Viz.stack = stack;
+    /** N square items tiled in REGION without overlapping: the grid of columns
+     *  and rows that gives the largest items, centered in the region.  Each
+     *  item's top-left corner (row by row) and the size. */
+    function tile(n, region) {
+        let best = { cols: 1, rows: n, size: 0 };
+        for (let cols = 1; cols <= n; cols++) {
+            const rows = Math.ceil(n / cols);
+            const size = Math.min(region.w / cols, region.h / rows);
+            if (size > best.size)
+                best = { cols, rows, size };
+        }
+        const { cols, rows, size } = best;
+        const x0 = region.x + (region.w - cols * size) / 2;
+        const y0 = region.y + (region.h - rows * size) / 2;
+        const boxes = [];
+        for (let i = 0; i < n; i++)
+            boxes.push({ x: x0 + (i % cols) * size, y: y0 + Math.floor(i / cols) * size });
+        return { boxes, size };
+    }
+    Viz.tile = tile;
     /** The parts of a square's inner area given to each kind present. */
     function regions(inner, goals, packages, vehicles) {
         const out = {};
@@ -845,6 +867,36 @@ var Viz;
             extra +
             `<title>${esc(title)}</title></g>`;
     }
+    /** The hard goal as HTML, one line per conjunct, each a disjunction of its
+     *  labelled literals; a literal true in STATE is highlighted in its package's
+     *  color, as on the map, and a line is marked ✓ when one of its literals
+     *  holds.  PROB, when given, adds each literal's probability (by label). */
+    function goalHtml(p, state, prob) {
+        if (p.goal.length === 0)
+            return `<p class="empty">The problem has no hard goal.</p>`;
+        const lines = p.goal.map((line, i) => {
+            const lits = line.map((lit) => {
+                const v = Viz.literalHolds(lit, state);
+                const col = lit.args.length > 0 ? colorOf(p, lit.args[0]) : "inherit";
+                const pr = prob === null || prob === void 0 ? void 0 : prob.get(lit.label);
+                const num = pr === undefined ? "" : ` <span class="lit-p">${pr.toFixed(3)}</span>`;
+                if (v === true) {
+                    return `<span class="lit true" style="background:${col}" title="achieved"><b>${esc(lit.label)}</b> ${esc(lit.text)}${num}</span>`;
+                }
+                const cls = v === false ? "lit false" : "lit";
+                return `<span class="${cls}"><b style="color:${col}">${esc(lit.label)}</b> ${esc(lit.text)}${num}</span>`;
+            });
+            const vals = line.map((lit) => Viz.literalHolds(lit, state));
+            const sat = vals.some((v) => v === true);
+            const mark = sat ? "✓" : vals.every((v) => v === false) ? "✗" : "?";
+            return `<div class="goal-line ${sat ? "sat" : "unsat"}"><span class="mark">${mark}</span>` +
+                `<span class="line-no">${p.goal.length > 1 ? i + 1 + "." : ""}</span>` +
+                `<span class="disj">${lits.join(`<span class="or"> ∨ </span>`)}</span></div>`;
+        });
+        const conj = p.goal.length > 1 ? `<p class="hint">All lines must hold (∧); each line is a disjunction (∨).</p>` : "";
+        return conj + lines.join("");
+    }
+    Viz.goalHtml = goalHtml;
     function renderMap(problem, state, opts = {}) {
         var _a, _b, _c, _d, _e, _f;
         const W = MARGIN * 2 + problem.cols * SPACING;
@@ -985,7 +1037,9 @@ var Viz;
             const inner = { x: c.x + PAD, y: c.y + PAD, w: SIDE - 2 * PAD, h: SIDE - 2 * PAD };
             const reg = regions(inner, goals.length > 0, pkgs.length > 0, vs.length > 0);
             if (reg.goals) {
-                const s = stack(goals.length, reg.goals);
+                // goals are tiled, not stacked: each one's label (and probability)
+                // stays readable however many share the place
+                const s = tile(goals.length, reg.goals);
                 const g = s.size * 0.86; // a goal box sits inside its slot, its dashes clear of the next
                 goals.forEach((lit, k) => {
                     var _a;
@@ -1062,7 +1116,7 @@ var Viz;
 // FiFO's Lisp.  Reuses the plan visualizer's problem parser and map renderer.
 var Viz;
 (function (Viz) {
-    const cs = { sessions: [], observations: [], step: 0, messages: [], errors: [],
+    const cs = { sessions: [], observations: [], step: 0, loadMessages: [], messages: [], errors: [],
         busy: false, pending: false };
     function $(id) {
         const e = document.getElementById(id);
@@ -1111,7 +1165,7 @@ var Viz;
     function showMessages() {
         const box = $("messages");
         const html = cs.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("") +
-            cs.messages.map((m) => `<div>⚠ ${esc(m)}</div>`).join("");
+            [...cs.loadMessages, ...cs.messages].map((m) => `<div>⚠ ${esc(m)}</div>`).join("");
         box.hidden = html === "";
         box.innerHTML = html;
     }
@@ -1123,6 +1177,7 @@ var Viz;
         return lit ? lit.label : `H${i + 1}`;
     }
     function renderHypotheses() {
+        var _a, _b;
         const box = $("hypotheses");
         const c = cs.circuit;
         if (!c) {
@@ -1131,47 +1186,109 @@ var Viz;
         }
         const r = cs.reply;
         if (r && r.unsat) {
-            box.innerHTML = `<p class="unsat">✖ The evidence is inconsistent: no plan of the circuit fits it ` +
+            box.innerHTML = `<p class="inconsistent">✖ The evidence is inconsistent: no plan of the circuit fits it ` +
                 `(Z = 0).  Remove or step back an observation.</p>`;
             return;
         }
         if (!r && cs.errors.length) {
-            box.innerHTML = `<p class="unsat">No probabilities: the evidence could not be applied ` +
+            box.innerHTML = `<p class="inconsistent">No probabilities: the evidence could not be applied ` +
                 `(see the message above).  Fix or remove the observation, or step back.</p>`;
             return;
         }
         const rows = c.hypotheses.map((h, i) => {
-            var _a, _b, _c, _d;
-            return ({ h, i,
-                m: (_b = (_a = r === null || r === void 0 ? void 0 : r.marginal) === null || _a === void 0 ? void 0 : _a[i]) !== null && _b !== void 0 ? _b : null, post: (_d = (_c = r === null || r === void 0 ? void 0 : r.posterior) === null || _c === void 0 ? void 0 : _c[i]) !== null && _d !== void 0 ? _d : null });
+            var _a, _b, _c, _d, _e, _f;
+            return ({ h, i, label: hypothesisLabel(i),
+                prior: (_b = (_a = r === null || r === void 0 ? void 0 : r.prior) === null || _a === void 0 ? void 0 : _a[i]) !== null && _b !== void 0 ? _b : null, m: (_d = (_c = r === null || r === void 0 ? void 0 : r.marginal) === null || _c === void 0 ? void 0 : _c[i]) !== null && _d !== void 0 ? _d : null, post: (_f = (_e = r === null || r === void 0 ? void 0 : r.posterior) === null || _e === void 0 ? void 0 : _e[i]) !== null && _f !== void 0 ? _f : null });
         });
-        const best = rows.reduce((b, x) => { var _a, _b; return (((_a = x.m) !== null && _a !== void 0 ? _a : -1) > ((_b = b === null || b === void 0 ? void 0 : b.m) !== null && _b !== void 0 ? _b : -1) ? x : b); }, rows[0]);
-        rows.sort((a, b) => { var _a, _b; return ((_a = b.m) !== null && _a !== void 0 ? _a : -1) - ((_b = a.m) !== null && _b !== void 0 ? _b : -1); });
+        // the most probable hypothesis of each goal line (each line is its own set
+        // of alternatives)
+        const bestOf = new Map();
+        for (const x of rows) {
+            const g = x.h.group;
+            if (x.m !== null && x.m > ((_b = (_a = bestOf.get(g)) === null || _a === void 0 ? void 0 : _a.m) !== null && _b !== void 0 ? _b : -1))
+                bestOf.set(g, { i: x.i, m: x.m });
+        }
+        const best = new Set([...bestOf.values()].map((b) => b.i));
+        // in label order (G1, G2, ..., G10), so a row stays put as the numbers change
+        rows.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
         const p = cs.problem;
+        const groups = new Set(c.hypotheses.map((h) => h.group)).size;
+        const bar = (x, col, cls = "") => `<td class="prob"><span class="bar${cls}" style="width:${Math.round((x !== null && x !== void 0 ? x : 0) * 100)}%;background:${col}"></span>` +
+            `<span class="num">${fmt(x)}</span></td>`;
         box.innerHTML =
             `<table class="hyp"><thead><tr><th></th><th>Hypothesis</th>` +
-                `<th title="P(h | evidence): the marginal">P(h | E)</th>` +
-                `<th title="P(E | h) normalized over the hypotheses: the posterior with a uniform prior (Ramírez–Geffner)">posterior</th>` +
+                `<th title="P(h): the marginal with no evidence -- the prior the model itself implies">P(h)</th>` +
+                `<th title="P(h | E): the marginal given the evidence">P(h | E)</th>` +
+                `<th title="P(E | h) normalized over the hypotheses${groups > 1 ? " of the same goal line" : ""}: ` +
+                `the posterior if every hypothesis were equally likely beforehand (Ramírez–Geffner)">uniform prior</th>` +
                 `</tr></thead><tbody>` +
-                rows.map(({ h, i, m, post }) => {
+                rows.map(({ h, i, label, prior, m, post }) => {
                     const lit = p.goalLiterals.find((g) => g.text === h.goal);
                     const col = lit && lit.args.length ? Viz.colorOf(p, lit.args[0]) : "#6b7280";
                     if (!h.present) {
-                        return `<tr class="missing"><td><b style="color:${col}">${esc(hypothesisLabel(i))}</b></td>` +
-                            `<td class="lit">${esc(h.goal)}</td><td colspan="2">not in the circuit</td></tr>`;
+                        return `<tr class="missing"><td><b style="color:${col}">${esc(label)}</b></td>` +
+                            `<td class="lit">${esc(h.goal)}</td><td colspan="3">not in the circuit</td></tr>`;
                     }
-                    return `<tr class="${best && best.i === i ? "best" : ""}">` +
-                        `<td><b style="color:${col}">${esc(hypothesisLabel(i))}</b></td>` +
+                    return `<tr class="${best.has(i) ? "best" : ""}">` +
+                        `<td><b style="color:${col}">${esc(label)}</b></td>` +
                         `<td class="lit">${esc(h.goal)}</td>` +
-                        `<td class="prob"><span class="bar" style="width:${Math.round((m !== null && m !== void 0 ? m : 0) * 100)}%;background:${col}"></span>` +
-                        `<span class="num">${fmt(m)}</span></td>` +
-                        `<td class="prob"><span class="bar post" style="width:${Math.round((post !== null && post !== void 0 ? post : 0) * 100)}%;background:${col}"></span>` +
-                        `<span class="num">${fmt(post)}</span></td></tr>`;
+                        `<td class="prob prior"><span class="num">${fmt(prior)}</span></td>` +
+                        bar(m, col) + bar(post, col, " post") + `</tr>`;
                 }).join("") +
                 `</tbody></table>` +
-                `<p class="hint">P(h | E) is each goal atom's marginal; hypotheses can hold together, so these ` +
-                `need not sum to 1.  The posterior divides out each goal's prior weight and assumes a uniform ` +
-                `prior.  P(E) = ${fmt(r === null || r === void 0 ? void 0 : r.pe, 4)}${(r === null || r === void 0 ? void 0 : r.ms) !== undefined ? ` · ${r.ms} ms` : ""}</p>`;
+                `<p class="hint"><b>P(h | E)</b> is the probability that goal h is reached, given the ` +
+                `evidence, under the model: every plan weighted by its cost.  With no evidence it is ` +
+                `<b>P(h)</b>, the prior the model implies -- a goal with more and cheaper plans gets more.  ` +
+                `Goals can be reached together, so these need not sum to 1.</p>` +
+                `<p class="hint"><b>Uniform prior</b> asks instead how well the evidence fits each goal, ` +
+                `P(E | h), and normalizes${groups > 1 ? " within each goal line" : ""}: the posterior if every ` +
+                `goal were equally likely beforehand.  It is P(h | E) / P(h), normalized.  With no evidence ` +
+                `it is uniform.</p>` +
+                ((r === null || r === void 0 ? void 0 : r.pe) !== undefined
+                    ? `<p class="hint">Probability of the evidence under the model: P(E) = ${fmt(r.pe, 4)}` +
+                        // the reply's own evidence count: cs.step may already be ahead of it
+                        `${cs.replyCount === 0 ? " (no evidence)" : ""}.${r.ms !== undefined ? `  Computed in ${r.ms} ms.` : ""}</p>`
+                    : "");
+    }
+    /** The state the observations so far lead to: the initial state with every
+     *  applied, positive observation's action applied in slice order.  Gaps
+     *  (unobserved slices) are skipped over, so a vehicle jumps along. */
+    function observedState() {
+        const p = cs.problem;
+        let state = { at: new Map(p.initAt), inside: new Map(p.initIn) };
+        const applied = cs.observations.slice(0, cs.step).filter((o) => o.action);
+        const ignore = [];
+        for (const o of applied)
+            state = Viz.applyActions(p, state, [o.action], ignore);
+        return state;
+    }
+    /** Each goal literal's P(h | E) by its label, for the literals that are
+     *  hypotheses; empty without a usable reply. */
+    function goalProbs() {
+        const prob = new Map();
+        const p = cs.problem;
+        const c = cs.circuit;
+        const r = cs.reply;
+        if (p && c && r && !r.unsat && r.marginal) {
+            c.hypotheses.forEach((h, i) => {
+                const lit = p.goalLiterals.find((g) => g.text === h.goal);
+                const m = r.marginal[i];
+                if (lit && m !== null && m !== undefined)
+                    prob.set(lit.label, m);
+            });
+        }
+        return prob;
+    }
+    function renderGoalPanel(state, prob) {
+        const p = cs.problem;
+        const box = $("goals");
+        if (!p || !cs.circuit) {
+            box.innerHTML = `<p class="empty">No problem loaded.</p>`;
+            return;
+        }
+        box.innerHTML = Viz.goalHtml(p, state, prob) +
+            `<p class="hint">Highlighted: achieved in the state the observed actions lead to.  ` +
+            `The number is P(h | E).</p>`;
     }
     function renderEvidence() {
         const box = $("evidence");
@@ -1195,28 +1312,22 @@ var Viz;
         $("next").disabled = cs.step >= n;
         $("last").disabled = cs.step >= n;
     }
-    function renderMapView() {
+    function renderMapView(state, goalProb) {
         const p = cs.problem;
         if (!p)
             return;
         const applied = cs.observations.slice(0, cs.step);
         const moves = applied.filter((o) => o.action).map((o) => ({ action: o.action, label: String(o.slice) }));
-        const goalProb = new Map();
-        const c = cs.circuit;
-        if (c && cs.reply && !cs.reply.unsat && cs.reply.marginal) {
-            c.hypotheses.forEach((h, i) => {
-                const lit = p.goalLiterals.find((g) => g.text === h.goal);
-                const m = cs.reply.marginal[i];
-                if (lit && m !== null && m !== undefined)
-                    goalProb.set(lit.label, m);
-            });
-        }
-        const state = { at: new Map(p.initAt), inside: new Map(p.initIn) };
         $("map").innerHTML = Viz.renderMap(p, state, { observed: moves, goalProb });
     }
     function renderAll() {
         var _a;
-        renderMapView();
+        if (cs.problem) {
+            const state = observedState();
+            const prob = goalProbs();
+            renderMapView(state, prob);
+            renderGoalPanel(state, prob);
+        }
         renderHypotheses();
         renderEvidence();
         showMessages();
@@ -1252,6 +1363,7 @@ var Viz;
             else {
                 cs.errors = [];
                 cs.reply = r;
+                cs.replyCount = literals.length;
             }
         }
         catch (e) {
@@ -1286,14 +1398,21 @@ var Viz;
             cs.step = 0;
             cs.reply = undefined;
             cs.evidenceName = undefined;
-            cs.messages = [...cs.problem.warnings];
+            cs.loadMessages = [...cs.problem.warnings];
             const missing = r.circuit.hypotheses.filter((h) => !h.present);
             if (missing.length) {
-                cs.messages.push(`${missing.length} goal literal(s) have no atom in the circuit at its last slice`);
+                cs.loadMessages.push(`${missing.length} goal literal(s) have no atom in the circuit at its last slice`);
             }
+            if (r.circuit.note)
+                cs.loadMessages.push(r.circuit.note);
             const sel = $("evidence-file");
-            sel.innerHTML = `<option value="">Choose an evidence file…</option>` +
+            // the server leaves out files with nothing the page can use (ordering
+            // forms only) and files a longer one extends
+            sel.innerHTML = `<option value="">${r.session.evidence.length ? "Choose an evidence file…" : "No evidence files"}</option>` +
                 r.session.evidence.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+            sel.title = r.session.hidden
+                ? `${r.session.hidden} more file(s) not listed: ordering evidence only, or the first observations of a longer file`
+                : "";
             const a = await api(`/api/actions?id=${encodeURIComponent(id)}`);
             cs.actions = a.actions;
             $("action-list").innerHTML =
@@ -1312,7 +1431,7 @@ var Viz;
     function useEvidence(name, items, unsupported) {
         cs.evidenceName = name;
         cs.observations = items.map((it) => observationOf(it.literal, it.slice, it.positive));
-        cs.step = cs.observations.length;
+        cs.step = 0; // start before the first observation; ▶ steps through them
         cs.messages = unsupported.length
             ? [`${name}: ${unsupported.length} form(s) cannot be used here (ordering evidence and compound ` +
                     `formulas need the circuit recompiled): ${unsupported.join(" ")}`]

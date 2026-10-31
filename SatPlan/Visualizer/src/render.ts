@@ -4,9 +4,11 @@
 //
 // A square's contents fill it: one kind alone (say, a truck) gets the whole
 // square; vehicles share it with the others by taking the bottom part; goals
-// and packages split what is left side by side.  Several of one kind overlap,
-// each further one offset up and to the right so its edge shows, and they shrink
-// as there are more.  A package in a vehicle is a small badge on that vehicle.
+// and packages split what is left side by side.  Several vehicles or packages
+// overlap, each further one offset up and to the right so its edge shows, and
+// they shrink as there are more; several goals are tiled side by side, shrunk to
+// fit, so every label stays readable.  A package in a vehicle is a small badge
+// on that vehicle.
 // The SVG has a viewBox and no fixed size, so it scales with its container.
 //
 // Icons: Material Design Icons (https://pictogrammers.com/library/mdi/),
@@ -96,6 +98,24 @@ namespace Viz {
     return { boxes, size };
   }
 
+  /** N square items tiled in REGION without overlapping: the grid of columns
+   *  and rows that gives the largest items, centered in the region.  Each
+   *  item's top-left corner (row by row) and the size. */
+  export function tile(n: number, region: Box): { boxes: { x: number; y: number }[]; size: number } {
+    let best = { cols: 1, rows: n, size: 0 };
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols);
+      const size = Math.min(region.w / cols, region.h / rows);
+      if (size > best.size) best = { cols, rows, size };
+    }
+    const { cols, rows, size } = best;
+    const x0 = region.x + (region.w - cols * size) / 2;
+    const y0 = region.y + (region.h - rows * size) / 2;
+    const boxes: { x: number; y: number }[] = [];
+    for (let i = 0; i < n; i++) boxes.push({ x: x0 + (i % cols) * size, y: y0 + Math.floor(i / cols) * size });
+    return { boxes, size };
+  }
+
   /** The parts of a square's inner area given to each kind present. */
   export function regions(inner: Box, goals: boolean, packages: boolean, vehicles: boolean) {
     const out: { goals?: Box; packages?: Box; vehicles?: Box } = {};
@@ -147,6 +167,35 @@ namespace Viz {
     /** a probability per goal label (G1, ...): the goal's box is filled that
      *  strongly, and the number is written under its label */
     goalProb?: Map<string, number>;
+  }
+
+  /** The hard goal as HTML, one line per conjunct, each a disjunction of its
+   *  labelled literals; a literal true in STATE is highlighted in its package's
+   *  color, as on the map, and a line is marked ✓ when one of its literals
+   *  holds.  PROB, when given, adds each literal's probability (by label). */
+  export function goalHtml(p: Problem, state: State, prob?: Map<string, number>): string {
+    if (p.goal.length === 0) return `<p class="empty">The problem has no hard goal.</p>`;
+    const lines = p.goal.map((line, i) => {
+      const lits = line.map((lit) => {
+        const v = literalHolds(lit, state);
+        const col = lit.args.length > 0 ? colorOf(p, lit.args[0]) : "inherit";
+        const pr = prob?.get(lit.label);
+        const num = pr === undefined ? "" : ` <span class="lit-p">${pr.toFixed(3)}</span>`;
+        if (v === true) {
+          return `<span class="lit true" style="background:${col}" title="achieved"><b>${esc(lit.label)}</b> ${esc(lit.text)}${num}</span>`;
+        }
+        const cls = v === false ? "lit false" : "lit";
+        return `<span class="${cls}"><b style="color:${col}">${esc(lit.label)}</b> ${esc(lit.text)}${num}</span>`;
+      });
+      const vals = line.map((lit) => literalHolds(lit, state));
+      const sat = vals.some((v) => v === true);
+      const mark = sat ? "✓" : vals.every((v) => v === false) ? "✗" : "?";
+      return `<div class="goal-line ${sat ? "sat" : "unsat"}"><span class="mark">${mark}</span>` +
+        `<span class="line-no">${p.goal.length > 1 ? i + 1 + "." : ""}</span>` +
+        `<span class="disj">${lits.join(`<span class="or"> ∨ </span>`)}</span></div>`;
+    });
+    const conj = p.goal.length > 1 ? `<p class="hint">All lines must hold (∧); each line is a disjunction (∨).</p>` : "";
+    return conj + lines.join("");
   }
 
   export function renderMap(problem: Problem, state: State, opts: RenderOptions = {}): string {
@@ -283,7 +332,9 @@ namespace Viz {
       const reg = regions(inner, goals.length > 0, pkgs.length > 0, vs.length > 0);
 
       if (reg.goals) {
-        const s = stack(goals.length, reg.goals);
+        // goals are tiled, not stacked: each one's label (and probability)
+        // stays readable however many share the place
+        const s = tile(goals.length, reg.goals);
         const g = s.size * 0.86; // a goal box sits inside its slot, its dashes clear of the next
         goals.forEach((lit, k) => {
           const b = s.boxes[k];

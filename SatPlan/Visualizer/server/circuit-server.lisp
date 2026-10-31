@@ -31,6 +31,12 @@
 (defvar *cv-hyps* nil "One (goal-text atom var-or-nil) per hypothesis, in order.")
 (defvar *cv-z0* nil "Z of the circuit without evidence.")
 (defvar *cv-zt0* nil "Every variable's true-weight without evidence.")
+(defvar *cv-prior* nil "P(h) per hypothesis (:null when absent), computed at load.")
+
+(defun cv--weight (zt z v neg)
+  "The weight of the models where hypothesis variable V holds -- or, NEG, where
+it does not: Z minus its true-weight."
+  (if neg (- z (aref zt v)) (aref zt v)))
 
 ;;; ------------------------------------------------------------------ JSON
 
@@ -121,40 +127,87 @@ error never leaves half a reply in the pipe (the error then replies instead)."
 
 ;;; -------------------------------------------------------------- commands
 
+(defun cv--goal-lines (goal)
+  "GOAL's conjuncts as lines of literals, split as the page splits the goal
+(goalLines in src/problem.ts): nested ANDs flattened, preferences dropped, an
+(or ...) its disjuncts, anything else a line of one.  Unlike the page, an
+(or ...) of negations only is dropped as an exclusivity clause -- but only when
+some other (or ...) is there for it to accompany; otherwise it is a line of
+hypotheses like any other (as rg--classify takes a lone one)."
+  (let ((conj '()))
+    (labels ((flatten (g)
+               (cond ((rg--head= g "AND") (mapc #'flatten (rest g)))
+                     ((rg--head= g "PREFERENCE"))
+                     (t (push g conj)))))
+      (flatten goal))
+    (setf conj (nreverse conj))
+    (let ((sets-p (some (lambda (c) (and (rg--head= c "OR") (not (rg--all-negations-p c)))) conj)))
+      (loop for c in conj
+            unless (and sets-p (rg--all-negations-p c))
+              collect (if (rg--head= c "OR") (rest c) (list c))))))
+
+(defun cv--literal-atom (g)
+  "Goal literal G as (values atom negated): (not A) gives A and T; NIL when
+G is neither a ground atom nor its negation."
+  (cond ((rg--atom-p g) (values g nil))
+        ((and (rg--head= g "NOT") (= 2 (length g)) (rg--atom-p (second g)))
+         (values (second g) t))
+        (t (values nil nil))))
+
 (defun cv--hypotheses (problem)
-  "The hypotheses of the PDDL PROBLEM file, by recognize.sh's own rule
-(lisp/recognition-goal.lisp, rg--classify): the disjuncts of the goal's ONE
-(or ...), exclusivity clauses dropped, preferences ignored.  A goal it refuses
--- a plain conjunction, two hypothesis sets, a hard goal beside the set -- is an
-error here too (rg--die, which would exit the process, signals instead)."
-  (let ((old (fdefinition 'rg--die)))
-    (unwind-protect
-         (progn
-           (setf (fdefinition 'rg--die)
-                 (lambda (fmt &rest args)
-                   (error "~A" (let ((*print-pretty* nil)) (format nil "~?" fmt args)))))
-           (values (rg--classify (rg--goal (rg--read problem)))))
-      (setf (fdefinition 'rg--die) old))))
+  "The hypotheses of the PDDL PROBLEM file as (values lines note): LINES a list
+of lists of goal forms, each list one set of alternatives.
+
+recognize.sh's own rule comes first (lisp/recognition-goal.lisp, rg--classify):
+the disjuncts of the goal's ONE (or ...), exclusivity clauses dropped,
+preferences ignored -- one line.  A goal it refuses (a conjunction of several
+(or ...) sets, a hard goal beside the set) is shown literal by literal instead,
+one line per conjunct, and NOTE says why; rg--die, which would exit the process,
+signals for this."
+  (let ((old (fdefinition 'rg--die))
+        (goal (rg--goal (rg--read problem))))
+    (unless goal (error "the problem has no goal, so there are no hypotheses"))
+    (handler-case
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'rg--die)
+                     (lambda (fmt &rest args)
+                       (error "~A" (let ((*print-pretty* nil)) (format nil "~?" fmt args)))))
+               (values (list (values (rg--classify goal))) :null))
+          (setf (fdefinition 'rg--die) old))
+      (error (e)
+        (values (cv--goal-lines goal)
+                (format nil "recognize.sh would refuse this goal (~A); each goal literal is ~
+shown with its own probability, and the uniform-prior column normalizes within each line"
+                        (substitute #\Space #\Newline (princ-to-string e))))))))
 
 (defun cv-load (path problem)
   "Load the circuit at PATH and the hypotheses of PROBLEM.  Everything is
 computed first; the globals change only once all of it has succeeded, so a
 failed load leaves the previous circuit in place, whole."
-  (let ((start (get-internal-real-time)))
-  (let* ((forms (cv--hypotheses problem))
-         (circuit (ddnnf-load path))
+  (let ((start (get-internal-real-time)) (note :null))
+  (multiple-value-bind (lines why) (cv--hypotheses problem)
+   (setf note why)
+   (let* ((circuit (ddnnf-load path))
          (h (let ((*cv* circuit)) (cv--horizon)))
          (a2i (ddnnf-a2i circuit))
          (proj (ddnnf-projected circuit))
-         (hyps (loop for g in forms
-                     ;; an atom hypothesis is (HOLDS atom H); a compound one --
-                     ;; recognize.sh gives it a derived atom -- is not looked up
-                     for atom = (and h (rg--atom-p g) (list 'holds g h))
-                     for v = (and atom (gethash atom a2i))
-                     collect (list (cv--text g) atom
-                                   (and v (or (null proj) (= 1 (sbit proj v))) v)))))
+         (hyps (loop for line in lines for group from 0
+                     nconc (loop for g in line
+                                 ;; an atom hypothesis is (HOLDS atom H), a negated
+                                 ;; one its complement; a compound one --
+                                 ;; recognize.sh gives it a derived atom -- is not
+                                 ;; looked up
+                                 collect (multiple-value-bind (a neg) (cv--literal-atom g)
+                                           (let* ((atom (and h a (list 'holds a h)))
+                                                  (v (and atom (gethash atom a2i))))
+                                             (list (cv--text g) atom
+                                                   (and v (or (null proj) (= 1 (sbit proj v))) v)
+                                                   group neg)))))))
     (multiple-value-bind (z zt) (ddnnf-query circuit)
-      (setf *cv* circuit *cv-path* path *cv-hyps* hyps *cv-z0* z *cv-zt0* zt)))
+      (setf *cv* circuit *cv-path* path *cv-hyps* hyps *cv-z0* z *cv-zt0* zt
+            *cv-prior* (loop for (nil nil v nil neg) in hyps
+                             collect (if v (/ (cv--weight zt z v neg) z) :null))))))
   (cv--reply
    (list :ok :true
          :path (namestring path)
@@ -164,10 +217,14 @@ failed load leaves the previous circuit in place, whole."
          :horizon (or (cv--horizon) :null)
          :z0 *cv-z0*
          :actions (cv--count-actions)
-         :hypotheses (loop for (g atom v) in *cv-hyps*
+         :note note
+         :hypotheses (loop for (g atom v group neg) in *cv-hyps*
                            collect (cv--obj :goal g
-                                            :atom (if atom (cv--text atom) :null)
-                                            :present (if v :true :false)))
+                                            :atom (cond ((null atom) :null)
+                                                        (neg (cv--text (list 'not atom)))
+                                                        (t (cv--text atom)))
+                                            :present (if v :true :false)
+                                            :group group))
          :ms (round (* 1000 (- (get-internal-real-time) start))
                     internal-time-units-per-second)))))
 
@@ -228,19 +285,28 @@ it would need the circuit recompiled with it, which this page does not do"
                                :ms (round (* 1000 (- (get-internal-real-time) start))
                                           internal-time-units-per-second)))
               (let* ((zt (ddnnf--marginals-vec *cv* val))
-                     (marg (loop for (g atom v) in *cv-hyps*
-                                 collect (if v (/ (aref zt v) z) :null)))
-                     (lik (loop for (g atom v) in *cv-hyps*
-                                collect (if (and v (plusp (aref *cv-zt0* v)))
-                                            (/ (aref zt v) (aref *cv-zt0* v))
+                     (prior *cv-prior*)
+                     (marg (loop for (nil nil v nil neg) in *cv-hyps*
+                                 collect (if v (/ (cv--weight zt z v neg) z) :null)))
+                     ;; P(E|h) = Z(E,h) / Z(h)
+                     (lik (loop for (nil nil v nil neg) in *cv-hyps*
+                                for zh = (and v (cv--weight *cv-zt0* *cv-z0* v neg))
+                                collect (if (and zh (plusp zh))
+                                            (/ (cv--weight zt z v neg) zh)
                                             :null)))
-                     (lsum (reduce #'+ (remove :null lik)))
-                     (post (loop for l in lik
-                                 collect (cond ((eq l :null) :null)
-                                               ((plusp lsum) (/ l lsum))
-                                               (t :null)))))
+                     ;; the likelihoods normalized within each line of alternatives
+                     (lsum (make-hash-table))
+                     (post (progn
+                             (loop for (nil nil nil group) in *cv-hyps* for l in lik
+                                   unless (eq l :null)
+                                     do (incf (gethash group lsum 0) l))
+                             (loop for (nil nil nil group) in *cv-hyps* for l in lik
+                                   collect (cond ((eq l :null) :null)
+                                                 ((plusp (gethash group lsum 0))
+                                                  (/ l (gethash group lsum)))
+                                                 (t :null))))))
                 (cv--reply (list :ok :true :unsat :false :z z :z0 *cv-z0* :pe (/ z *cv-z0*)
-                                 :marginal marg :likelihood lik :posterior post
+                                 :prior prior :marginal marg :likelihood lik :posterior post
                                  :ms (round (* 1000 (- (get-internal-real-time) start))
                                             internal-time-units-per-second)))))))))
 

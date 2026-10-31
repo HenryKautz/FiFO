@@ -23,9 +23,10 @@
   <div id="messages" class="messages" hidden></div>
   <main>
     <section class="panel map-panel">
-      <div class="map-caption">The initial state.  Observed drives are arrows labelled with
-        their slice; loads (L) and unloads (U) are tags on their place.  Each goal is shaded
-        by its probability given the evidence.</div>
+      <div class="map-caption">The state the observed actions lead to (the initial state
+        before any).  Observed drives are arrows labelled with their slice; loads (L) and
+        unloads (U) are tags on their place.  Each goal is shaded by its probability given
+        the evidence.</div>
       <div id="map" class="map-box">
         <div class="placeholder">
           <p>The problem's map appears here, with each goal destination shaded by its
@@ -35,6 +36,10 @@
       </div>
     </section>
     <aside>
+      <section class="panel">
+        <h2>Goal</h2>
+        <div id="goals" class="goals"><p class="empty">No problem loaded.</p></div>
+      </section>
       <section class="panel">
         <h2>Hypotheses</h2>
         <div id="hypotheses" class="hypotheses"><p class="empty">No circuit loaded.</p></div>

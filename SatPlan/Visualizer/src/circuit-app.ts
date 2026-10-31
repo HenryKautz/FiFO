@@ -12,32 +12,37 @@ namespace Viz {
     action?: Action;          // the action, for drawing it on the map
   }
 
-  interface Hypothesis { goal: string; atom: string | null; present: boolean }
+  /** GROUP numbers the line of alternatives the hypothesis belongs to: one
+   *  line for recognize.sh's single (or ...), one per conjunct otherwise. */
+  interface Hypothesis { goal: string; atom: string | null; present: boolean; group: number }
 
   interface QueryReply {
     ok: boolean; unsat?: boolean; z?: number; z0?: number; pe?: number;
-    marginal?: (number | null)[]; likelihood?: (number | null)[]; posterior?: (number | null)[];
+    prior?: (number | null)[]; marginal?: (number | null)[]; likelihood?: (number | null)[];
+    posterior?: (number | null)[];
     unknown?: string[]; refused?: { literal: string; reason: string }[]; ms?: number;
   }
 
   interface CircuitState {
-    sessions: { id: string; name: string; evidence: string[] }[];
+    sessions: { id: string; name: string }[];
     sessionId?: string;
     problem?: Problem;
     circuit?: { nvars: number; nodes: number; projected: number | null; horizon: number | null;
-                actions: number; hypotheses: Hypothesis[]; path: string };
+                actions: number; hypotheses: Hypothesis[]; path: string; note: string | null };
     evidenceName?: string;
     observations: Observation[];
     step: number;             // how many observations are applied
     actions?: string[];       // kept action atoms, for the entry box
     reply?: QueryReply;
-    messages: string[];
+    replyCount?: number;      // how many observations the reply was computed with
+    loadMessages: string[];   // from loading the session: kept while evidence changes
+    messages: string[];       // about the current evidence
     errors: string[];
     busy: boolean;
     pending: boolean;         // a query was asked for while another ran
   }
 
-  const cs: CircuitState = { sessions: [], observations: [], step: 0, messages: [], errors: [],
+  const cs: CircuitState = { sessions: [], observations: [], step: 0, loadMessages: [], messages: [], errors: [],
                              busy: false, pending: false };
 
   function $(id: string): HTMLElement {
@@ -89,7 +94,7 @@ namespace Viz {
   function showMessages() {
     const box = $("messages");
     const html = cs.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("") +
-      cs.messages.map((m) => `<div>⚠ ${esc(m)}</div>`).join("");
+      [...cs.loadMessages, ...cs.messages].map((m) => `<div>⚠ ${esc(m)}</div>`).join("");
     box.hidden = html === "";
     box.innerHTML = html;
   }
@@ -111,44 +116,107 @@ namespace Viz {
     }
     const r = cs.reply;
     if (r && r.unsat) {
-      box.innerHTML = `<p class="unsat">✖ The evidence is inconsistent: no plan of the circuit fits it ` +
+      box.innerHTML = `<p class="inconsistent">✖ The evidence is inconsistent: no plan of the circuit fits it ` +
         `(Z = 0).  Remove or step back an observation.</p>`;
       return;
     }
     if (!r && cs.errors.length) {
-      box.innerHTML = `<p class="unsat">No probabilities: the evidence could not be applied ` +
+      box.innerHTML = `<p class="inconsistent">No probabilities: the evidence could not be applied ` +
         `(see the message above).  Fix or remove the observation, or step back.</p>`;
       return;
     }
-    const rows = c.hypotheses.map((h, i) => ({ h, i,
-      m: r?.marginal?.[i] ?? null, post: r?.posterior?.[i] ?? null }));
-    const best = rows.reduce((b, x) => ((x.m ?? -1) > (b?.m ?? -1) ? x : b), rows[0]);
-    rows.sort((a, b) => (b.m ?? -1) - (a.m ?? -1));
+    const rows = c.hypotheses.map((h, i) => ({ h, i, label: hypothesisLabel(i),
+      prior: r?.prior?.[i] ?? null, m: r?.marginal?.[i] ?? null, post: r?.posterior?.[i] ?? null }));
+    // the most probable hypothesis of each goal line (each line is its own set
+    // of alternatives)
+    const bestOf = new Map<number, { i: number; m: number }>();
+    for (const x of rows) {
+      const g = x.h.group;
+      if (x.m !== null && x.m > (bestOf.get(g)?.m ?? -1)) bestOf.set(g, { i: x.i, m: x.m });
+    }
+    const best = new Set([...bestOf.values()].map((b) => b.i));
+    // in label order (G1, G2, ..., G10), so a row stays put as the numbers change
+    rows.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
     const p = cs.problem!;
+    const groups = new Set(c.hypotheses.map((h) => h.group)).size;
+    const bar = (x: number | null, col: string, cls = "") =>
+      `<td class="prob"><span class="bar${cls}" style="width:${Math.round((x ?? 0) * 100)}%;background:${col}"></span>` +
+      `<span class="num">${fmt(x)}</span></td>`;
     box.innerHTML =
       `<table class="hyp"><thead><tr><th></th><th>Hypothesis</th>` +
-      `<th title="P(h | evidence): the marginal">P(h | E)</th>` +
-      `<th title="P(E | h) normalized over the hypotheses: the posterior with a uniform prior (Ramírez–Geffner)">posterior</th>` +
+      `<th title="P(h): the marginal with no evidence -- the prior the model itself implies">P(h)</th>` +
+      `<th title="P(h | E): the marginal given the evidence">P(h | E)</th>` +
+      `<th title="P(E | h) normalized over the hypotheses${groups > 1 ? " of the same goal line" : ""}: ` +
+      `the posterior if every hypothesis were equally likely beforehand (Ramírez–Geffner)">uniform prior</th>` +
       `</tr></thead><tbody>` +
-      rows.map(({ h, i, m, post }) => {
+      rows.map(({ h, i, label, prior, m, post }) => {
         const lit = p.goalLiterals.find((g) => g.text === h.goal);
         const col = lit && lit.args.length ? colorOf(p, lit.args[0]) : "#6b7280";
         if (!h.present) {
-          return `<tr class="missing"><td><b style="color:${col}">${esc(hypothesisLabel(i))}</b></td>` +
-            `<td class="lit">${esc(h.goal)}</td><td colspan="2">not in the circuit</td></tr>`;
+          return `<tr class="missing"><td><b style="color:${col}">${esc(label)}</b></td>` +
+            `<td class="lit">${esc(h.goal)}</td><td colspan="3">not in the circuit</td></tr>`;
         }
-        return `<tr class="${best && best.i === i ? "best" : ""}">` +
-          `<td><b style="color:${col}">${esc(hypothesisLabel(i))}</b></td>` +
+        return `<tr class="${best.has(i) ? "best" : ""}">` +
+          `<td><b style="color:${col}">${esc(label)}</b></td>` +
           `<td class="lit">${esc(h.goal)}</td>` +
-          `<td class="prob"><span class="bar" style="width:${Math.round((m ?? 0) * 100)}%;background:${col}"></span>` +
-          `<span class="num">${fmt(m)}</span></td>` +
-          `<td class="prob"><span class="bar post" style="width:${Math.round((post ?? 0) * 100)}%;background:${col}"></span>` +
-          `<span class="num">${fmt(post)}</span></td></tr>`;
+          `<td class="prob prior"><span class="num">${fmt(prior)}</span></td>` +
+          bar(m, col) + bar(post, col, " post") + `</tr>`;
       }).join("") +
       `</tbody></table>` +
-      `<p class="hint">P(h | E) is each goal atom's marginal; hypotheses can hold together, so these ` +
-      `need not sum to 1.  The posterior divides out each goal's prior weight and assumes a uniform ` +
-      `prior.  P(E) = ${fmt(r?.pe, 4)}${r?.ms !== undefined ? ` · ${r.ms} ms` : ""}</p>`;
+      `<p class="hint"><b>P(h | E)</b> is the probability that goal h is reached, given the ` +
+      `evidence, under the model: every plan weighted by its cost.  With no evidence it is ` +
+      `<b>P(h)</b>, the prior the model implies -- a goal with more and cheaper plans gets more.  ` +
+      `Goals can be reached together, so these need not sum to 1.</p>` +
+      `<p class="hint"><b>Uniform prior</b> asks instead how well the evidence fits each goal, ` +
+      `P(E | h), and normalizes${groups > 1 ? " within each goal line" : ""}: the posterior if every ` +
+      `goal were equally likely beforehand.  It is P(h | E) / P(h), normalized.  With no evidence ` +
+      `it is uniform.</p>` +
+      (r?.pe !== undefined
+        ? `<p class="hint">Probability of the evidence under the model: P(E) = ${fmt(r.pe, 4)}` +
+          // the reply's own evidence count: cs.step may already be ahead of it
+          `${cs.replyCount === 0 ? " (no evidence)" : ""}.${r.ms !== undefined ? `  Computed in ${r.ms} ms.` : ""}</p>`
+        : "");
+  }
+
+  /** The state the observations so far lead to: the initial state with every
+   *  applied, positive observation's action applied in slice order.  Gaps
+   *  (unobserved slices) are skipped over, so a vehicle jumps along. */
+  function observedState(): State {
+    const p = cs.problem!;
+    let state: State = { at: new Map(p.initAt), inside: new Map(p.initIn) };
+    const applied = cs.observations.slice(0, cs.step).filter((o) => o.action);
+    const ignore: string[] = [];
+    for (const o of applied) state = applyActions(p, state, [o.action!], ignore);
+    return state;
+  }
+
+  /** Each goal literal's P(h | E) by its label, for the literals that are
+   *  hypotheses; empty without a usable reply. */
+  function goalProbs(): Map<string, number> {
+    const prob = new Map<string, number>();
+    const p = cs.problem;
+    const c = cs.circuit;
+    const r = cs.reply;
+    if (p && c && r && !r.unsat && r.marginal) {
+      c.hypotheses.forEach((h, i) => {
+        const lit = p.goalLiterals.find((g) => g.text === h.goal);
+        const m = r.marginal![i];
+        if (lit && m !== null && m !== undefined) prob.set(lit.label, m);
+      });
+    }
+    return prob;
+  }
+
+  function renderGoalPanel(state: State, prob: Map<string, number>) {
+    const p = cs.problem;
+    const box = $("goals");
+    if (!p || !cs.circuit) {
+      box.innerHTML = `<p class="empty">No problem loaded.</p>`;
+      return;
+    }
+    box.innerHTML = goalHtml(p, state, prob) +
+      `<p class="hint">Highlighted: achieved in the state the observed actions lead to.  ` +
+      `The number is P(h | E).</p>`;
   }
 
   function renderEvidence() {
@@ -173,26 +241,21 @@ namespace Viz {
     ($("last") as HTMLButtonElement).disabled = cs.step >= n;
   }
 
-  function renderMapView() {
+  function renderMapView(state: State, goalProb: Map<string, number>) {
     const p = cs.problem;
     if (!p) return;
     const applied = cs.observations.slice(0, cs.step);
     const moves = applied.filter((o) => o.action).map((o) => ({ action: o.action!, label: String(o.slice) }));
-    const goalProb = new Map<string, number>();
-    const c = cs.circuit;
-    if (c && cs.reply && !cs.reply.unsat && cs.reply.marginal) {
-      c.hypotheses.forEach((h, i) => {
-        const lit = p.goalLiterals.find((g) => g.text === h.goal);
-        const m = cs.reply!.marginal![i];
-        if (lit && m !== null && m !== undefined) goalProb.set(lit.label, m);
-      });
-    }
-    const state: State = { at: new Map(p.initAt), inside: new Map(p.initIn) };
     $("map").innerHTML = renderMap(p, state, { observed: moves, goalProb });
   }
 
   function renderAll() {
-    renderMapView();
+    if (cs.problem) {
+      const state = observedState();
+      const prob = goalProbs();
+      renderMapView(state, prob);
+      renderGoalPanel(state, prob);
+    }
     renderHypotheses();
     renderEvidence();
     showMessages();
@@ -227,6 +290,7 @@ namespace Viz {
       } else {
         cs.errors = [];
         cs.reply = r;
+        cs.replyCount = literals.length;
       }
     } catch (e) {
       cs.errors = [String(e instanceof Error ? e.message : e)];
@@ -261,14 +325,20 @@ namespace Viz {
       cs.step = 0;
       cs.reply = undefined;
       cs.evidenceName = undefined;
-      cs.messages = [...cs.problem.warnings];
+      cs.loadMessages = [...cs.problem.warnings];
       const missing = r.circuit.hypotheses.filter((h: Hypothesis) => !h.present);
       if (missing.length) {
-        cs.messages.push(`${missing.length} goal literal(s) have no atom in the circuit at its last slice`);
+        cs.loadMessages.push(`${missing.length} goal literal(s) have no atom in the circuit at its last slice`);
       }
+      if (r.circuit.note) cs.loadMessages.push(r.circuit.note);
       const sel = $("evidence-file") as HTMLSelectElement;
-      sel.innerHTML = `<option value="">Choose an evidence file…</option>` +
+      // the server leaves out files with nothing the page can use (ordering
+      // forms only) and files a longer one extends
+      sel.innerHTML = `<option value="">${r.session.evidence.length ? "Choose an evidence file…" : "No evidence files"}</option>` +
         r.session.evidence.map((f: string) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+      sel.title = r.session.hidden
+        ? `${r.session.hidden} more file(s) not listed: ordering evidence only, or the first observations of a longer file`
+        : "";
       const a = await api(`/api/actions?id=${encodeURIComponent(id)}`);
       cs.actions = a.actions;
       ($("action-list") as HTMLElement).innerHTML =
@@ -286,7 +356,7 @@ namespace Viz {
                        unsupported: string[]) {
     cs.evidenceName = name;
     cs.observations = items.map((it) => observationOf(it.literal, it.slice, it.positive));
-    cs.step = cs.observations.length;
+    cs.step = 0;              // start before the first observation; ▶ steps through them
     cs.messages = unsupported.length
       ? [`${name}: ${unsupported.length} form(s) cannot be used here (ordering evidence and compound ` +
          `formulas need the circuit recompiled): ${unsupported.join(" ")}`]

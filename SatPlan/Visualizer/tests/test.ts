@@ -219,6 +219,36 @@ namespace VizTest {
     const all = items(crowd, "p4-5");
     check("a crowded square (2 goals, 3 packages, 2 trucks) keeps every item inside it",
           all.length === 7 && all.every((i) => inside(i, { x: Number(sq[1]), y: Number(sq[2]) })), JSON.stringify(all));
+    // goals sharing a place are tiled: none overlaps another, all inside
+    for (const n of [2, 3, 5]) {
+      const pk = Array.from({ length: n }, (_, i) => `k${i}`);
+      const pg = Viz.parseProblem(`(define (problem g) (:domain d)
+        (:objects p1-1 p1-2 - place t - truck ${pk.join(" ")} - package)
+        (:init (at t p1-2) ${pk.map((k) => `(at ${k} p1-2)`).join(" ")} (road p1-1 p1-2))
+        (:goal (or ${pk.map((k) => `(at ${k} p1-1)`).join(" ")})))`);
+      const gs = items(Viz.renderMap(pg, { at: new Map(pg.initAt), inside: new Map() }), "p1-1");
+      const sqg = /data-place="p1-1">\n<rect class="square" x="([\d.]+)" y="([\d.]+)"/.exec(
+        Viz.renderMap(pg, { at: new Map(pg.initAt), inside: new Map() }))!;
+      const apart = (a: typeof gs[0], b: typeof gs[0]) =>
+        a.x + a.size <= b.x + 0.01 || b.x + b.size <= a.x + 0.01 || a.y + a.size <= b.y + 0.01 || b.y + b.size <= a.y + 0.01;
+      check(`${n} goals in one place are tiled: none overlaps, all inside, each at least a quarter of the square`,
+            gs.length === n && gs.every((a, i) => gs.every((b, j) => i === j || apart(a, b))) &&
+            gs.every((i) => inside(i, { x: Number(sqg[1]), y: Number(sqg[2]) })) &&
+            gs.every((i) => i.size >= 0.25 * side), JSON.stringify(gs));
+    }
+    {
+      // the goal formula as HTML: a literal true in the state is highlighted,
+      // its line marked; probabilities by label when given
+      const one = Viz.parseProblem(`(define (problem tiny) (:domain clara-logistics)
+        (:objects a b c - place t - truck k - package)
+        (:init (at t a) (at k b) (road a b) (road b a) (road b c))
+        (:goal (and (at k c) (or (at t a) (at t c)))))`);
+      const html = Viz.goalHtml(one, { at: new Map(one.initAt), inside: new Map() }, new Map([["G3", 0.25]]));
+      check("goal formula: 2 lines, (at t a) achieved and its line ✓, (at k c) not; G3's probability shown",
+            count(html, /class="goal-line /g) === 2 && count(html, /class="lit true"/g) === 1 &&
+            /class="lit true"[^>]*><b>G2<\/b> \(at t a\)/.test(html) && /goal-line unsat"><span class="mark">✗/.test(html) &&
+            /G3<\/b> \(at t c\) <span class="lit-p">0\.250</.test(html) && /All lines must hold/.test(html), html);
+    }
     const end = planA.states[planA.states.length - 1];
     const s5 = Viz.renderMap(p5, end);
     check("goals achieved at the end are drawn as achieved", count(s5, /class="goal achieved"/g) === 3);

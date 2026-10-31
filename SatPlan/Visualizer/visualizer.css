@@ -169,13 +169,16 @@ table.hyp { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.hyp th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; padding: 2px 4px; }
 table.hyp td { padding: 3px 4px; border-top: 1px solid var(--border); vertical-align: middle; }
 table.hyp td.lit { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-table.hyp td.prob { position: relative; width: 26%; min-width: 70px; }
+table.hyp td.prob { position: relative; width: 22%; min-width: 64px; }
+table.hyp td.prob.prior { width: 9%; min-width: 44px; color: var(--muted); }
+table.hyp td.prob.prior .num { font-weight: 500; }
+.lit .lit-p { font-size: 11px; font-weight: 500; opacity: .8; }
 table.hyp td.prob .bar { position: absolute; left: 0; top: 3px; bottom: 3px; opacity: .28; border-radius: 3px; }
 table.hyp td.prob .bar.post { opacity: .16; }
 table.hyp td.prob .num { position: relative; font-variant-numeric: tabular-nums; font-weight: 600; padding-left: 4px; }
 table.hyp tr.best td { background: var(--current); }
 table.hyp tr.missing td { color: var(--muted); font-style: italic; }
-.unsat { color: #dc2626; font-weight: 600; margin: 0; }
+p.inconsistent { color: #dc2626; font-weight: 600; margin: 0; }
 
 /* circuit visualizer: entering an observation */
 .add-obs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px;

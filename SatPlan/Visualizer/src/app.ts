@@ -51,32 +51,7 @@ namespace Viz {
   }
 
   function renderGoals(state: State) {
-    const p = app.problem!;
-    const box = $("goals");
-    if (p.goal.length === 0) {
-      box.innerHTML = `<p class="empty">The problem has no hard goal.</p>`;
-      return;
-    }
-    const lines = p.goal.map((line, i) => {
-      const lits = line.map((lit) => {
-        const v = literalHolds(lit, state);
-        const col = lit.args.length > 0 ? colorOf(p, lit.args[0]) : "inherit";
-        // an achieved goal is highlighted in its package's color, as on the map
-        if (v === true) {
-          return `<span class="lit true" style="background:${col}" title="achieved"><b>${esc(lit.label)}</b> ${esc(lit.text)}</span>`;
-        }
-        const cls = v === false ? "lit false" : "lit";
-        return `<span class="${cls}"><b style="color:${col}">${esc(lit.label)}</b> ${esc(lit.text)}</span>`;
-      });
-      const vals = line.map((lit) => literalHolds(lit, state));
-      const sat = vals.some((v) => v === true);
-      const mark = sat ? "✓" : vals.every((v) => v === false) ? "✗" : "?";
-      return `<div class="goal-line ${sat ? "sat" : "unsat"}"><span class="mark">${mark}</span>` +
-        `<span class="line-no">${p.goal.length > 1 ? i + 1 + "." : ""}</span>` +
-        `<span class="disj">${lits.join(`<span class="or"> ∨ </span>`)}</span></div>`;
-    });
-    const conj = p.goal.length > 1 ? `<p class="hint">All lines must hold (∧); each line is a disjunction (∨).</p>` : "";
-    box.innerHTML = conj + lines.join("");
+    $("goals").innerHTML = goalHtml(app.problem!, state);
   }
 
   function num(x: number | undefined): string {

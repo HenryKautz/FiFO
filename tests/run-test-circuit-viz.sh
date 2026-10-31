@@ -4,17 +4,22 @@
 # circuit.html, server/circuit_server.py, server/circuit-server.lisp).
 #
 #   1. circuit.js is what build.sh makes from src/ (skipped under another tsc).
-#   2. The server's parsing: the goal's hypotheses and evidence files.
+#   2. The server's parsing: the goal's hypotheses and evidence files, and
+#      which evidence files it offers (none that are ordering-only, none that
+#      a longer file extends).
 #   3. The numbers, against an INDEPENDENT oracle: the bundled example's theory
 #      is regenerated from its .wff and counted by SharpSAT-TD (wmc.sh, Z with the
 #      evidence and hypothesis added as unit clauses), a counter independent of the circuit.  For each
 #      evidence set the server's P(h|E) must equal the oracle's marginal of the
 #      hypothesis atom, Z(E,h)/Z(E), and its likelihood posterior must equal
 #      P(h|E)/P(h) normalized over the hypotheses (P(E) cancels), to 1e-9.
-#      Refuses to pass vacuously: the evidence must move some hypothesis.
+#      Refuses to pass vacuously: the evidence must move some hypothesis.  The
+#      prior P(h) must equal the oracle's evidence-free marginal.
 #   4. Contradictory evidence is reported unsat; ordering forms, compound
 #      formulas and unknown atoms are refused with reasons, and the Lisp
-#      process keeps answering.
+#      process keeps answering.  A goal recognize.sh refuses (two (or ...)
+#      sets, a plain conjunction) is shown literal by literal, the uniform-prior
+#      column normalized within each goal line.
 #   5. HTTP: the server starts on a free port, serves the page, its script and
 #      every API route, and recovers when its Lisp process is killed.
 #
@@ -86,8 +91,32 @@ for bad, why in (("(and (occurs (a) 1)", "an unclosed list"),
 items, un = S.parse_evidence("(and (not (occurs (a) 1) (occurs (b) 2)) (occurs (c) 3))")
 assert [i["slice"] for i in items] == [3] and len(un) == 1 and "one argument" in un[0], (items, un)
 assert S.lisp_string('a"b\\c') == '"a\\"b\\\\c"'
+# the files offered: not the ordering-only one, not pkg1-p1-3-obs1 (obs5 of the
+# same solution extends it); the other solutions' obs1 files are kept though
+# they start like obs5; an obs3 that diverges from obs5 is kept; an unparseable
+# file is kept
+import glob, os, shutil, tempfile
+d = tempfile.mkdtemp()
+for f in glob.glob(ex + "/grid3x3-1-*.txt"):
+    shutil.copy(f, d)
+open(d + "/grid3x3-1-pkg1-p1-3-obs3.txt", "w").write(
+    "(and (occurs (drive truck1 p2-3 p3-3) 1) (occurs (drive truck1 p3-3 p2-3) 2))")
+open(d + "/grid3x3-1-bad.txt", "w").write("(and (occurs (a) 1)")
+kept, hidden = S.useful_evidence(sorted(glob.glob(d + "/*.txt")))
+names = [os.path.basename(k) for k in kept]
+assert names == ["grid3x3-1-bad.txt", "grid3x3-1-pkg1-p1-3-obs3.txt", "grid3x3-1-pkg1-p1-3-obs5.txt",
+                 "grid3x3-1-pkg1-p2-1-obs1.txt", "grid3x3-1-pkg2-p1-1-obs1.txt",
+                 "grid3x3-1-pkg2-p2-1-obs1.txt"] and hidden == 2, (names, hidden)
+shutil.rmtree(d)
+# a session filters its directories' files, but files named one by one are
+# always offered (here obs1, though obs5 extends it, and the ordering file)
+s = S.make_session("0", ex + "/grid3x3-1.pddl", ex + "/grid3x3-1.dnnf",
+                   [ex + "/grid3x3-1-pkg1-p1-3-obs1.txt", ex + "/grid3x3-1-pkg1-p1-3-ord1.txt", ex])
+menu, hidden = S.menu_files(s)
+assert ex + "/grid3x3-1-pkg1-p1-3-obs1.txt" in menu and ex + "/grid3x3-1-pkg1-p1-3-ord1.txt" in menu, menu
+assert len(menu) == len(set(menu)) == 6 and hidden == 0, (menu, hidden)   # each once, though named and in ex
 EOF
-name "evidence files parse as specified; multi-form and (not A B) refused"
+name "evidence files parse as specified; multi-form and (not A B) refused; useless files hidden"
 if out=$(python3 "$TMP/parse.py" "$VIZ/server" "$EX" 2>&1); then pass; else fail "$(tail -2 <<<"$out")"; fi
 
 # ------------------------------------------------------------- the numbers
@@ -141,15 +170,17 @@ for name, ev in sets.items():
 moved = max(abs(a - b) for a, b in zip(results["none"]["marginal"], results["three"]["marginal"]))
 assert moved > 0.2, ("vacuous: three observations hardly moved any hypothesis", moved)
 report = {"moved": round(moved, 3)}
+want_of = {}                      # evidence-set name -> the oracle's marginals
 if oracle:
     z0 = Z([])
     assert abs(results["none"]["z"] - z0) <= 1e-9 * z0, ("Z", results["none"]["z"], z0)
     prior = oracle_marginals([])
     for name, ev in sets.items():
-        want = oracle_marginals(ev)
+        want = want_of[name] = oracle_marginals(ev)
         got = results[name]
         for i, a in enumerate(atoms):
             assert abs(got["marginal"][i] - want[a]) < 1e-9, (name, a, got["marginal"][i], want[a])
+            assert abs(got["prior"][i] - prior[a]) < 1e-9, (name, a, got["prior"][i], prior[a])
         ratio = [want[a] / prior[a] if prior[a] > 0 else 0.0 for a in atoms]
         post = [x / sum(ratio) for x in ratio]
         for i in range(len(atoms)):
@@ -186,15 +217,60 @@ r = lisp.load(circuit, problem_with("(or (at pkg9 p1-1) (at pkg1 p1-3))", "missi
 assert [h["present"] for h in r["hypotheses"]] == [False, True], r["hypotheses"]
 q = lisp.call(S.query_command(obs5[:1]))
 assert q["marginal"][0] is None and q["posterior"][0] is None and q["marginal"][1] > 0.5, q
-# a plain conjunction is refused (both required, not alternatives) -- and a
-# failed load leaves the loaded circuit and hypotheses whole
+# a failed load (no such circuit) leaves the loaded circuit and hypotheses whole
 try:
-    lisp.load(circuit, problem_with("(and (at pkg1 p1-3) (at pkg2 p2-1))", "conj"))
-    raise SystemExit("a plain conjunction was taken for a hypothesis set")
-except S.LispError as e:
-    assert "conjunction" in str(e), e
+    lisp.load(os.path.join(tmp, "no-such.dnnf"), problem_with("(or (at pkg1 p1-3))", "one"))
+    raise SystemExit("a missing circuit loaded")
+except S.LispError:
+    pass
 q2 = lisp.call(S.query_command(obs5[:1]))
 assert q2["marginal"] == q["marginal"], ("a failed load disturbed the loaded circuit", q2, q)
+# recognize.sh's single set: one group, and a note only when it refuses
+r = lisp.load(circuit, os.path.join(ex, "grid3x3-1.pddl"))
+assert r["note"] is None and {h["group"] for h in r["hypotheses"]} == {0}, r
+# a conjunction of two (or ...) sets, which recognize.sh refuses: shown literal
+# by literal, one group per line, the note saying why; the uniform-prior column
+# is the likelihood normalized WITHIN each line, not across both
+r = lisp.load(circuit, problem_with("(and (or (at pkg1 p1-3) (at pkg1 p2-1)) "
+                                    "(or (at pkg2 p2-1) (at pkg2 p1-1)))", "two"))
+assert [h["group"] for h in r["hypotheses"]] == [0, 0, 1, 1] and "hypothesis sets" in r["note"], r
+q = lisp.call(S.query_command(obs5[:1]))
+assert abs(sum(q["posterior"]) - 2) < 1e-12 and abs(q["posterior"][0] - results["one"]["posterior"][0]) > 1e-3, \
+    ("vacuous: per-line normalization made no difference", q, results["one"])
+# ... against the oracle: P(h|E)/P(h) normalized within each line (the same
+# four atoms as the oracle's, in the same order)
+def per_line(want, lines, neg=(False,) * 4):
+    m = [1 - want[a] if n else want[a] for a, n in zip(atoms, neg)]
+    p = [1 - prior[a] if n else prior[a] for a, n in zip(atoms, neg)]
+    ratio = [x / y if y > 0 else 0.0 for x, y in zip(m, p)]
+    tot = {g: sum(r for r, h in zip(ratio, lines) if h == g) for g in set(lines)}
+    return m, p, [r / tot[g] for r, g in zip(ratio, lines)]
+if oracle:
+    m, p, post = per_line(want_of["one"], [0, 0, 1, 1])
+    for i in range(4):
+        assert abs(q["marginal"][i] - m[i]) < 1e-9 and abs(q["prior"][i] - p[i]) < 1e-9 \
+            and abs(q["posterior"][i] - post[i]) < 1e-9, (i, q, m, p, post)
+# a nested (and ...) is flattened, as the page does: the same two lines
+r = lisp.load(circuit, problem_with("(and (and (or (at pkg1 p1-3) (at pkg1 p2-1))) "
+                                    "(or (at pkg2 p2-1) (at pkg2 p1-1)))", "nested"))
+assert [h["group"] for h in r["hypotheses"]] == [0, 0, 1, 1] and all(h["present"] for h in r["hypotheses"]), r
+# lines of negations only, with no other (or ...) for them to accompany, are
+# hypotheses, not dropped; (not A) is scored as A's complement
+r = lisp.load(circuit, problem_with("(and (or (not (at pkg1 p1-3)) (not (at pkg1 p2-1))) "
+                                    "(or (not (at pkg2 p2-1)) (not (at pkg2 p1-1))))", "negs"))
+assert [h["group"] for h in r["hypotheses"]] == [0, 0, 1, 1] and all(h["present"] for h in r["hypotheses"]) \
+    and r["hypotheses"][0]["atom"] == "(not (holds (at pkg1 p1-3) 7))", r
+q = lisp.call(S.query_command(obs5[:1]))
+if oracle:
+    m, p, post = per_line(want_of["one"], [0, 0, 1, 1], (True,) * 4)
+    for i in range(4):
+        assert abs(q["marginal"][i] - m[i]) < 1e-9 and abs(q["prior"][i] - p[i]) < 1e-9 \
+            and abs(q["posterior"][i] - post[i]) < 1e-9, (i, q, m, p, post)
+# a plain conjunction: each conjunct its own line (a single hypothesis, 1.0)
+r = lisp.load(circuit, problem_with("(and (at pkg1 p1-3) (at pkg2 p2-1))", "conj"))
+assert [h["group"] for h in r["hypotheses"]] == [0, 1] and "conjunction" in r["note"], r
+q = lisp.call(S.query_command(obs5[:1]))
+assert q["posterior"] == [1.0, 1.0], q
 lisp.stop()
 print(json.dumps(report))
 EOF
@@ -273,10 +349,15 @@ assert len(sessions) == 2 and sessions[0]["name"] == "grid3x3-1", sessions
 sid, other = sessions[0]["id"], sessions[1]["id"]
 r = post("api/load", {"id": sid})
 assert r["circuit"]["horizon"] == 7 and "(:goal" in r["problem"], list(r)
+assert len(r["session"]["evidence"]) == 4 and r["session"]["hidden"] == 2 and \
+    not any(f.endswith(("-ord1.txt", "-p1-3-obs1.txt")) for f in r["session"]["evidence"]), r["session"]
 acts = json.loads(get(f"api/actions?id={sid}")[0])["actions"]
 assert "(occurs (drive truck1 p2-3 p3-3) 1)" in acts, len(acts)
 ev = json.loads(get(f"api/evidence?id={sid}&file=grid3x3-1-pkg1-p1-3-obs5.txt")[0])
 assert len(ev["items"]) == 5, ev
+# a file left out of the menu still opens by name (?evidence=FILE)
+ev1 = json.loads(get(f"api/evidence?id={sid}&file=grid3x3-1-pkg1-p1-3-obs1.txt")[0])
+assert len(ev1["items"]) == 1, ev1
 lit = ev["items"][0]["literal"]
 q1 = post("api/query", {"id": sid, "literals": [lit]})
 assert q1["ok"] and q1["marginal"][0] > 0.5, q1
