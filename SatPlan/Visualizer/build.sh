@@ -24,3 +24,11 @@ build "$HERE" visualizer.js
 build "$HERE/tsconfig.circuit.json" circuit.js
 tsc -p "$HERE/tsconfig.tools.json" --outFile "$TMP/bundle-examples.js"
 node "$TMP/bundle-examples.js" "$HERE/examples" > "$OUT/examples.js"
+# clara-examples/ (git-ignored links into a CLARA checkout, made by
+# build-clara-examples.sh) -> clara-examples.js, which index.html also loads;
+# without the directory, remove any old bundle so the menu does not go stale
+if [ -d "$HERE/clara-examples" ]; then
+  node "$TMP/bundle-examples.js" "$HERE/clara-examples" VIZ_CLARA_EXAMPLES > "$OUT/clara-examples.js"
+else
+  rm -f "$OUT/clara-examples.js"
+fi

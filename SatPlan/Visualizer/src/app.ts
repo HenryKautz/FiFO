@@ -230,10 +230,14 @@ namespace Viz {
     solutions: { file: string; text: string }[];
   }
   declare const VIZ_EXAMPLES: Example[] | undefined;
+  /** clara-examples.js (git-ignored; build-clara-examples.sh) defines this
+   *  when there is a local CLARA checkout: its problems follow examples/'s. */
+  declare const VIZ_CLARA_EXAMPLES: Example[] | undefined;
 
   function initExamples() {
     const sel = $("examples") as HTMLSelectElement;
-    const list = typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES;
+    const list = (typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES)
+      .concat(typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES);
     if (list.length === 0) {
       (sel.parentElement as HTMLElement).hidden = true;
       return;

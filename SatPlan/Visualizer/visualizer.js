@@ -1319,7 +1319,8 @@ var Viz;
     }
     function initExamples() {
         const sel = $("examples");
-        const list = typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES;
+        const list = (typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES)
+            .concat(typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES);
         if (list.length === 0) {
             sel.parentElement.hidden = true;
             return;

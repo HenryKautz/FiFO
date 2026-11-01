@@ -44,3 +44,7 @@ SatPlan/**/*-maxterm-v.satout
 
 # Python bytecode caches anywhere, even under the !SatPlan/** exception above
 **/__pycache__/
+
+# build-clara-examples.sh: links into a local CLARA checkout, and their bundle
+SatPlan/Visualizer/clara-examples/
+SatPlan/Visualizer/clara-examples.js
