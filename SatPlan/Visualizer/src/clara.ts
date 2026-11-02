@@ -10,8 +10,9 @@
 //   <goal>.answer                            the plan the evidence was cut from: a
 //       copy of one of those two, so it is shown as that one's "evidence plan"
 //
-// Anything else (the AAAI-2010 benchmarks) is placed by its directory: Size is
-// the subdirectory, Instance the file name.
+// Anything else (none since build-clara-examples.sh left out the non-grid
+// AAAI-2010-Benchmarks) is placed by its directory: Size is the subdirectory,
+// Instance the file name.
 
 namespace Viz {
   /** An entry of examples.js / clara-examples.js (tools/bundle-examples.ts). */
@@ -74,7 +75,7 @@ namespace Viz {
     });
     if (chosen !== undefined) {
       // beside -eval/-tt plans (CLARA's goals/), <goal>.answer is the evidence
-      // plan; anywhere else (AAAI) it is just a solution, listed by name
+      // plan; anywhere else it is just a solution, listed by name
       const same = named.find((n) => n.rank < 2 && ex.solutions[n.j].text === ex.solutions[chosen!].text);
       if (same) same.label += " · evidence plan";
       else if (named.some((n) => n.rank < 2)) named.push({ label: "evidence plan", j: chosen, rank: -1 });

@@ -13,11 +13,11 @@
 # clara-examples/ mirrors CLARA's tree for these benchmark directories and
 # their immediate subdirectories (goals/, recognition/, ...):
 #     SimpleGrid TwoPackage TwoPackageOneway ThreePackage FourPackage
-#     AAAI-2010-Benchmarks
+# (not AAAI-2010-Benchmarks: blocks-world and intrusion-detection problems,
+# which the visualizer's grid map cannot draw).
 # Each mirrored directory links that directory's .pddl, .answer and .plan
 # files under their own names, except
-#   - a .pddl containing <HYPOTHESIS> (a template, such as the AAAI
-#     template.pddl, not a problem);
+#   - a .pddl containing <HYPOTHESIS> (a template, not a problem);
 #   - a Dropbox "conflicted copy" (reported: the checkout needs cleaning).
 # The bundler (tools/bundle-examples.ts) then gives each problem the domain
 # beside it or in a parent directory, and the solutions beside it whose names
@@ -29,7 +29,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 FIFO="$(cd "$HERE/../.." && pwd -P)"
 OUTDIR="$HERE/clara-examples"
-ROOTS="SimpleGrid TwoPackage TwoPackageOneway ThreePackage FourPackage AAAI-2010-Benchmarks"
+ROOTS="SimpleGrid TwoPackage TwoPackageOneway ThreePackage FourPackage"
 
 # (1) find CLARA
 CLARA="${1:-${CLARA_DIR:-$FIFO/../CLARA}}"

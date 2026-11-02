@@ -89,10 +89,11 @@ To add an example, put its files in `examples/` and run `build.sh`.
 With a CLARA checkout beside FiFO (or its path as the argument, or in
 `CLARA_DIR`), `bash SatPlan/Visualizer/build-clara-examples.sh` adds a **CLARA** button
 left of the Examples menu: it mirrors SimpleGrid, TwoPackage,
-TwoPackageOneway, ThreePackage, FourPackage (with their `goals/` and
-`recognition/`) and AAAI-2010-Benchmarks into `clara-examples/` as symbolic
-links, and `build.sh` bundles that into `clara-examples.js`, which the page
-loads after `examples.js` (about 1,100 problems, 17 MB). Both are git-ignored,
+TwoPackageOneway, ThreePackage and FourPackage (with their `goals/` and
+`recognition/`) into `clara-examples/` as symbolic links -- not
+AAAI-2010-Benchmarks, whose blocks-world and intrusion-detection problems the
+grid map cannot draw -- and `build.sh` bundles that into `clara-examples.js`,
+which the page loads after `examples.js` (about 1,100 problems, 17 MB). Both are git-ignored,
 since they depend on the local checkout; rerun the script after pulling CLARA.
 Without them the button is hidden.
 In a tree, a problem's domain is the one beside it, else the nearest parent
@@ -110,9 +111,9 @@ The button opens a column browser, read from CLARA's file names
 | Solver | `-eval.answer` (EvalMaxSAT), `-tt.answer` (tt-open-wbo-inc), or the problem alone | `EvalMaxSAT · evidence plan` |
 
 `<goal>.answer`, the plan CLARA cut the evidence from, is a copy of one of
-the two; it is not listed again, but marks that one `· evidence plan`. The
-AAAI benchmarks are not grids: their Size is the benchmark's directory and
-their Instance the file name. A solver with no plan file for that goal (it
+the two; it is not listed again, but marks that one `· evidence plan`. (A
+problem whose name is not `gridNxM-K` would be placed by its directory: Size
+the subdirectory, Instance the file name.) A solver with no plan file for that goal (it
 timed out, or was stopped) is grayed, and so is a goal with no plan at all;
 either can still be opened, to show the problem alone, as can
 "no solution (problem only)". Choosing a row fills the next column; Open, a
