@@ -166,12 +166,32 @@ It needs a server, which holds the circuit in FiFO's Lisp:
 python3 SatPlan/Visualizer/server/circuit_server.py --open
     # the bundled example (circuit-examples/: CLARA TwoPackage grid3x3-1)
 python3 SatPlan/Visualizer/server/circuit_server.py --clara ~/Programming/CLARA --open
-    # every CLARA problem with a saved circuit, with its evidence files
+    # CLARA's circuits, in the page's CLARA browser (below)
 python3 SatPlan/Visualizer/server/circuit_server.py \
     --session PROBLEM.pddl CIRCUIT.dnnf EVIDENCE-DIR-or-FILES... --open
 ```
 
-then open http://127.0.0.1:8765/ (`--open` does it).  The server needs python3
+then open http://127.0.0.1:8765/ (`--open` does it).
+
+With `--clara`, a **CLARA** button opens a column browser -- Family, Size,
+Instance, Evidence -- over every original problem of SimpleGrid, TwoPackage,
+TwoPackageOneway, ThreePackage and FourPackage. Evidence is "no evidence" or
+one of CLARA's two conditions for each goal, 25% or 100% of a plan for it
+observed (`<goal>-obs25.txt`, `-obs100.txt`), opened with all of its
+observations applied (step back with ◀). Choosing other evidence for the
+circuit already open does not reload it. A problem whose circuit is on disk
+opens; one whose circuit failed to compile, or was never compiled (its
+family's `results/compile-d4.jsonl`), is grayed and cannot be opened, and the
+footer says why; a family or size with no compiled circuit is grayed too. A
+circuit committed in `.part-*` pieces is joined into its git-ignored whole
+file when opened, and joined again whenever a piece is newer (after a pull),
+as CLARA's `reassemble.sh` would. The Session menu then lists only sessions
+given with `--session`.
+
+Once a circuit is loaded, a line under the header gives its size: the file's
+bytes and its nodes. The nodes are those of the circuit as FiFO saves and loads
+it, every literal a node of its own -- more than the `nodes` of CLARA's compile
+records, which count d4's own form (literals on its edges).  The server needs python3
 (standard library only) and SBCL with FiFO: the installed one (`~/lib/fifo/lisp`)
 or `FIFO_LISP`.  `?session=NAME&evidence=FILE&step=K` in the page's address
 opens that view directly.
@@ -201,7 +221,8 @@ other files itself). All three are checked in, so the page works without buildin
 | `src/domain.ts` | a domain's action parameters and costs; the cost of a ground action |
 | `src/plan.ts` | the three solution formats, plan simulation, goal evaluation, running utility |
 | `src/render.ts` | the map as SVG |
-| `src/clara.ts` | the CLARA browser's columns, from CLARA's file names |
+| `src/columns.ts` | the column browser both pages' CLARA buttons open |
+| `src/clara.ts` | the plan page's CLARA columns, from CLARA's file names; plan values |
 | `src/app.ts` | the page: file loading, panels, stepping, the CLARA browser; `Viz.load(...)` for programmatic use |
 | `src/circuit-app.ts` | the circuit visualizer page (built into `circuit.js` with the shared modules) |
 | `server/circuit_server.py` | the circuit visualizer's HTTP server, sessions, evidence files; drives the Lisp |

@@ -9,7 +9,9 @@
 <body class="circuit-page">
   <header>
     <h1>Circuit Visualizer</h1>
-    <label class="file">Session
+    <!-- shown only when the server was started with --clara -->
+    <button id="clara-button" class="clara-button" title="Browse CLARA's circuits and their evidence" hidden>CLARA</button>
+    <label class="file" id="session-label">Session
       <select id="session"><option value="">Loading…</option></select>
     </label>
     <label class="file">Evidence file
@@ -19,6 +21,7 @@
       <input type="file" id="evidence-upload" accept=".txt,.ev,*">
     </label>
     <span id="summary" class="summary">Connecting to the circuit server…</span>
+    <div id="circuit-size" class="circuit-size" hidden></div>
   </header>
   <div id="messages" class="messages" hidden></div>
   <main>
@@ -66,6 +69,20 @@
       </section>
     </aside>
   </main>
+  <dialog id="clara-dialog" class="clara-dialog" aria-label="CLARA circuits">
+    <h2>CLARA circuits</h2>
+    <div class="clara-cols clara-cols-4" tabindex="0" aria-label="Family, Size, Instance, Evidence: arrow keys choose, Enter opens">
+      <div class="clara-col"><h3>Family</h3><ul></ul></div>
+      <div class="clara-col"><h3>Size</h3><ul></ul></div>
+      <div class="clara-col narrow"><h3>Instance</h3><ul></ul></div>
+      <div class="clara-col wide"><h3>Evidence</h3><ul></ul></div>
+    </div>
+    <div class="clara-foot">
+      <span id="clara-path" class="clara-path"></span>
+      <button id="clara-cancel">Cancel</button>
+      <button id="clara-open" class="primary">Open</button>
+    </div>
+  </dialog>
   <script src="circuit.js"></script>
 </body>
 </html>

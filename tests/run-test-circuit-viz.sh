@@ -300,6 +300,137 @@ if out=$(python3 "$SERVER" --port 0 --session "$TMP/no-such.pddl" "$EX/grid3x3-1
   fail "the server started"
 elif grep -q "does not exist" <<<"$out"; then pass; else fail "$(tail -1 <<<"$out")"; fi
 
+name "--clara: every problem listed; failed/uncompiled ones not openable; pieces joined; evidence"
+# a CLARA tree made here: grid3x3-1 compiled (whole circuit), grid3x3-2 compiled
+# but committed in pieces, grid3x3-3 timed out, grid4x4-1 never compiled,
+# grid3x3-4 recorded ok but its file is gone, grid3x3-5's circuit is on disk
+# though a LATER attempt timed out; the record file ends in a half-written
+# line; evidence named as CLARA's are
+cat > "$TMP/clara.py" <<'EOF'
+import json, os, re, shutil, subprocess, sys, time, urllib.request
+sys.path.insert(0, sys.argv[1])
+import circuit_server as S
+ex, root, server = sys.argv[2], sys.argv[3], sys.argv[4]
+fam = os.path.join(root, "TwoPackage")
+for d in ("circuits", "evidence", "results"):
+    os.makedirs(os.path.join(fam, d))
+for p in ("grid3x3-1", "grid3x3-2", "grid3x3-3", "grid3x3-4", "grid3x3-5", "grid4x4-1"):
+    shutil.copy(ex + "/grid3x3-1.pddl", os.path.join(fam, p + ".pddl"))
+for p in ("grid3x3-1", "grid3x3-5"):
+    shutil.copy(ex + "/grid3x3-1.dnnf", os.path.join(fam, "circuits", p + ".dnnf"))
+data = open(ex + "/grid3x3-1.dnnf", "rb").read()
+third = len(data) // 3 + 1
+def split(content, when):
+    for k, suf in enumerate(("aa", "ab", "ac")):
+        f = os.path.join(fam, "circuits", f"grid3x3-2.dnnf.part-{suf}")
+        open(f, "wb").write(content[k * third:(k + 1) * third])
+        os.utime(f, (when, when))
+split(data, time.time() - 100)
+recs = [{"instance": "grid3x3-1", "status": "ok"}, {"instance": "grid3x3-2", "status": "ok"},
+        {"instance": "grid3x3-3", "status": "failed"}, {"instance": "grid3x3-3", "status": "timeout", "limit_s": 7200},
+        {"instance": "grid3x3-4", "status": "ok"},
+        {"instance": "grid3x3-5", "status": "ok"}, {"instance": "grid3x3-5", "status": "timeout", "limit_s": 3600}]
+open(os.path.join(fam, "results", "compile-d4.jsonl"), "w").write(
+    "".join(json.dumps(r) + "\n" for r in recs) + '{"instance": "grid4x4-1", "sta')   # a sweep mid-write
+obs5 = open(ex + "/grid3x3-1-pkg1-p1-3-obs5.txt").read()
+first = "(and " + re.findall(r"\(occurs .*?\) \d+\)", obs5)[0] + ")"
+for p in ("grid3x3-1", "grid3x3-2"):
+    open(os.path.join(fam, "evidence", f"{p}-none.txt"), "w").write("(and)\n")
+    open(os.path.join(fam, "evidence", f"{p}-pkg1-p1-3-obs100.txt"), "w").write(obs5)
+    open(os.path.join(fam, "evidence", f"{p}-pkg1-p1-3-obs25.txt"), "w").write(first)   # CLARA's other condition
+# goals that sort differently as text and as numbers (p10 vs p5), and an
+# ordering file, which is not a condition the browser offers
+for g in ("pkg1-p10-3", "pkg1-p5-3"):
+    open(os.path.join(fam, "evidence", f"grid3x3-1-{g}-obs100.txt"), "w").write(obs5)
+open(os.path.join(fam, "evidence", "grid3x3-1-pkg1-p1-3-ord1.txt"), "w").write("(occur-in-order (a))")
+sessions, cat = S.clara_sessions(root, 0)
+by = {e["name"].split("/")[1]: e for e in cat}
+assert sorted(by) == ["grid3x3-1", "grid3x3-2", "grid3x3-3", "grid3x3-4", "grid3x3-5", "grid4x4-1"], sorted(by)
+assert [by[p]["session"] is not None for p in sorted(by)] == [True, True, False, False, True, False], cat
+assert "2 h limit" in by["grid3x3-3"]["reason"], by["grid3x3-3"]   # the LAST record counts
+assert "never compiled" in by["grid4x4-1"]["reason"] and "missing" in by["grid3x3-4"]["reason"], cat
+assert by["grid3x3-2"]["bytes"] == len(data) == by["grid3x3-1"]["bytes"], (by["grid3x3-2"]["bytes"], len(data))
+assert (by["grid4x4-1"]["size"], by["grid4x4-1"]["instance"], by["grid4x4-1"]["sizeKey"]) == ("4×4", "1", [4, 4])
+assert all(s["clara"] for s in sessions) and [bool(s["pieces"]) for s in sessions] == [False, True, False], sessions
+rows = S.clara_evidence(sessions[0])
+assert [(r["label"], r["file"]) for r in rows] == [
+    ("no evidence", None),
+    ("pkg1 at p1-3: 25% of its plan observed", "grid3x3-1-pkg1-p1-3-obs25.txt"),
+    ("pkg1 at p1-3: 100% of its plan observed", "grid3x3-1-pkg1-p1-3-obs100.txt"),
+    ("pkg1 at p5-3: 100% of its plan observed", "grid3x3-1-pkg1-p5-3-obs100.txt"),
+    ("pkg1 at p10-3: 100% of its plan observed", "grid3x3-1-pkg1-p10-3-obs100.txt")], rows
+assert S.clara_goal_label("pkg1-p2-4-pkg2-p3-4") == "pkg1 at p2-4, pkg2 at p3-4"
+assert S.clara_goal_label("truck1-p8-4") == "truck1 at p8-4" and S.clara_goal_label("odd-name") == "odd-name"
+# reassemble: joins exactly; again is a no-op; a whole file changed here is refused
+whole = os.path.join(fam, "circuits", "grid3x3-2.dnnf")
+pieces = sessions[1]["pieces"]
+assert S.reassemble(whole, pieces) and open(whole, "rb").read() == data
+assert not S.reassemble(whole, pieces)
+open(whole, "ab").write(b" ")
+try:
+    S.reassemble(whole, pieces)
+    raise SystemExit("a whole file changed since it was split was overwritten")
+except ValueError:
+    pass
+os.remove(whole)
+# a joined file is not trusted once pieces are newer (a pull brought a
+# recompiled circuit): the session keeps its pieces, and the load rejoins
+assert S.reassemble(whole, pieces)
+s2 = next(s for s in S.clara_sessions(root, 0)[0] if s["name"].endswith("grid3x3-2"))
+assert s2["pieces"] and s2["circuit"] == whole, s2
+newer = data.replace(b"(:L", b"(:L ", 1)   # different bytes, as a recompiled circuit's would be
+split(newer, time.time() + 100)
+assert S.reassemble(whole, s2["pieces"]) and open(whole, "rb").read() == newer, "a stale join was served"
+split(data, time.time() + 200)
+assert S.reassemble(whole, s2["pieces"]) and open(whole, "rb").read() == data
+os.remove(whole)
+# --clara with no compiled circuit at all: the server still starts, with the
+# catalogue and no sessions (not the bundled example)
+bare = os.path.join(root + "-bare", "FourPackage")
+os.makedirs(bare)
+shutil.copy(ex + "/grid3x3-1.pddl", os.path.join(bare, "grid6x6-1.pddl"))
+def serve(where):
+    proc = subprocess.Popen([sys.executable, server, "--port", "0", "--clara", where],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        m = re.match(r"circuit visualizer: (http\S+)", line)
+        if m:
+            return proc, m.group(1)
+    proc.wait()
+    raise SystemExit("the server did not start")
+def stop(proc):
+    subprocess.run(["pkill", "-KILL", "-P", str(proc.pid)], check=False)   # its SBCL child first
+    proc.kill()
+    proc.wait()
+proc, url = serve(root + "-bare")
+try:
+    get = lambda p: json.loads(urllib.request.urlopen(url + p, timeout=120).read())
+    assert get("api/sessions") == [], "the bundled example was served under --clara"
+    assert [(e["name"], e["session"]) for e in get("api/clara")] == [("FourPackage/grid6x6-1", None)]
+finally:
+    stop(proc)
+# end to end: the server's /api/clara, and loading the pieces-only circuit joins it
+proc, url = serve(root)
+try:
+    get = lambda p: json.loads(urllib.request.urlopen(url + p, timeout=120).read())
+    api = get("api/clara")
+    assert [(e["name"], e["session"] is not None, len(e["evidence"])) for e in api] == \
+        [("TwoPackage/grid3x3-1", True, 5), ("TwoPackage/grid3x3-2", True, 3), ("TwoPackage/grid3x3-3", False, 0),
+         ("TwoPackage/grid3x3-4", False, 0), ("TwoPackage/grid3x3-5", True, 1), ("TwoPackage/grid4x4-1", False, 0)], api
+    assert all(s["clara"] for s in get("api/sessions"))
+    sid = next(e["session"] for e in api if e["name"].endswith("grid3x3-2"))
+    req = urllib.request.Request(url + "api/load", json.dumps({"id": sid}).encode(), {"Content-Type": "application/json"})
+    r = json.loads(urllib.request.urlopen(req, timeout=300).read())
+    assert r["session"]["bytes"] == len(data) and r["circuit"]["horizon"] == 7, r.get("error", r["session"])
+    assert open(whole, "rb").read() == data, "the joined file"
+finally:
+    stop(proc)
+print("ok")
+EOF
+mkdir -p "$TMP/clara"
+if out=$(python3 "$TMP/clara.py" "$VIZ/server" "$EX" "$TMP/clara" "$SERVER" 2>&1); then pass
+else fail "$(tail -3 <<<"$out")"; fi
+
 name "HTTP: page, script, every API route; per-session queries; recovers from a killed Lisp"
 # two sessions on one circuit with DIFFERENT hypothesis sets (4 and 2), so the
 # reply shows which one a query ran on: one naming the session not loaded must
@@ -345,10 +476,13 @@ try:
 except urllib.error.HTTPError:
     pass
 sessions = json.loads(get("api/sessions")[0])
-assert len(sessions) == 2 and sessions[0]["name"] == "grid3x3-1", sessions
+assert len(sessions) == 2 and sessions[0]["name"] == "grid3x3-1" and not any(s["clara"] for s in sessions), sessions
+assert json.loads(get("api/clara")[0]) == [], "no --clara: an empty CLARA catalogue (the page hides its button)"
 sid, other = sessions[0]["id"], sessions[1]["id"]
 r = post("api/load", {"id": sid})
 assert r["circuit"]["horizon"] == 7 and "(:goal" in r["problem"], list(r)
+# the circuit's size on disk, for the page's size line
+assert r["session"]["bytes"] == os.path.getsize(os.path.join(os.environ["EXDIR"], "grid3x3-1.dnnf")), r["session"]
 assert len(r["session"]["evidence"]) == 4 and r["session"]["hidden"] == 2 and \
     not any(f.endswith(("-ord1.txt", "-p1-3-obs1.txt")) for f in r["session"]["evidence"]), r["session"]
 acts = json.loads(get(f"api/actions?id={sid}")[0])["actions"]
@@ -381,7 +515,7 @@ print("ok")
 EOF
 if [ -z "$URL" ]; then
   fail "the server did not start: $(tail -3 "$TMP/server.log")"
-elif out=$(python3 "$TMP/http_check.py" "$URL" "$SPID" 2>&1); then pass
+elif out=$(EXDIR="$EX" python3 "$TMP/http_check.py" "$URL" "$SPID" 2>&1); then pass
 else fail "$(tail -3 <<<"$out") | server: $(tail -2 "$TMP/server.log")"; fi
 
 echo

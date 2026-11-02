@@ -24,11 +24,14 @@ namespace Viz {
   }
 
   interface CircuitState {
-    sessions: { id: string; name: string }[];
+    sessions: { id: string; name: string; clara?: boolean }[];
     sessionId?: string;
     problem?: Problem;
     circuit?: { nvars: number; nodes: number; projected: number | null; horizon: number | null;
                 actions: number; hypotheses: Hypothesis[]; path: string; note: string | null };
+    /** the loaded circuit file's name and size on disk (the server's /api/load) */
+    circuitFile?: string;
+    circuitBytes?: number;
     evidenceName?: string;
     observations: Observation[];
     step: number;             // how many observations are applied
@@ -49,10 +52,6 @@ namespace Viz {
     const e = document.getElementById(id);
     if (!e) throw new Error(`missing element #${id}`);
     return e;
-  }
-
-  function esc(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   async function api(path: string, body?: unknown): Promise<any> {
@@ -267,10 +266,31 @@ namespace Viz {
     showMessages();
     const c = cs.circuit;
     $("summary").textContent = c && cs.problem
-      ? `${cs.problem.name} · circuit ${c.path.split("/").pop()} · ${c.nodes.toLocaleString()} nodes · ` +
+      ? `${cs.problem.name} · ` +
         `${c.projected !== null ? `projected onto ${c.projected} of ${c.nvars} atoms` : `${c.nvars} atoms`} · ` +
         `horizon ${c.horizon ?? "?"}` + (cs.busy ? " · computing…" : "")
-      : "Choose a session.";
+      : cs.sessions.some((s) => !s.clara) || ($("clara-button") as HTMLElement).hidden
+        ? "Choose a session." : "Choose a CLARA circuit.";
+    // the circuit's size: on disk, and in nodes
+    const size = $("circuit-size");
+    size.hidden = !c;
+    if (c) {
+      size.textContent = `Circuit ${cs.circuitFile ?? c.path.split("/").pop()}: ` +
+        (cs.circuitBytes !== undefined ? `${cs.circuitBytes.toLocaleString()} bytes (${humanBytes(cs.circuitBytes)}) · ` : "") +
+        `${c.nodes.toLocaleString()} nodes`;
+    }
+  }
+
+  /** 163165 -> "159 KB"; 1.9e9 -> "1.8 GB" (powers of 1024) */
+  export function humanBytes(n: number): string {
+    const units = ["bytes", "KB", "MB", "GB", "TB"];
+    let k = 0;
+    let x = n;
+    while (x >= 1024 && k < units.length - 1) {
+      x /= 1024;
+      k++;
+    }
+    return k === 0 ? `${n} bytes` : `${x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[k]}`;
   }
 
   // ---------------------------------------------------------------- actions
@@ -327,6 +347,8 @@ namespace Viz {
       cs.sessionId = id;
       cs.problem = parseProblem(r.problem);
       cs.circuit = r.circuit;
+      cs.circuitFile = r.session.circuit;
+      cs.circuitBytes = r.session.bytes;
       cs.observations = [];
       cs.step = 0;
       cs.reply = undefined;
@@ -420,6 +442,104 @@ namespace Viz {
     void query();
   }
 
+  /** An entry of the server's /api/clara: one CLARA original problem. */
+  interface ClaraCircuit {
+    family: string; size: string; sizeKey: number[]; instance: string; name: string;
+    session: string | null; reason: string | null; bytes: number | null;
+    evidence: { file: string | null; label: string }[];
+  }
+  interface EvidenceChoice { entry: ClaraCircuit; file: string | null }
+
+  /** Open a CLARA browser row: its circuit -- loaded only when it is not the
+   *  one already shown, since a big circuit takes long to load -- and its
+   *  evidence with every observation applied (the row names a condition, e.g.
+   *  25% of a plan observed), or no evidence. */
+  async function openClara({ entry, file }: EvidenceChoice) {
+    if (cs.sessionId !== entry.session || !cs.circuit) {
+      await loadSession(entry.session!);
+      if (cs.sessionId !== entry.session || !cs.circuit) return;   // the load failed: its error is shown
+      ($("session") as HTMLSelectElement).value = "";   // the Session menu's own sessions are not this one
+    }
+    if (file) {
+      await chooseEvidence(file);
+      if (cs.evidenceName === file) setStep(Infinity);
+    } else {
+      ($("evidence-file") as HTMLSelectElement).value = "";
+      cs.observations = [];
+      cs.step = 0;
+      cs.evidenceName = undefined;
+      cs.messages = [];
+      renderAll();
+      void query();
+    }
+  }
+
+  /** The CLARA button: a column browser (columns.ts), Family / Size /
+   *  Instance / Evidence, over every original problem of CLARA (the server's
+   *  --clara).  A problem whose circuit failed to compile, or was never
+   *  compiled, is grayed and cannot be opened; the footer says why. */
+  async function initClara() {
+    let entries: ClaraCircuit[];
+    try {
+      entries = await api("/api/clara");
+    } catch (e) {
+      cs.errors = [`the CLARA catalogue: ${e instanceof Error ? e.message : e}`];
+      return showMessages();
+    }
+    if (entries.length === 0) return;
+    const button = $("clara-button") as HTMLButtonElement;
+    button.hidden = false;
+    const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
+    const group = <T>(xs: T[], key: (x: T) => string) => {
+      const m = new Map<string, T[]>();
+      for (const x of xs) m.set(key(x), [...(m.get(key(x)) ?? []), x]);
+      return m;
+    };
+    // a family or size none of whose circuits compiled is grayed too (it can
+    // still be opened up, to see why)
+    const none = (es: ClaraCircuit[]) => es.every((e) => e.session === null);
+    const tree = (): ColumnRow<EvidenceChoice>[] =>
+      [...group(entries, (e) => e.family)].sort((a, b) => byName(a[0], b[0])).map(([fam, fs]) => ({
+        label: fam,
+        missing: none(fs),
+        title: none(fs) ? `${fam}: no circuit compiled` : fam,
+        children: [...group(fs, (e) => e.size)]
+          .sort((a, b) => a[1][0].sizeKey[0] - b[1][0].sizeKey[0] || a[1][0].sizeKey[1] - b[1][0].sizeKey[1])
+          .map(([size, ss]) => ({
+            label: size,
+            missing: none(ss),
+            title: none(ss) ? `${fam} ${size}: no circuit compiled` : size,
+            children: ss.sort((a, b) => byName(a.instance, b.instance)).map((e) => ({
+              label: e.instance,
+              disabled: e.session === null,
+              title: e.session === null ? `${e.name}: ${e.reason}` : e.name,
+              data: { entry: e, file: null },
+              children: e.evidence.map((v) => ({ label: v.label, title: v.file ?? v.label, data: { entry: e, file: v.file } })),
+            })),
+          })),
+      }));
+    const browser = columnBrowser<EvidenceChoice>({
+      dialog: $("clara-dialog") as HTMLDialogElement,
+      footer: $("clara-path"),
+      openButton: $("clara-open") as HTMLButtonElement,
+      cancelButton: $("clara-cancel"),
+      tree,
+      describe: (path) => {
+        const e = path[2]?.data?.entry;
+        if (!e) return "Choose a family, size, instance and evidence.";
+        if (e.session === null) return `${e.name}: cannot be opened -- ${e.reason}`;
+        // the file's size only: its node count is known once it is loaded
+        // (CLARA's compile record counts d4's own nodes, not the file's)
+        const size = e.bytes !== null ? ` (circuit file ${humanBytes(e.bytes)})` : "";
+        const f = path[3]?.data?.file;
+        return `${e.name}${size}` + (path[3] ? `  +  ${f ?? "no evidence"}` : "");
+      },
+      open: (path) => void openClara(path[3].data!),
+    });
+    button.addEventListener("click", () => browser.show());
+    renderAll();
+  }
+
   function init() {
     $("session").addEventListener("change", (ev) => {
       const v = (ev.target as HTMLSelectElement).value;
@@ -464,6 +584,7 @@ namespace Viz {
     document.addEventListener("keydown", (ev) => {
       const tag = (ev.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "SELECT" || !cs.circuit) return;
+      if (document.querySelector("dialog[open]")) return;   // the CLARA browser has the keys
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (ev.key === "ArrowRight") setStep(cs.step + 1);
       else if (ev.key === "ArrowLeft") setStep(cs.step - 1);
@@ -472,15 +593,22 @@ namespace Viz {
     });
     api("/api/sessions").then((s) => {
       cs.sessions = s;
+      // the Session menu: the sessions named on the command line; CLARA's are
+      // chosen in the CLARA browser
+      const own = s.filter((x: { clara?: boolean }) => !x.clara);
+      ($("session-label") as HTMLElement).hidden = own.length === 0;
       ($("session") as HTMLSelectElement).innerHTML = `<option value="">Choose a session…</option>` +
-        s.map((x: { id: string; name: string }) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+        own.map((x: { id: string; name: string }) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+      // the CLARA browser whenever the server has a CLARA catalogue -- even one
+      // with no compiled circuit, to show why
+      void initClara();
       // ?session=<id or name>&evidence=<file>&step=<k> opens a view directly
       const q = new URLSearchParams(location.search);
       const want = q.get("session");
       const pick = s.find((x: { id: string; name: string }) => x.id === want || x.name === want) ??
                    (s.length === 1 ? s[0] : undefined);
       if (pick) {
-        ($("session") as HTMLSelectElement).value = pick.id;
+        if (!pick.clara) ($("session") as HTMLSelectElement).value = pick.id;
         void loadSession(pick.id).then(async () => {
           const ev = q.get("evidence");
           if (ev && cs.circuit) {

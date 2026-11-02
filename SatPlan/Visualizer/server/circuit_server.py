@@ -14,10 +14,15 @@ whose names start with the problem's name.  Offered are only the files with a
 literal the page can clamp, and not those a longer file for the same solution
 extends (the page steps through the longer one): see useful_evidence.  Every
 file stays available by name (the page's ?evidence=FILE), and files named one
-by one are always offered.  --clara DIR adds every problem of
-CLARA's TwoPackage, SimpleGrid and ThreePackage that has a saved circuit, with
-its evidence/ files.  Without any session the bundled example
-(../circuit-examples/) is served.
+by one are always offered.  Without any session (or --clara) the bundled
+example (../circuit-examples/) is served.
+
+--clara DIR offers every original problem of CLARA's SimpleGrid, TwoPackage,
+TwoPackageOneway, ThreePackage and FourPackage in the page's CLARA browser
+(/api/clara), each with its evidence/ files; one whose circuit failed to
+compile, or was never compiled (results/compile-d4.jsonl), is listed but
+cannot be opened.  A circuit committed as .part-* pieces is joined into its
+(git-ignored) whole file when first opened, as CLARA's reassemble.sh would.
 
 The Lisp is FIFO_LISP if set, else ~/lib/fifo/lisp (the installed FiFO);
 --sbcl names the SBCL binary, --heap-mb its heap.
@@ -282,13 +287,15 @@ def useful_evidence(paths):
     return kept, len(paths) - len(kept)
 
 
-def make_session(sid, problem, circuit, evidence):
+def make_session(sid, problem, circuit, evidence, pieces=None):
     """A session: the problem, its circuit, and its evidence files -- ALL of
     them, any of which the page may open by name; the menu's list (menu_files)
     is worked out when the session is first loaded.  Files named one by one
-    (not found in a directory) are always offered."""
+    (not found in a directory) are always offered.  PIECES: the CIRCUIT is
+    committed as CIRCUIT.part-* pieces (CLARA's GitHub-sized split), joined
+    into CIRCUIT when the session is first loaded (reassemble)."""
     for what, path in (("problem", problem), ("circuit", circuit)):
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) and not (what == "circuit" and pieces):
             raise ValueError(f"the {what} {path!r} does not exist")
     name = os.path.splitext(os.path.basename(problem))[0]
     named = [os.path.abspath(e) for e in evidence if os.path.isfile(e)]
@@ -296,7 +303,42 @@ def make_session(sid, problem, circuit, evidence):
             "circuit": os.path.abspath(circuit),
             # once each, though a file be named and also in a directory given
             "evidence": list(dict.fromkeys(os.path.abspath(e) for e in evidence_files(name, evidence))),
-            "named": named, "menu": None}
+            "named": named, "menu": None, "pieces": [os.path.abspath(p) for p in (pieces or [])],
+            "clara": False}
+
+
+def reassemble(whole, pieces):
+    """Join PIECES (sorted .part-aa, -ab, ...) into WHOLE, as CLARA's
+    reassemble.sh does and with its rule: WHOLE is (re)built when it is
+    missing, older than a piece, or not the pieces' total length -- but a
+    WHOLE newer than every piece and of another length was changed here, and
+    is refused rather than overwritten.  Written to a temporary file first, so
+    an interrupted join leaves nothing half-written."""
+    total = sum(os.path.getsize(p) for p in pieces)
+    if os.path.exists(whole):
+        newest_piece = max(os.path.getmtime(p) for p in pieces)
+        if os.path.getmtime(whole) >= newest_piece:
+            if os.path.getsize(whole) == total:
+                return False
+            raise ValueError(f"{whole} is newer than its pieces and differs from them; "
+                             "run CLARA's reassemble.sh (or delete it) first")
+    tmp = whole + ".reassemble-tmp"
+    try:
+        with open(tmp, "wb") as out:
+            for p in pieces:
+                with open(p, "rb") as f:
+                    while True:
+                        chunk = f.read(1 << 24)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+        if os.path.getsize(tmp) != total:
+            raise ValueError(f"joining the pieces of {whole} gave the wrong length")
+        os.replace(tmp, whole)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return True
 
 
 def menu_files(s):
@@ -311,28 +353,133 @@ def menu_files(s):
     return s["menu"]
 
 
+CLARA_FAMILIES = ("SimpleGrid", "TwoPackage", "TwoPackageOneway", "ThreePackage", "FourPackage")
+
+
+def compile_records(family_dir):
+    """The last compile-d4.jsonl record of each instance, by instance name.  A
+    line that does not parse (one a running sweep is still writing) is
+    skipped, not fatal: it only explains why a problem cannot be opened."""
+    out = {}
+    path = os.path.join(family_dir, "results", "compile-d4.jsonl")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    out[r.get("instance")] = r
+    return out
+
+
+def natural_key(s):
+    """S split into text and numbers, so p5-8 sorts before p10-3 and 25 before 100."""
+    return [(0, int(t)) if t.isdigit() else (1, t) for t in re.findall(r"\d+|\D+", s)]
+
+
+def clara_goal_label(suffix):
+    """"pkg1-p2-4-pkg2-p3-4" -> "pkg1 at p2-4, pkg2 at p3-4" (CLARA's goal
+    names, as the plan visualizer shows them); the suffix itself otherwise."""
+    parts = re.findall(r"[a-z]+\d+-p\d+-\d+", suffix)
+    if not parts or "-".join(parts) != suffix:
+        return suffix
+    return ", ".join(re.sub(r"^([a-z]+\d+)-", r"\1 at ", p) for p in parts)
+
+
+def clara_observed(name, path):
+    """(goal label, K) for CLARA's evidence file NAME-<goal>-obsK.txt of
+    problem NAME -- the first K% of the actions of a plan for <goal> -- else
+    None (NAME-none.txt, ordering files, anything else)."""
+    base = os.path.basename(path)
+    if not base.startswith(name + "-"):
+        return None
+    m = re.fullmatch(r"(.+)-obs(\d+)\.txt", base[len(name) + 1:])
+    return (clara_goal_label(m.group(1)), int(m.group(2))) if m else None
+
+
 def clara_sessions(clara, start):
-    out = []
-    for bench in ("TwoPackage", "SimpleGrid", "ThreePackage"):
-        d = os.path.join(clara, bench)
+    """CLARA's original problems, every one of every family: the sessions for
+    those with a compiled circuit (whole, or in .part-* pieces joined on first
+    load), and the catalogue the page's CLARA browser shows -- one entry per
+    problem, with why it cannot be opened when its circuit failed to compile or
+    was never compiled (compile-d4.jsonl)."""
+    sessions, catalogue = [], []
+    for fam in CLARA_FAMILIES:
+        d = os.path.join(clara, fam)
+        if not os.path.isdir(d):
+            continue
+        records = compile_records(d)
+        ev = os.path.join(d, "evidence")
         for pddl in sorted(glob.glob(os.path.join(d, "grid*.pddl"))):
             name = os.path.splitext(os.path.basename(pddl))[0]
-            c = best_circuit(os.path.join(d, "circuits", name))
-            if c:
-                ev = os.path.join(d, "evidence")
-                s = make_session(str(start + len(out)), pddl, c, [ev] if os.path.isdir(ev) else [])
-                s["name"] = f"{bench}/{name}"
-                out.append(s)
-    return out
+            m = re.fullmatch(r"grid(\d+)x(\d+)-(\d+)", name)
+            if not m:
+                continue
+            base = os.path.join(d, "circuits", name)
+            pieces = sorted(glob.glob(base + ".dnnf.part-*"))
+            # with pieces, the circuit is THEIR join: always .dnnf, rejoined on
+            # load whenever a piece is newer (a pull) -- an existing joined file
+            # is never trusted blindly
+            circuit = base + ".dnnf" if pieces else best_circuit(base)
+            rec = records.get(name)
+            status = rec.get("status") if rec else None
+            entry = {"family": fam, "size": f"{m.group(1)}×{m.group(2)}",
+                     "sizeKey": [int(m.group(1)), int(m.group(2))], "instance": m.group(3),
+                     "name": f"{fam}/{name}", "session": None, "reason": None,
+                     # the file's size, the pieces' total or the whole file's (not
+                     # compile-d4's "nodes": d4's own count, not the saved circuit's)
+                     "bytes": (sum(os.path.getsize(p) for p in pieces) if pieces
+                               else os.path.getsize(circuit) if circuit else None),
+                     "evidence": []}
+            if not circuit:
+                # no circuit on disk: why, from the last compile record (a circuit
+                # that IS on disk opens whatever a later attempt recorded)
+                limit = rec.get("limit_s") if rec else None
+                entry["reason"] = (
+                    "compiled (compile-d4.jsonl), but its circuit file is missing" if status == "ok"
+                    else f"d4 did not compile it within its {limit / 3600:g} h limit"
+                    if status == "timeout" and isinstance(limit, (int, float))
+                    else f"d4 failed to compile it ({status})" if status is not None
+                    else "never compiled: d4 was stopped at a smaller size (CLARA's stop rule), "
+                         "or the problem has no recognition theory")
+            else:
+                s = make_session(str(start + len(sessions)), pddl, circuit,
+                                 [ev] if os.path.isdir(ev) else [], pieces=pieces or None)
+                s["name"] = f"{fam}/{name}"
+                s["clara"] = True
+                sessions.append(s)
+                entry["session"] = s["id"]
+            catalogue.append(entry)
+    return sessions, catalogue
+
+
+def clara_evidence(s):
+    """The CLARA browser's Evidence column for session S: "no evidence", then
+    every NAME-<goal>-obsK.txt, by goal and then K, in natural order (p5
+    before p10, 25% before 100%) -- the 25% file as well as the 100% one: they
+    are CLARA's two conditions, each opened with all its observations applied.
+    From the file NAMES only: nothing is read until a row is opened."""
+    name = os.path.splitext(os.path.basename(s["problem"]))[0]
+    obs = []
+    for e in s["evidence"]:
+        o = clara_observed(name, e)
+        if o:
+            obs.append((natural_key(o[0]), o[1], {"file": os.path.basename(e),
+                                                   "label": f"{o[0]}: {o[1]}% of its plan observed"}))
+    obs.sort(key=lambda t: (t[0], t[1]))
+    return [{"file": None, "label": "no evidence"}] + [t[2] for t in obs]
 
 
 # --------------------------------------------------------------------- HTTP
 
 class State:
-    def __init__(self, sessions, lisp):
+    def __init__(self, sessions, lisp, catalogue=None):
         self.sessions = {s["id"]: s for s in sessions}
         self.order = [s["id"] for s in sessions]
         self.lisp = lisp
+        self.catalogue = catalogue or []     # the CLARA browser's entries (clara_sessions)
         self.current = None
         self.lock = threading.Lock()    # a load and the queries that follow it
 
@@ -344,6 +491,8 @@ class State:
 
     def load(self, sid):
         s = self.session(sid)
+        if s["pieces"] and reassemble(s["circuit"], s["pieces"]):
+            sys.stderr.write(f"joined {len(s['pieces'])} pieces into {s['circuit']}\n")
         reply = self.lisp.load(s["circuit"], s["problem"])
         self.current = s["id"]
         return s, reply
@@ -403,9 +552,16 @@ def make_handler(state):
             if url.path.lstrip("/") in STATIC:
                 return self.static(url.path.lstrip("/"))
             if url.path == "/api/sessions":
-                # the evidence menu comes with /api/load (menu_files)
-                return self.send_json([{"id": i, "name": state.sessions[i]["name"]}
-                                       for i in state.order])
+                # the evidence menu comes with /api/load (menu_files); CLARA's
+                # sessions are chosen in the CLARA browser (/api/clara), not the menu
+                return self.send_json([{"id": i, "name": state.sessions[i]["name"],
+                                        "clara": state.sessions[i]["clara"]} for i in state.order])
+            if url.path == "/api/clara":
+                # the CLARA browser: every original problem, with its evidence
+                # if its circuit compiled, or why it cannot be opened
+                return self.send_json([dict(e, evidence=clara_evidence(state.session(e["session"]))
+                                            if e["session"] is not None else [])
+                                       for e in state.catalogue])
             if url.path == "/api/evidence":
                 s = state.session(q.get("id", [""])[0])
                 want = q.get("file", [""])[0]
@@ -429,6 +585,7 @@ def make_handler(state):
                 menu, hidden = menu_files(s)
                 return self.send_json({"session": {"id": s["id"], "name": s["name"],
                                                    "circuit": os.path.basename(s["circuit"]),
+                                                   "bytes": os.path.getsize(s["circuit"]),
                                                    "evidence": [os.path.basename(e) for e in menu],
                                                    "hidden": hidden},
                                        "problemName": os.path.basename(s["problem"]),
@@ -464,7 +621,7 @@ def main(argv=None):
     ap.add_argument("--session", nargs="+", action="append", default=[],
                     metavar="PROBLEM CIRCUIT [EVIDENCE]",
                     help="a problem, its saved circuit, and evidence files or directories")
-    ap.add_argument("--clara", help="add every CLARA problem with a saved circuit")
+    ap.add_argument("--clara", help="a CLARA checkout: its problems in the page's CLARA browser")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sbcl", default="sbcl")
@@ -472,15 +629,25 @@ def main(argv=None):
     ap.add_argument("--open", action="store_true", help="open the page in a browser")
     a = ap.parse_args(argv)
 
-    sessions = []
+    sessions, catalogue = [], []
     try:
         for spec in a.session:
             if len(spec) < 2:
                 ap.error("--session needs a problem and a circuit")
             sessions.append(make_session(str(len(sessions)), spec[0], spec[1], spec[2:]))
         if a.clara:
-            sessions += clara_sessions(os.path.expanduser(a.clara), len(sessions))
-        if not sessions:
+            clara = os.path.expanduser(a.clara)
+            more, catalogue = clara_sessions(clara, len(sessions))
+            if not catalogue:
+                ap.error(f"--clara {clara}: no problems of {', '.join(CLARA_FAMILIES)} there")
+            sessions += more
+            whole = sum(1 for s in more if not s["pieces"])
+            print(f"CLARA: {len(catalogue)} problems, {len(more)} with a circuit ({whole} whole, "
+                  f"{len(more) - whole} in pieces, (re)joined when opened), "
+                  f"{len(catalogue) - len(more)} not compiled", flush=True)
+        # the bundled example only when nothing was asked for: with --clara,
+        # even a checkout with no compiled circuit is browsed (to see why)
+        if not sessions and not a.clara:
             ex = os.path.join(VIZ, "circuit-examples")
             for pddl in sorted(glob.glob(os.path.join(ex, "*.pddl"))):
                 name = os.path.splitext(os.path.basename(pddl))[0]
@@ -489,7 +656,7 @@ def main(argv=None):
                     sessions.append(make_session(str(len(sessions)), pddl, c, [ex]))
     except ValueError as e:
         ap.error(str(e))
-    if not sessions:
+    if not sessions and not catalogue:
         ap.error("no sessions: give --session or --clara")
 
     fifo_lisp = os.environ.get("FIFO_LISP") or os.path.expanduser("~/lib/fifo/lisp")
@@ -499,7 +666,7 @@ def main(argv=None):
     lisp = Lisp(fifo_lisp, a.sbcl, a.heap_mb,
                 log=lambda s: sys.stderr.write("lisp: " + s + "\n"))
     lisp.start()
-    httpd = ThreadingHTTPServer((a.host, a.port), make_handler(State(sessions, lisp)))
+    httpd = ThreadingHTTPServer((a.host, a.port), make_handler(State(sessions, lisp, catalogue)))
     url = f"http://{a.host}:{httpd.server_address[1]}/"
     print(f"circuit visualizer: {url}  ({len(sessions)} session(s))", flush=True)
     if a.open:

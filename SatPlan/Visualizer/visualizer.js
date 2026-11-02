@@ -777,9 +777,12 @@ var Viz;
         return "#6b7280";
     }
     Viz.colorOf = colorOf;
+    /** S escaped for HTML text and double-quoted attributes: the one copy, for
+     *  every page (render.ts comes first in each build) */
     function esc(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
+    Viz.esc = esc;
     function f(x) {
         return (Math.round(x * 100) / 100).toString();
     }
@@ -1123,6 +1126,160 @@ var Viz;
     }
     Viz.renderMap = renderMap;
 })(Viz || (Viz = {}));
+// A column browser in a <dialog>, as the CLARA buttons of both pages use it
+// (Finder's column view): each column lists the rows under the row chosen in
+// the column to its left; a row of the last column is what Open loads.
+//
+// The dialog holds one ".clara-col ul" per column, a ".clara-cols" box that
+// takes the keyboard focus (tabindex), a footer element (FOOTER), and the
+// OPEN and CANCEL buttons.  Choosing a row fills the next column (a column of
+// one row is chosen at once); Open, a double click or Enter on a last-column
+// row loads it.  The arrow keys move within and between columns.
+//
+// A row marked MISSING is grayed but can still be opened (the plan page: a
+// solver that left no plan opens the problem alone); one marked DISABLED is
+// grayed and cannot be opened, nor anything under it (the circuit page: a
+// circuit that failed to compile).
+var Viz;
+(function (Viz) {
+    /** whether PATH reaches an openable row of the last column */
+    function openable(path, ncols) {
+        return path.length === ncols && path.every((r) => !r.disabled);
+    }
+    function columnBrowser(o) {
+        const dialog = o.dialog;
+        const cols = [...dialog.querySelectorAll(".clara-col ul")];
+        const n = cols.length;
+        const colsBox = dialog.querySelector(".clara-cols");
+        let tree;
+        const chosen = []; // chosen[c]: the chosen row of column c
+        let active = 0; // the column the arrow keys move in
+        /** the rows of column c, given the choices to its left */
+        function rows(c) {
+            var _a;
+            let nodes = tree !== null && tree !== void 0 ? tree : [];
+            for (let k = 0; k < c; k++) {
+                const r = nodes[chosen[k]];
+                if (!r)
+                    return [];
+                nodes = (_a = r.children) !== null && _a !== void 0 ? _a : [];
+            }
+            return nodes;
+        }
+        function path() {
+            const out = [];
+            for (let c = 0; c < n; c++) {
+                const r = rows(c)[chosen[c]];
+                if (!r)
+                    break;
+                out.push(r);
+            }
+            return out;
+        }
+        function render() {
+            for (let c = 0; c < n; c++) {
+                const r = rows(c);
+                if (chosen[c] === undefined && r.length === 1)
+                    chosen[c] = 0; // nothing to choose
+            }
+            cols.forEach((ul, c) => {
+                ul.innerHTML = rows(c).map((r, k) => {
+                    var _a;
+                    const cls = [k === chosen[c] ? "chosen" : "", c === active && k === chosen[c] ? "active" : "",
+                        r.missing || r.disabled ? "missing" : "", r.disabled ? "disabled" : ""].filter(Boolean).join(" ");
+                    return `<li data-col="${c}" data-row="${k}" class="${cls}" title="${Viz.esc((_a = r.title) !== null && _a !== void 0 ? _a : r.label)}">` +
+                        `${Viz.esc(r.label)}</li>`;
+                }).join("");
+                const cur = ul.querySelector("li.chosen");
+                if (cur)
+                    cur.scrollIntoView({ block: "nearest" });
+            });
+            const p = path();
+            o.openButton.disabled = !openable(p, n);
+            o.footer.textContent = o.describe(p);
+            o.footer.title = o.footer.textContent;
+        }
+        function choose(c, k) {
+            var _a;
+            if (k < 0 || k >= rows(c).length)
+                return;
+            if (chosen[c] === k) {
+                // the same row again: move the keyboard mark without rebuilding the
+                // lists, so the row clicked stays in the page and a double click on it
+                // reaches the dblclick listener
+                active = c;
+                dialog.querySelectorAll("li.active").forEach((li) => li.classList.remove("active"));
+                (_a = cols[c].querySelector("li.chosen")) === null || _a === void 0 ? void 0 : _a.classList.add("active");
+                return;
+            }
+            chosen.length = c; // a new choice clears the columns to its right
+            chosen[c] = k;
+            active = c;
+            render();
+        }
+        function open() {
+            const p = path();
+            if (!openable(p, n))
+                return;
+            dialog.close();
+            o.open(p);
+        }
+        dialog.addEventListener("click", (ev) => {
+            // the backdrop: a click outside the dialog's box (its own padding is
+            // inside, though the event's target is the dialog there too)
+            const r = dialog.getBoundingClientRect();
+            if (ev.target === dialog &&
+                (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) {
+                dialog.close();
+                return;
+            }
+            const li = ev.target.closest("li[data-col]");
+            if (li) {
+                choose(Number(li.dataset.col), Number(li.dataset.row));
+                colsBox.focus(); // the columns take the keys: rows can't, and on Cancel Enter would cancel
+            }
+        });
+        dialog.addEventListener("dblclick", (ev) => {
+            const li = ev.target.closest("li[data-col]");
+            if (li && Number(li.dataset.col) === n - 1)
+                open();
+        });
+        dialog.addEventListener("keydown", (ev) => {
+            var _a, _b;
+            if (ev.target.tagName === "BUTTON" && ev.key === "Enter")
+                return;
+            const k = (_a = chosen[active]) !== null && _a !== void 0 ? _a : -1;
+            if (ev.key === "ArrowDown")
+                choose(active, k + 1);
+            else if (ev.key === "ArrowUp")
+                choose(active, Math.max(0, k - 1));
+            else if (ev.key === "ArrowRight" && active < n - 1 && chosen[active] !== undefined) {
+                choose(active + 1, (_b = chosen[active + 1]) !== null && _b !== void 0 ? _b : 0);
+            }
+            else if (ev.key === "ArrowLeft" && active > 0) {
+                active--;
+                render();
+            }
+            else if (ev.key === "Enter")
+                open();
+            else
+                return;
+            ev.preventDefault();
+        });
+        o.openButton.addEventListener("click", open);
+        o.cancelButton.addEventListener("click", () => dialog.close());
+        return {
+            show() {
+                if (!tree)
+                    tree = o.tree();
+                render();
+                dialog.showModal();
+                colsBox.focus();
+            },
+        };
+    }
+    Viz.columnBrowser = columnBrowser;
+})(Viz || (Viz = {}));
 // The CLARA browser's catalogue: the problems of clara-examples.js (bundled
 // from a CLARA checkout by build-clara-examples.sh) sorted into the columns
 // Family / Size / Instance / Goal / Solver, from CLARA's file names:
@@ -1438,9 +1595,6 @@ var Viz;
             throw new Error(`missing element #${id}`);
         return e;
     }
-    function esc(s) {
-        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    }
     function currentState() {
         if (!app.problem)
             return undefined;
@@ -1459,9 +1613,9 @@ var Viz;
         var _a, _b, _c, _d;
         const msgs = [...((_b = (_a = app.problem) === null || _a === void 0 ? void 0 : _a.warnings) !== null && _b !== void 0 ? _b : []), ...domainWarnings(), ...((_d = (_c = app.plan) === null || _c === void 0 ? void 0 : _c.warnings) !== null && _d !== void 0 ? _d : [])];
         const box = $("messages");
-        const err = app.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("");
+        const err = app.errors.map((e) => `<div class="error">✖ ${Viz.esc(e)}</div>`).join("");
         box.hidden = msgs.length === 0 && !err;
-        box.innerHTML = err + msgs.slice(0, 20).map((m) => `<div>⚠ ${esc(m)}</div>`).join("") +
+        box.innerHTML = err + msgs.slice(0, 20).map((m) => `<div>⚠ ${Viz.esc(m)}</div>`).join("") +
             (msgs.length > 20 ? `<div>… and ${msgs.length - 20} more</div>` : "");
     }
     function renderGoals(state) {
@@ -1490,10 +1644,10 @@ var Viz;
                         : "estimated: load the domain for exact costs";
         $("utility").innerHTML =
             // no captions under the numbers: what each one means is its tooltip
-            `<div class="u-item${u.pseudo ? " pseudo" : ""}" title="${esc(goalsNote)}">` +
+            `<div class="u-item${u.pseudo ? " pseudo" : ""}" title="${Viz.esc(goalsNote)}">` +
                 `<span class="u-label">Goals${u.pseudo ? " (pseudo)" : ""}</span>` +
                 `<span class="u-value">${num(u.goals)}</span></div>` +
-                `<div class="u-item" title="${esc(costsNote)}"><span class="u-label">Costs</span>` +
+                `<div class="u-item" title="${Viz.esc(costsNote)}"><span class="u-label">Costs</span>` +
                 `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span></div>` +
                 `<div class="u-item total${u.pseudo ? " pseudo" : ""}" title="Goals + Costs${u.pseudo ? ", with pseudo goal utility" : ""}">` +
                 `<span class="u-label">Total</span><span class="u-value">${num(u.total)}</span></div>`;
@@ -1515,7 +1669,7 @@ var Viz;
             const cls = k < app.step ? "done" : k === app.step ? "current" : "todo";
             const items = acts.length === 0
                 ? `<span class="noop">(no action)</span>`
-                : acts.map((a) => `<span class="act">${esc(a.text)}</span>`).join("");
+                : acts.map((a) => `<span class="act">${Viz.esc(a.text)}</span>`).join("");
             return `<li class="${cls}" data-step="${k}"><span class="t">${k + plan.firstStep}</span>${items}</li>`;
         });
         rows.push(`<li class="${app.step === plan.steps.length ? "current" : "todo"}" data-step="${plan.steps.length}">` +
@@ -1695,10 +1849,8 @@ var Viz;
         app.domainFile = undefined;
         load(ex.problem.file, ex.problem.text, s === null || s === void 0 ? void 0 : s.file, s === null || s === void 0 ? void 0 : s.text, 0, (_a = ex.domain) === null || _a === void 0 ? void 0 : _a.file, (_b = ex.domain) === null || _b === void 0 ? void 0 : _b.text);
     }
-    /** The CLARA button: a column browser, Family / Size / Instance / Goal /
-     *  Solver.  Choosing a row fills the next column (a column of one row is
-     *  chosen at once); Open, a double click or Enter on a Solver row loads it.
-     *  Arrow keys move within and between columns. */
+    /** The CLARA button: a column browser (columns.ts), Family / Size /
+     *  Instance / Goal / Solver; a Solver row loads its problem and plan. */
     function initClara() {
         const button = $("clara-button");
         const list = typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES;
@@ -1706,139 +1858,40 @@ var Viz;
             button.hidden = true;
             return;
         }
-        const dialog = $("clara-dialog");
-        const cols = [...dialog.querySelectorAll(".clara-col ul")];
-        const openBtn = $("clara-open");
-        // built on the first click, not at page load: valuing every plan parses
-        // them all (about half a second for the whole of CLARA)
-        let tree = [];
-        let built = false;
-        const chosen = []; // chosen[c]: the chosen row of column c
-        let active = 0; // the column the arrow keys move in
-        /** the rows of column c, given the choices to its left */
-        function rows(c) {
-            var _a;
-            let nodes = tree;
-            for (let k = 0; k < c; k++) {
-                const n = nodes[chosen[k]];
-                if (!n)
-                    return [];
-                if (k === 3)
-                    return (_a = n.leaves) !== null && _a !== void 0 ? _a : [];
-                nodes = n.children;
-            }
-            return nodes;
-        }
-        function leaf() {
-            return rows(4)[chosen[4]];
-        }
-        function render() {
-            var _a;
-            // a column of one row needs no choice
-            for (let c = 0; c < 5; c++) {
-                const r = rows(c);
-                if (chosen[c] === undefined && r.length === 1)
-                    chosen[c] = 0;
-            }
-            cols.forEach((ul, c) => {
-                ul.innerHTML = rows(c).map((r, k) => `<li data-col="${c}" data-row="${k}" class="${k === chosen[c] ? "chosen" : ""}${c === active && k === chosen[c] ? " active" : ""}` +
-                    `${r.missing ? " missing" : ""}" title="${esc(r.label)}${r.missing ? " (no solution file)" : ""}">${esc(r.label)}</li>`).join("");
-                const cur = ul.querySelector("li.chosen");
-                if (cur)
-                    cur.scrollIntoView({ block: "nearest" });
-            });
-            const l = leaf();
-            openBtn.disabled = !l;
-            const path = $("clara-path");
-            path.textContent = l
-                ? list[l.example].problem.file + (l.solution !== undefined
-                    ? "  +  " + list[(_a = l.from) !== null && _a !== void 0 ? _a : l.example].solutions[l.solution].file.split("/").pop()
+        /** claraTree's nodes as the browser's rows: a goal's leaves are its
+         *  Solver column */
+        const toRows = (ns) => ns.map((nd) => ({
+            label: nd.label, missing: nd.missing,
+            children: nd.leaves
+                ? nd.leaves.map((l) => ({ label: l.label, missing: l.missing, data: l,
+                    title: l.label + (l.missing ? " (no solution file)" : "") }))
+                : toRows(nd.children),
+        }));
+        const browser = Viz.columnBrowser({
+            dialog: $("clara-dialog"),
+            footer: $("clara-path"),
+            openButton: $("clara-open"),
+            cancelButton: $("clara-cancel"),
+            // built on the first click, not at page load: valuing every plan parses
+            // them all (about half a second for the whole of CLARA)
+            tree: () => toRows(Viz.claraTree(list, Viz.planValuer(list, typeof VIZ_DOMAINS === "undefined" ? [] : VIZ_DOMAINS))),
+            describe: (path) => {
+                var _a, _b;
+                const l = (_a = path[4]) === null || _a === void 0 ? void 0 : _a.data;
+                if (!l)
+                    return "Choose a family, size, instance, goal and solver.";
+                return list[l.example].problem.file + (l.solution !== undefined
+                    ? "  +  " + list[(_b = l.from) !== null && _b !== void 0 ? _b : l.example].solutions[l.solution].file.split("/").pop()
                     : l.missing ? `  (no ${l.label} plan: the problem alone)` : "") +
-                    (l.note ? `  -- ${l.note}` : "")
-                : "Choose a family, size, instance, goal and solver.";
-            path.title = path.textContent;
-        }
-        function choose(c, k) {
-            var _a;
-            if (k < 0 || k >= rows(c).length)
-                return;
-            if (chosen[c] === k) {
-                // the same row again: move the keyboard mark without rebuilding the
-                // lists, so the row clicked stays in the page and a double click on it
-                // reaches the dblclick listener
-                active = c;
-                dialog.querySelectorAll("li.active").forEach((li) => li.classList.remove("active"));
-                (_a = cols[c].querySelector("li.chosen")) === null || _a === void 0 ? void 0 : _a.classList.add("active");
-                return;
-            }
-            chosen.length = c; // a new choice clears the columns to its right
-            chosen[c] = k;
-            active = c;
-            render();
-        }
-        function open() {
-            var _a;
-            const l = leaf();
-            if (!l)
-                return;
-            dialog.close();
-            loadExample(list[l.example], l.solution, list[(_a = l.from) !== null && _a !== void 0 ? _a : l.example]);
-        }
-        // the columns take the keyboard focus (tabindex in index.html): rows can't,
-        // and with focus on Cancel, Enter would cancel
-        const colsBox = dialog.querySelector(".clara-cols");
-        button.addEventListener("click", () => {
-            if (!built) {
-                tree = Viz.claraTree(list, Viz.planValuer(list, typeof VIZ_DOMAINS === "undefined" ? [] : VIZ_DOMAINS));
-                built = true;
-            }
-            render();
-            dialog.showModal();
-            colsBox.focus();
+                    (l.note ? `  -- ${l.note}` : "");
+            },
+            open: (path) => {
+                var _a;
+                const l = path[4].data;
+                loadExample(list[l.example], l.solution, list[(_a = l.from) !== null && _a !== void 0 ? _a : l.example]);
+            },
         });
-        dialog.addEventListener("click", (ev) => {
-            // the backdrop: a click outside the dialog's box (its own padding is
-            // inside, though the event's target is the dialog there too)
-            const r = dialog.getBoundingClientRect();
-            if (ev.target === dialog &&
-                (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) {
-                dialog.close();
-                return;
-            }
-            const li = ev.target.closest("li[data-col]");
-            if (li) {
-                choose(Number(li.dataset.col), Number(li.dataset.row));
-                colsBox.focus();
-            }
-        });
-        dialog.addEventListener("dblclick", (ev) => {
-            const li = ev.target.closest("li[data-col]");
-            if (li && li.dataset.col === "4")
-                open();
-        });
-        dialog.addEventListener("keydown", (ev) => {
-            var _a, _b;
-            if (ev.target.tagName === "BUTTON" && ev.key === "Enter")
-                return;
-            const k = (_a = chosen[active]) !== null && _a !== void 0 ? _a : -1;
-            if (ev.key === "ArrowDown")
-                choose(active, k + 1);
-            else if (ev.key === "ArrowUp")
-                choose(active, Math.max(0, k - 1));
-            else if (ev.key === "ArrowRight" && active < 4 && chosen[active] !== undefined)
-                choose(active + 1, (_b = chosen[active + 1]) !== null && _b !== void 0 ? _b : 0);
-            else if (ev.key === "ArrowLeft" && active > 0) {
-                active--;
-                render();
-            }
-            else if (ev.key === "Enter")
-                open();
-            else
-                return;
-            ev.preventDefault();
-        });
-        openBtn.addEventListener("click", open);
-        $("clara-cancel").addEventListener("click", () => dialog.close());
+        button.addEventListener("click", () => browser.show());
     }
     function initExamples() {
         const sel = $("examples");

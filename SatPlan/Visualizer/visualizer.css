@@ -177,6 +177,8 @@ aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   height: min(60vh, 520px);
 }
+.clara-cols.clara-cols-4 { grid-template-columns: 1.3fr 0.8fr 0.6fr 3fr; }
+.circuit-size { flex-basis: 100%; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .clara-cols:focus { outline: none; }
 .clara-cols:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .clara-col { display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--border); }
@@ -190,6 +192,7 @@ aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .clara-col li:hover { background: var(--bg); }
 .clara-col li.chosen { background: var(--current); font-weight: 600; }
 .clara-col li.missing { color: var(--muted); opacity: .6; font-style: italic; }
+.clara-col li.disabled { cursor: not-allowed; text-decoration: line-through; text-decoration-thickness: 1px; }
 .clara-col li.chosen.active { outline: 2px solid #2563eb; outline-offset: -2px; }
 .clara-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .clara-path { flex: 1; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;

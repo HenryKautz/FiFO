@@ -3,6 +3,6 @@
   // visualizer's modules but not its app.ts.  Built by build.sh.
   "extends": "./tsconfig.json",
   "compilerOptions": { "outFile": "circuit.js" },
-  "files": ["src/sexpr.ts", "src/problem.ts", "src/domain.ts", "src/plan.ts", "src/render.ts",
+  "files": ["src/sexpr.ts", "src/problem.ts", "src/domain.ts", "src/plan.ts", "src/render.ts", "src/columns.ts",
             "src/circuit-app.ts"]
 }

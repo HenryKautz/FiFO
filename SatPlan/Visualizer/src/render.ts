@@ -51,7 +51,9 @@ namespace Viz {
     return "#6b7280";
   }
 
-  function esc(s: string): string {
+  /** S escaped for HTML text and double-quoted attributes: the one copy, for
+   *  every page (render.ts comes first in each build) */
+  export function esc(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 

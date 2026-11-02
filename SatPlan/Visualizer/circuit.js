@@ -777,9 +777,12 @@ var Viz;
         return "#6b7280";
     }
     Viz.colorOf = colorOf;
+    /** S escaped for HTML text and double-quoted attributes: the one copy, for
+     *  every page (render.ts comes first in each build) */
     function esc(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
+    Viz.esc = esc;
     function f(x) {
         return (Math.round(x * 100) / 100).toString();
     }
@@ -1123,6 +1126,160 @@ var Viz;
     }
     Viz.renderMap = renderMap;
 })(Viz || (Viz = {}));
+// A column browser in a <dialog>, as the CLARA buttons of both pages use it
+// (Finder's column view): each column lists the rows under the row chosen in
+// the column to its left; a row of the last column is what Open loads.
+//
+// The dialog holds one ".clara-col ul" per column, a ".clara-cols" box that
+// takes the keyboard focus (tabindex), a footer element (FOOTER), and the
+// OPEN and CANCEL buttons.  Choosing a row fills the next column (a column of
+// one row is chosen at once); Open, a double click or Enter on a last-column
+// row loads it.  The arrow keys move within and between columns.
+//
+// A row marked MISSING is grayed but can still be opened (the plan page: a
+// solver that left no plan opens the problem alone); one marked DISABLED is
+// grayed and cannot be opened, nor anything under it (the circuit page: a
+// circuit that failed to compile).
+var Viz;
+(function (Viz) {
+    /** whether PATH reaches an openable row of the last column */
+    function openable(path, ncols) {
+        return path.length === ncols && path.every((r) => !r.disabled);
+    }
+    function columnBrowser(o) {
+        const dialog = o.dialog;
+        const cols = [...dialog.querySelectorAll(".clara-col ul")];
+        const n = cols.length;
+        const colsBox = dialog.querySelector(".clara-cols");
+        let tree;
+        const chosen = []; // chosen[c]: the chosen row of column c
+        let active = 0; // the column the arrow keys move in
+        /** the rows of column c, given the choices to its left */
+        function rows(c) {
+            var _a;
+            let nodes = tree !== null && tree !== void 0 ? tree : [];
+            for (let k = 0; k < c; k++) {
+                const r = nodes[chosen[k]];
+                if (!r)
+                    return [];
+                nodes = (_a = r.children) !== null && _a !== void 0 ? _a : [];
+            }
+            return nodes;
+        }
+        function path() {
+            const out = [];
+            for (let c = 0; c < n; c++) {
+                const r = rows(c)[chosen[c]];
+                if (!r)
+                    break;
+                out.push(r);
+            }
+            return out;
+        }
+        function render() {
+            for (let c = 0; c < n; c++) {
+                const r = rows(c);
+                if (chosen[c] === undefined && r.length === 1)
+                    chosen[c] = 0; // nothing to choose
+            }
+            cols.forEach((ul, c) => {
+                ul.innerHTML = rows(c).map((r, k) => {
+                    var _a;
+                    const cls = [k === chosen[c] ? "chosen" : "", c === active && k === chosen[c] ? "active" : "",
+                        r.missing || r.disabled ? "missing" : "", r.disabled ? "disabled" : ""].filter(Boolean).join(" ");
+                    return `<li data-col="${c}" data-row="${k}" class="${cls}" title="${Viz.esc((_a = r.title) !== null && _a !== void 0 ? _a : r.label)}">` +
+                        `${Viz.esc(r.label)}</li>`;
+                }).join("");
+                const cur = ul.querySelector("li.chosen");
+                if (cur)
+                    cur.scrollIntoView({ block: "nearest" });
+            });
+            const p = path();
+            o.openButton.disabled = !openable(p, n);
+            o.footer.textContent = o.describe(p);
+            o.footer.title = o.footer.textContent;
+        }
+        function choose(c, k) {
+            var _a;
+            if (k < 0 || k >= rows(c).length)
+                return;
+            if (chosen[c] === k) {
+                // the same row again: move the keyboard mark without rebuilding the
+                // lists, so the row clicked stays in the page and a double click on it
+                // reaches the dblclick listener
+                active = c;
+                dialog.querySelectorAll("li.active").forEach((li) => li.classList.remove("active"));
+                (_a = cols[c].querySelector("li.chosen")) === null || _a === void 0 ? void 0 : _a.classList.add("active");
+                return;
+            }
+            chosen.length = c; // a new choice clears the columns to its right
+            chosen[c] = k;
+            active = c;
+            render();
+        }
+        function open() {
+            const p = path();
+            if (!openable(p, n))
+                return;
+            dialog.close();
+            o.open(p);
+        }
+        dialog.addEventListener("click", (ev) => {
+            // the backdrop: a click outside the dialog's box (its own padding is
+            // inside, though the event's target is the dialog there too)
+            const r = dialog.getBoundingClientRect();
+            if (ev.target === dialog &&
+                (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) {
+                dialog.close();
+                return;
+            }
+            const li = ev.target.closest("li[data-col]");
+            if (li) {
+                choose(Number(li.dataset.col), Number(li.dataset.row));
+                colsBox.focus(); // the columns take the keys: rows can't, and on Cancel Enter would cancel
+            }
+        });
+        dialog.addEventListener("dblclick", (ev) => {
+            const li = ev.target.closest("li[data-col]");
+            if (li && Number(li.dataset.col) === n - 1)
+                open();
+        });
+        dialog.addEventListener("keydown", (ev) => {
+            var _a, _b;
+            if (ev.target.tagName === "BUTTON" && ev.key === "Enter")
+                return;
+            const k = (_a = chosen[active]) !== null && _a !== void 0 ? _a : -1;
+            if (ev.key === "ArrowDown")
+                choose(active, k + 1);
+            else if (ev.key === "ArrowUp")
+                choose(active, Math.max(0, k - 1));
+            else if (ev.key === "ArrowRight" && active < n - 1 && chosen[active] !== undefined) {
+                choose(active + 1, (_b = chosen[active + 1]) !== null && _b !== void 0 ? _b : 0);
+            }
+            else if (ev.key === "ArrowLeft" && active > 0) {
+                active--;
+                render();
+            }
+            else if (ev.key === "Enter")
+                open();
+            else
+                return;
+            ev.preventDefault();
+        });
+        o.openButton.addEventListener("click", open);
+        o.cancelButton.addEventListener("click", () => dialog.close());
+        return {
+            show() {
+                if (!tree)
+                    tree = o.tree();
+                render();
+                dialog.showModal();
+                colsBox.focus();
+            },
+        };
+    }
+    Viz.columnBrowser = columnBrowser;
+})(Viz || (Viz = {}));
 // The circuit visualizer page: choose a session (a problem and its compiled
 // circuit) from the server, add observations -- stepping through an evidence
 // file, or by hand -- and show each hypothesis's probability given them.
@@ -1137,9 +1294,6 @@ var Viz;
         if (!e)
             throw new Error(`missing element #${id}`);
         return e;
-    }
-    function esc(s) {
-        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
     async function api(path, body) {
         const r = await fetch(path, body === undefined ? {} : {
@@ -1178,8 +1332,8 @@ var Viz;
     // ------------------------------------------------------------------ views
     function showMessages() {
         const box = $("messages");
-        const html = cs.errors.map((e) => `<div class="error">✖ ${esc(e)}</div>`).join("") +
-            [...cs.loadMessages, ...cs.messages].map((m) => `<div>⚠ ${esc(m)}</div>`).join("");
+        const html = cs.errors.map((e) => `<div class="error">✖ ${Viz.esc(e)}</div>`).join("") +
+            [...cs.loadMessages, ...cs.messages].map((m) => `<div>⚠ ${Viz.esc(m)}</div>`).join("");
         box.hidden = html === "";
         box.innerHTML = html;
     }
@@ -1240,12 +1394,12 @@ var Viz;
                     const lit = p.goalLiterals.find((g) => g.text === h.goal);
                     const col = lit && lit.args.length ? Viz.colorOf(p, lit.args[0]) : "#6b7280";
                     if (!h.present) {
-                        return `<tr class="missing"><td><b style="color:${col}">${esc(label)}</b></td>` +
-                            `<td class="lit">${esc(h.goal)}</td><td colspan="3">not in the circuit</td></tr>`;
+                        return `<tr class="missing"><td><b style="color:${col}">${Viz.esc(label)}</b></td>` +
+                            `<td class="lit">${Viz.esc(h.goal)}</td><td colspan="3">not in the circuit</td></tr>`;
                     }
                     return `<tr class="${best.has(i) ? "best" : ""}">` +
-                        `<td><b style="color:${col}">${esc(label)}</b></td>` +
-                        `<td class="lit">${esc(h.goal)}</td>` +
+                        `<td><b style="color:${col}">${Viz.esc(label)}</b></td>` +
+                        `<td class="lit">${Viz.esc(h.goal)}</td>` +
                         `<td class="prob prior"><span class="num">${fmt(prior)}</span></td>` +
                         bar(m, col) + bar(post, col, " post") + `</tr>`;
                 }).join("") +
@@ -1321,7 +1475,7 @@ var Viz;
             box.innerHTML = `<ol>` + cs.observations.map((o, k) => {
                 const cls = k < cs.step ? "done" : "todo";
                 return `<li class="${cls}" data-step="${k + 1}"><span class="t">${o.slice}</span>` +
-                    `<span class="act">${esc(o.literal)}</span>` +
+                    `<span class="act">${Viz.esc(o.literal)}</span>` +
                     `<button class="remove" data-remove="${k}" title="Remove">✕</button></li>`;
             }).join("") + `</ol>`;
         }
@@ -1341,7 +1495,7 @@ var Viz;
         $("map").innerHTML = Viz.renderMap(p, state, { observed: moves, goalProb });
     }
     function renderAll() {
-        var _a;
+        var _a, _b;
         if (cs.problem) {
             const state = observedState();
             const prob = goalProbs();
@@ -1353,11 +1507,32 @@ var Viz;
         showMessages();
         const c = cs.circuit;
         $("summary").textContent = c && cs.problem
-            ? `${cs.problem.name} · circuit ${c.path.split("/").pop()} · ${c.nodes.toLocaleString()} nodes · ` +
+            ? `${cs.problem.name} · ` +
                 `${c.projected !== null ? `projected onto ${c.projected} of ${c.nvars} atoms` : `${c.nvars} atoms`} · ` +
                 `horizon ${(_a = c.horizon) !== null && _a !== void 0 ? _a : "?"}` + (cs.busy ? " · computing…" : "")
-            : "Choose a session.";
+            : cs.sessions.some((s) => !s.clara) || $("clara-button").hidden
+                ? "Choose a session." : "Choose a CLARA circuit.";
+        // the circuit's size: on disk, and in nodes
+        const size = $("circuit-size");
+        size.hidden = !c;
+        if (c) {
+            size.textContent = `Circuit ${(_b = cs.circuitFile) !== null && _b !== void 0 ? _b : c.path.split("/").pop()}: ` +
+                (cs.circuitBytes !== undefined ? `${cs.circuitBytes.toLocaleString()} bytes (${humanBytes(cs.circuitBytes)}) · ` : "") +
+                `${c.nodes.toLocaleString()} nodes`;
+        }
     }
+    /** 163165 -> "159 KB"; 1.9e9 -> "1.8 GB" (powers of 1024) */
+    function humanBytes(n) {
+        const units = ["bytes", "KB", "MB", "GB", "TB"];
+        let k = 0;
+        let x = n;
+        while (x >= 1024 && k < units.length - 1) {
+            x /= 1024;
+            k++;
+        }
+        return k === 0 ? `${n} bytes` : `${x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[k]}`;
+    }
+    Viz.humanBytes = humanBytes;
     // ---------------------------------------------------------------- actions
     async function query() {
         var _a, _b;
@@ -1414,6 +1589,8 @@ var Viz;
             cs.sessionId = id;
             cs.problem = Viz.parseProblem(r.problem);
             cs.circuit = r.circuit;
+            cs.circuitFile = r.session.circuit;
+            cs.circuitBytes = r.session.bytes;
             cs.observations = [];
             cs.step = 0;
             cs.reply = undefined;
@@ -1429,14 +1606,14 @@ var Viz;
             // the server leaves out files with nothing the page can use (ordering
             // forms only) and files a longer one extends
             sel.innerHTML = `<option value="">${r.session.evidence.length ? "Choose an evidence file…" : "No evidence files"}</option>` +
-                r.session.evidence.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+                r.session.evidence.map((f) => `<option value="${Viz.esc(f)}">${Viz.esc(f)}</option>`).join("");
             sel.title = r.session.hidden
                 ? `${r.session.hidden} more file(s) not listed: ordering evidence only, or the first observations of a longer file`
                 : "";
             const a = await api(`/api/actions?id=${encodeURIComponent(id)}`);
             cs.actions = a.actions;
             $("action-list").innerHTML =
-                a.actions.map((x) => `<option value="${esc(x.replace(/^\(occurs /, "").replace(/ \d+\)$/, ""))}">`).join("");
+                a.actions.map((x) => `<option value="${Viz.esc(x.replace(/^\(occurs /, "").replace(/ \d+\)$/, ""))}">`).join("");
         }
         catch (e) {
             cs.errors = [String(e instanceof Error ? e.message : e)];
@@ -1510,6 +1687,103 @@ var Viz;
         renderAll();
         void query();
     }
+    /** Open a CLARA browser row: its circuit -- loaded only when it is not the
+     *  one already shown, since a big circuit takes long to load -- and its
+     *  evidence with every observation applied (the row names a condition, e.g.
+     *  25% of a plan observed), or no evidence. */
+    async function openClara({ entry, file }) {
+        if (cs.sessionId !== entry.session || !cs.circuit) {
+            await loadSession(entry.session);
+            if (cs.sessionId !== entry.session || !cs.circuit)
+                return; // the load failed: its error is shown
+            $("session").value = ""; // the Session menu's own sessions are not this one
+        }
+        if (file) {
+            await chooseEvidence(file);
+            if (cs.evidenceName === file)
+                setStep(Infinity);
+        }
+        else {
+            $("evidence-file").value = "";
+            cs.observations = [];
+            cs.step = 0;
+            cs.evidenceName = undefined;
+            cs.messages = [];
+            renderAll();
+            void query();
+        }
+    }
+    /** The CLARA button: a column browser (columns.ts), Family / Size /
+     *  Instance / Evidence, over every original problem of CLARA (the server's
+     *  --clara).  A problem whose circuit failed to compile, or was never
+     *  compiled, is grayed and cannot be opened; the footer says why. */
+    async function initClara() {
+        let entries;
+        try {
+            entries = await api("/api/clara");
+        }
+        catch (e) {
+            cs.errors = [`the CLARA catalogue: ${e instanceof Error ? e.message : e}`];
+            return showMessages();
+        }
+        if (entries.length === 0)
+            return;
+        const button = $("clara-button");
+        button.hidden = false;
+        const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+        const group = (xs, key) => {
+            var _a;
+            const m = new Map();
+            for (const x of xs)
+                m.set(key(x), [...((_a = m.get(key(x))) !== null && _a !== void 0 ? _a : []), x]);
+            return m;
+        };
+        // a family or size none of whose circuits compiled is grayed too (it can
+        // still be opened up, to see why)
+        const none = (es) => es.every((e) => e.session === null);
+        const tree = () => [...group(entries, (e) => e.family)].sort((a, b) => byName(a[0], b[0])).map(([fam, fs]) => ({
+            label: fam,
+            missing: none(fs),
+            title: none(fs) ? `${fam}: no circuit compiled` : fam,
+            children: [...group(fs, (e) => e.size)]
+                .sort((a, b) => a[1][0].sizeKey[0] - b[1][0].sizeKey[0] || a[1][0].sizeKey[1] - b[1][0].sizeKey[1])
+                .map(([size, ss]) => ({
+                label: size,
+                missing: none(ss),
+                title: none(ss) ? `${fam} ${size}: no circuit compiled` : size,
+                children: ss.sort((a, b) => byName(a.instance, b.instance)).map((e) => ({
+                    label: e.instance,
+                    disabled: e.session === null,
+                    title: e.session === null ? `${e.name}: ${e.reason}` : e.name,
+                    data: { entry: e, file: null },
+                    children: e.evidence.map((v) => { var _a; return ({ label: v.label, title: (_a = v.file) !== null && _a !== void 0 ? _a : v.label, data: { entry: e, file: v.file } }); }),
+                })),
+            })),
+        }));
+        const browser = Viz.columnBrowser({
+            dialog: $("clara-dialog"),
+            footer: $("clara-path"),
+            openButton: $("clara-open"),
+            cancelButton: $("clara-cancel"),
+            tree,
+            describe: (path) => {
+                var _a, _b, _c, _d;
+                const e = (_b = (_a = path[2]) === null || _a === void 0 ? void 0 : _a.data) === null || _b === void 0 ? void 0 : _b.entry;
+                if (!e)
+                    return "Choose a family, size, instance and evidence.";
+                if (e.session === null)
+                    return `${e.name}: cannot be opened -- ${e.reason}`;
+                // the file's size only: its node count is known once it is loaded
+                // (CLARA's compile record counts d4's own nodes, not the file's)
+                const size = e.bytes !== null ? ` (circuit file ${humanBytes(e.bytes)})` : "";
+                const f = (_d = (_c = path[3]) === null || _c === void 0 ? void 0 : _c.data) === null || _d === void 0 ? void 0 : _d.file;
+                return `${e.name}${size}` + (path[3] ? `  +  ${f !== null && f !== void 0 ? f : "no evidence"}` : "");
+            },
+            open: (path) => void openClara(path[3].data),
+        });
+        button.addEventListener("click", () => browser.show());
+        renderAll();
+    }
     function init() {
         $("session").addEventListener("change", (ev) => {
             const v = ev.target.value;
@@ -1561,6 +1835,8 @@ var Viz;
             const tag = ev.target.tagName;
             if (tag === "INPUT" || tag === "SELECT" || !cs.circuit)
                 return;
+            if (document.querySelector("dialog[open]"))
+                return; // the CLARA browser has the keys
             if (ev.metaKey || ev.ctrlKey || ev.altKey)
                 return;
             if (ev.key === "ArrowRight")
@@ -1574,14 +1850,22 @@ var Viz;
         api("/api/sessions").then((s) => {
             var _a;
             cs.sessions = s;
+            // the Session menu: the sessions named on the command line; CLARA's are
+            // chosen in the CLARA browser
+            const own = s.filter((x) => !x.clara);
+            $("session-label").hidden = own.length === 0;
             $("session").innerHTML = `<option value="">Choose a session…</option>` +
-                s.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+                own.map((x) => `<option value="${Viz.esc(x.id)}">${Viz.esc(x.name)}</option>`).join("");
+            // the CLARA browser whenever the server has a CLARA catalogue -- even one
+            // with no compiled circuit, to show why
+            void initClara();
             // ?session=<id or name>&evidence=<file>&step=<k> opens a view directly
             const q = new URLSearchParams(location.search);
             const want = q.get("session");
             const pick = (_a = s.find((x) => x.id === want || x.name === want)) !== null && _a !== void 0 ? _a : (s.length === 1 ? s[0] : undefined);
             if (pick) {
-                $("session").value = pick.id;
+                if (!pick.clara)
+                    $("session").value = pick.id;
                 void loadSession(pick.id).then(async () => {
                     const ev = q.get("evidence");
                     if (ev && cs.circuit) {
