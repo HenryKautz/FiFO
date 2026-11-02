@@ -663,17 +663,31 @@ var Viz;
     }
     Viz.formulaHolds = formulaHolds;
     /** The running utility at STEP: achieved preference weights, minus the cost
-     *  of the actions taken before STEP. */
-    function utilityAt(problem, domain, plan, step) {
+     *  of the actions taken before STEP.  With PSEUDO (a number) and a problem
+     *  that gives its goals no utility, each distinct hard-goal literal that
+     *  holds counts PSEUDO instead -- a display aid, not the problem's utility. */
+    function utilityAt(problem, domain, plan, step, pseudo) {
         const state = plan ? plan.states[step] : { at: new Map(problem.initAt), inside: new Map(problem.initIn) };
         let goals;
         let undecided = 0;
+        let isPseudo = false;
         if (problem.preferences.length > 0) {
             goals = 0;
             for (const p of problem.preferences) {
                 const v = formulaHolds(p.formula, state);
                 if (v === true)
                     goals += p.weight;
+                else if (v === undefined)
+                    undecided++;
+            }
+        }
+        else if (pseudo !== undefined && problem.goalLiterals.length > 0) {
+            isPseudo = true;
+            goals = 0;
+            for (const lit of problem.goalLiterals) {
+                const v = literalHolds(lit, state);
+                if (v === true)
+                    goals += pseudo;
                 else if (v === undefined)
                     undecided++;
             }
@@ -693,7 +707,7 @@ var Viz;
                 }
             }
         }
-        return { goals, costs, costsExact, total: (goals !== null && goals !== void 0 ? goals : 0) - (costs !== null && costs !== void 0 ? costs : 0), undecided };
+        return { goals, costs, costsExact, total: (goals !== null && goals !== void 0 ? goals : 0) - (costs !== null && costs !== void 0 ? costs : 0), undecided, pseudo: isPseudo };
     }
     Viz.utilityAt = utilityAt;
     /** Whether goal literal LIT holds in STATE; undefined for a predicate the
@@ -1118,15 +1132,31 @@ var Viz;
 //   <Family>/goals/gridNxM-K-<goal>.pddl     one hypothesis as the hard goal,
 //       <goal> = pkg1-p2-3 or pkg1-p2-4-pkg2-p3-4-... (object, place, ...)
 //   <goal>-eval.answer, <goal>-tt.answer     EvalMaxSAT's and tt-open-wbo-inc's plans
-//   <goal>.answer                            the plan the evidence was cut from: a
-//       copy of one of those two, so it is shown as that one's "evidence plan"
+//   <goal>.answer                            a copy of one of those two (the one
+//       CLARA cut its evidence files from); not listed again
+//
+// Every plan's row shows its value: the main page's Total at the plan's end,
+// pseudo goal utility off (planValuer).  The original problem's own plans
+// (gridNxM-K-eval.answer etc.) are listed if there are any.  CLARA makes none,
+// so otherwise it is offered the goal plan of highest value FOR THE ORIGINAL
+// PROBLEM -- its lowest-cost one when it weights no goals -- the exact
+// solver's on a tie: any plan that achieves one disjunct of the goal solves
+// the original problem, though not necessarily optimally (each goal plan is
+// optimal only at that goal's own shortest horizon).  The recognition problem
+// gets no such plan.
 //
 // Anything else (none since build-clara-examples.sh left out the non-grid
 // AAAI-2010-Benchmarks) is placed by its directory: Size is the subdirectory,
 // Instance the file name.
 var Viz;
 (function (Viz) {
-    const SOLVERS = { eval: "EvalMaxSAT", tt: "tt-open-wbo-inc" };
+    const SOLVERS = { eval: "EvalMaxSAT - exact", tt: "tt-open-wbo - anytime" };
+    /** a FiFO answer's (*OBJECTIVE* N), or undefined */
+    function answerObjective(text) {
+        const m = /\(\s*\*OBJECTIVE\*\s+(-?[0-9.]+(?:e-?[0-9]+)?)\s*\)/i.exec(text);
+        return m ? Number(m[1]) : undefined;
+    }
+    Viz.answerObjective = answerObjective;
     /** "pkg1-p2-4-pkg2-p3-4" -> "pkg1 at p2-4, pkg2 at p3-4"; undefined if it is not that shape */
     function claraGoalLabel(suffix) {
         const parts = suffix.match(/[a-z]+\d+-p\d+-\d+/gi);
@@ -1157,7 +1187,7 @@ var Viz;
      *  the -eval/-tt plan it copies, and last "no solution" (the problem alone).
      *  For a goals/ problem (GOAL), each of SOLVERS appears even without a plan
      *  file -- CLARA ran both on every goal -- marked missing. */
-    function solverLeaves(ex, i, goal) {
+    function solverLeaves(ex, i, goal, valueOf) {
         const stem = ex.problem.file.replace(/\.pddl$/i, "");
         const named = [];
         let chosen;
@@ -1167,33 +1197,165 @@ var Viz;
             if (rest === ".answer")
                 chosen = j;
             else if (m && SOLVERS[m[1]])
-                named.push({ label: SOLVERS[m[1]], j, rank: m[1] === "eval" ? 0 : 1 });
+                named.push({ label: SOLVERS[m[1]], j, rank: m[1] === "eval" ? 0 : 1, solver: SOLVERS[m[1]] });
             else
                 named.push({ label: s.file.split("/").pop(), j, rank: 2 });
         });
         if (chosen !== undefined) {
-            // beside -eval/-tt plans (CLARA's goals/), <goal>.answer is the evidence
-            // plan; anywhere else it is just a solution, listed by name
+            // beside -eval/-tt plans (CLARA's goals/), <goal>.answer is a copy of one
+            // of them (the one CLARA later cut its evidence files from -- no evidence
+            // is in the plan): not listed again.  One that copies neither, or one
+            // anywhere else, is just a solution, listed by its file name.
             const same = named.find((n) => n.rank < 2 && ex.solutions[n.j].text === ex.solutions[chosen].text);
-            if (same)
-                same.label += " · evidence plan";
-            else if (named.some((n) => n.rank < 2))
-                named.push({ label: "evidence plan", j: chosen, rank: -1 });
-            else
+            if (!same)
                 named.push({ label: ex.solutions[chosen].file.split("/").pop(), j: chosen, rank: 2 });
         }
         const rows = named;
         if (goal) {
             for (const [key, label] of Object.entries(SOLVERS)) {
-                if (!named.some((n) => n.label.startsWith(label)))
+                if (!named.some((n) => n.solver === label))
                     rows.push({ label, rank: key === "eval" ? 0 : 1 });
             }
         }
         rows.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
-        return [...rows.map((n) => n.j === undefined ? { label: n.label, example: i, missing: true }
-                : { label: n.label, example: i, solution: n.j }),
+        return [...rows.map((n) => {
+                if (n.j === undefined)
+                    return { label: n.label, example: i, missing: true };
+                const value = valueOf(i, i, n.j);
+                // the solver's name, then the plan's value: "EvalMaxSAT - exact (−5)"
+                const v = value === undefined ? "" : ` (${showValue(value)})`;
+                const label = n.solver ? n.label.replace(n.solver, n.solver + v) : n.label + v;
+                return { label, example: i, solution: n.j, solver: n.solver, value };
+            }),
             { label: "no solution (problem only)", example: i }];
     }
+    /** The domain the page prices problem P with when it comes with GIVEN (an
+     *  example's bundled domain): GIVEN if it has P's name, else the library's of
+     *  P's name, else GIVEN anyway -- the rule app.ts's adoptLibraryDomain
+     *  applies to a problem loaded with its domain. */
+    function pricingDomain(p, given, library) {
+        var _a;
+        if (given && given.name === p.domain)
+            return given;
+        return (_a = library.get(p.domain)) !== null && _a !== void 0 ? _a : given;
+    }
+    Viz.pricingDomain = pricingDomain;
+    /** whether every line of P's hard goal has a literal that holds in STATE */
+    function hardGoalHolds(p, state) {
+        return p.goal.every((line) => line.some((lit) => Viz.literalHolds(lit, state) === true));
+    }
+    Viz.hardGoalHolds = hardGoalHolds;
+    /** a plan's value as the main page's Total shows it at the plan's end, with
+     *  pseudo goal utility off: the achieved preference weights minus the cost
+     *  -- the same utilityAt the page uses, priced with the domain the page will
+     *  use (pricingDomain, LIBRARY being FiFO's pddl/), against the problem the
+     *  plan is shown WITH (for a borrowed plan, the original problem's
+     *  utilities, not the goal problem's).  Undefined when the plan does not
+     *  parse, when the problem has neither costs nor goal utilities (no value to
+     *  rank by), or for a borrowed plan that does not achieve the original
+     *  problem's hard goal.  Parsed on demand. */
+    function planValuer(examples, library = []) {
+        const problems = new Map();
+        const domains = new Map();
+        const lib = new Map();
+        for (const d of library) {
+            try {
+                lib.set(d.name, Viz.parseDomain(d.text));
+            }
+            catch { /* a broken library domain prices nothing */ }
+        }
+        const problemOf = (i) => {
+            var _a;
+            if (!problems.has(i)) {
+                try {
+                    problems.set(i, Viz.parseProblem(examples[i].problem.text));
+                }
+                catch {
+                    problems.set(i, null);
+                }
+            }
+            return (_a = problems.get(i)) !== null && _a !== void 0 ? _a : undefined;
+        };
+        const givenDomain = (i) => {
+            const d = examples[i].domain;
+            if (!d)
+                return undefined;
+            if (!domains.has(d.file)) {
+                try {
+                    domains.set(d.file, Viz.parseDomain(d.text));
+                }
+                catch {
+                    domains.set(d.file, undefined);
+                }
+            }
+            return domains.get(d.file);
+        };
+        return (problem, from, solution) => {
+            const p = problemOf(problem);
+            if (!p)
+                return undefined;
+            try {
+                const plan = Viz.parsePlan(examples[from].solutions[solution].text, p);
+                const end = plan.steps.length;
+                if (from !== problem && !hardGoalHolds(p, plan.states[end]))
+                    return undefined;
+                const u = Viz.utilityAt(p, pricingDomain(p, givenDomain(problem), lib), plan, end);
+                return u.goals === undefined && u.costs === undefined ? undefined : u.total;
+            }
+            catch {
+                return undefined;
+            }
+        };
+    }
+    Viz.planValuer = planValuer;
+    /** a number as the page shows it: "−5", "3", "2.5" (rounded to 1/1000) */
+    function showValue(v) {
+        const r = Math.round(v * 1000) / 1000;
+        return r < 0 ? "−" + Math.abs(r) : String(r);
+    }
+    Viz.showValue = showValue;
+    /** the original problem's row when it has no plan of its own: the goal plan
+     *  of highest value for the ORIGINAL problem (GOALS: label -> rows) -- the
+     *  lowest-cost one when it weights no goals -- the exact solver's on a tie,
+     *  then the first goal's; undefined when no goal plan has a value */
+    function bestGoalPlan(orig, goals, valueOf) {
+        let best;
+        const order = [...goals.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        for (const g of order) {
+            const e = goals.get(g);
+            if (e.rank !== 2)
+                continue;
+            for (const l of e.leaves) {
+                if (l.solution === undefined || l.solver === undefined)
+                    continue;
+                const v = valueOf(orig, l.example, l.solution);
+                if (v === undefined)
+                    continue;
+                if (!best || v > best.v || (v === best.v && l.solver === SOLVERS.eval && best.l.solver !== SOLVERS.eval)) {
+                    best = { l, goal: g, v };
+                }
+            }
+        }
+        if (!best)
+            return undefined;
+        return {
+            label: `${best.l.solver} (${showValue(best.v)})`, example: orig,
+            from: best.l.example, solution: best.l.solution, solver: best.l.solver, value: best.v,
+            note: `the plan found for goal "${best.goal}", the best (${showValue(best.v)}) of the plans for this ` +
+                `problem's goals -- what solving it directly would usually find, though a goal plan is optimal only ` +
+                `at its own goal's shortest horizon`,
+        };
+    }
+    /** for tests only: a plan's value as minus its *OBJECTIVE* -- right only
+     *  when no problem involved weights a goal, and it checks no goal; never the
+     *  page's valuer (that is planValuer) */
+    function objectiveValuer(examples) {
+        return (_problem, from, solution) => {
+            const o = answerObjective(examples[from].solutions[solution].text);
+            return o === undefined ? undefined : -o;
+        };
+    }
+    Viz.objectiveValuer = objectiveValuer;
     function cmpKey(a, b) {
         var _a, _b;
         for (let k = 0; k < Math.max(a.length, b.length); k++) {
@@ -1204,8 +1366,9 @@ var Viz;
         return 0;
     }
     /** the catalogue as a tree: families, then sizes, instances, goals; each goal
-     *  node's leaves are the Solver column */
-    function claraTree(examples) {
+     *  node's leaves are the Solver column.  VALUEOF values the plans: the page
+     *  passes planValuer (required, so no caller gets a stand-in by default). */
+    function claraTree(examples, valueOf) {
         const families = new Map();
         examples.forEach((ex, i) => {
             const p = place(ex.problem.file);
@@ -1222,8 +1385,20 @@ var Viz;
             let label = p.goal;
             for (let n = 2; goals.has(label); n++)
                 label = `${p.goal} (${n})`;
-            goals.set(label, { rank: p.goalRank, leaves: solverLeaves(ex, i, p.goalRank === 2) });
+            goals.set(label, { rank: p.goalRank, leaves: solverLeaves(ex, i, p.goalRank === 2, valueOf) });
         });
+        // an original problem with no plan of its own borrows its best goal plan
+        // (highest value for the original problem; the cheapest when it weights no goal)
+        for (const sizes of families.values())
+            for (const { inst } of sizes.values())
+                for (const goals of inst.values()) {
+                    const orig = goals.get("original problem");
+                    if (!orig || orig.rank !== 0 || orig.leaves.some((l) => l.solution !== undefined))
+                        continue;
+                    const best = bestGoalPlan(orig.leaves[0].example, goals, valueOf);
+                    if (best)
+                        orig.leaves.unshift(best);
+                }
         const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true });
         return [...families.keys()].sort(byName).map((fam) => {
             const sizes = families.get(fam);
@@ -1293,18 +1468,19 @@ var Viz;
         $("goals").innerHTML = Viz.goalHtml(app.problem, state);
     }
     function num(x) {
-        if (x === undefined)
-            return "–";
-        const r = Math.round(x * 1000) / 1000;
-        return (r < 0 ? "−" + Math.abs(r) : String(r));
+        return x === undefined ? "–" : Viz.showValue(x); // one format for the page and the CLARA browser
     }
     function renderUtility() {
         const p = app.problem;
-        const u = Viz.utilityAt(p, app.domain, app.plan, app.step);
+        const pseudoBox = $("pseudo-goals");
+        const u = Viz.utilityAt(p, app.domain, app.plan, app.step, pseudoBox.checked ? PSEUDO_GOAL_UTILITY : undefined);
         const goalsNote = u.goals === undefined
             ? "the problem gives its goals no utility"
-            : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
-                (u.undecided ? `; ${u.undecided} not tracked` : "");
+            : u.pseudo
+                ? `pseudo: ${PSEUDO_GOAL_UTILITY} per goal achieved, for display only` +
+                    (u.undecided ? `; ${u.undecided} not tracked` : "")
+                : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
+                    (u.undecided ? `; ${u.undecided} not tracked` : "");
         const costsNote = u.costs === undefined
             ? "the problem has no action costs"
             : !app.plan
@@ -1313,14 +1489,18 @@ var Viz;
                     : app.domain ? "some costs unknown or conditional (not counted)"
                         : "estimated: load the domain for exact costs";
         $("utility").innerHTML =
-            `<div class="u-item"><span class="u-label">Goals</span><span class="u-value">${num(u.goals)}</span>` +
-                `<span class="u-note">${esc(goalsNote)}</span></div>` +
-                `<div class="u-item"><span class="u-label">Costs</span>` +
-                `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span>` +
-                `<span class="u-note">${esc(costsNote)}</span></div>` +
-                `<div class="u-item total"><span class="u-label">Total</span><span class="u-value">${num(u.total)}</span>` +
-                `<span class="u-note">Goals + Costs</span></div>`;
+            // no captions under the numbers: what each one means is its tooltip
+            `<div class="u-item${u.pseudo ? " pseudo" : ""}" title="${esc(goalsNote)}">` +
+                `<span class="u-label">Goals${u.pseudo ? " (pseudo)" : ""}</span>` +
+                `<span class="u-value">${num(u.goals)}</span></div>` +
+                `<div class="u-item" title="${esc(costsNote)}"><span class="u-label">Costs</span>` +
+                `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span></div>` +
+                `<div class="u-item total${u.pseudo ? " pseudo" : ""}" title="Goals + Costs${u.pseudo ? ", with pseudo goal utility" : ""}">` +
+                `<span class="u-label">Total</span><span class="u-value">${num(u.total)}</span></div>`;
     }
+    /** what the "Pseudo Goal Utility" box gives each achieved goal of a problem
+     *  that weights none */
+    const PSEUDO_GOAL_UTILITY = 20;
     function renderSolution() {
         const box = $("solution");
         const plan = app.plan;
@@ -1366,9 +1546,18 @@ var Viz;
             (p.airplanes.length ? ` · ${p.airplanes.length} airplane${p.airplanes.length === 1 ? "" : "s"}` : "") +
             ` · ${p.packages.length} package${p.packages.length === 1 ? "" : "s"}`;
         const dom = app.domain ? ` · domain ${app.domainFile}` : "";
-        const sol = app.plan
-            ? ` · solution ${app.planFile} (${app.plan.format}${app.plan.objective ? ", objective " + app.plan.objective : ""})`
-            : "";
+        // the plan's value: the Total at its last step, pseudo goal utility off --
+        // not FiFO's *OBJECTIVE*, which is minimized (the cost plus the weights of
+        // unachieved preferences) and so is minus the value only when no goal is
+        // weighted.  ≈ when some cost was estimated or a preference not tracked;
+        // none when the problem has neither costs nor goal utilities.
+        let sol = "";
+        if (app.plan) {
+            const end = Viz.utilityAt(p, app.domain, app.plan, app.plan.steps.length);
+            const known = end.goals !== undefined || end.costs !== undefined;
+            const approx = (end.costs !== undefined && !end.costsExact) || end.undecided > 0;
+            sol = ` · solution ${app.planFile}` + (known ? ` (value ${approx ? "≈" : ""}${num(end.total)})` : "");
+        }
         $("summary").textContent = `${p.name} · ${counts}${dom}${sol}`;
     }
     function go(step) {
@@ -1493,11 +1682,12 @@ var Viz;
         app.errors = [];
         readText(file).then((f) => then(f.name, f.text), (e) => fail(file.name, e));
     }
-    /** load example EX with its solution J (none if undefined), clearing the
+    /** load example EX with its solution J (none if undefined) -- or solution J
+     *  of example FROM, for a plan borrowed from another problem -- clearing the
      *  file choosers and any domain loaded before */
-    function loadExample(ex, j) {
+    function loadExample(ex, j, from = ex) {
         var _a, _b;
-        const s = j === undefined ? undefined : ex.solutions[j];
+        const s = j === undefined ? undefined : from.solutions[j];
         for (const id of ["problem-file", "domain-file", "solution-file"])
             $(id).value = "";
         app.domain = undefined;
@@ -1519,7 +1709,10 @@ var Viz;
         const dialog = $("clara-dialog");
         const cols = [...dialog.querySelectorAll(".clara-col ul")];
         const openBtn = $("clara-open");
-        const tree = Viz.claraTree(list);
+        // built on the first click, not at page load: valuing every plan parses
+        // them all (about half a second for the whole of CLARA)
+        let tree = [];
+        let built = false;
         const chosen = []; // chosen[c]: the chosen row of column c
         let active = 0; // the column the arrow keys move in
         /** the rows of column c, given the choices to its left */
@@ -1540,6 +1733,7 @@ var Viz;
             return rows(4)[chosen[4]];
         }
         function render() {
+            var _a;
             // a column of one row needs no choice
             for (let c = 0; c < 5; c++) {
                 const r = rows(c);
@@ -1555,11 +1749,14 @@ var Viz;
             });
             const l = leaf();
             openBtn.disabled = !l;
-            $("clara-path").textContent = l
+            const path = $("clara-path");
+            path.textContent = l
                 ? list[l.example].problem.file + (l.solution !== undefined
-                    ? "  +  " + list[l.example].solutions[l.solution].file.split("/").pop()
-                    : l.missing ? `  (no ${l.label} plan: the problem alone)` : "")
+                    ? "  +  " + list[(_a = l.from) !== null && _a !== void 0 ? _a : l.example].solutions[l.solution].file.split("/").pop()
+                    : l.missing ? `  (no ${l.label} plan: the problem alone)` : "") +
+                    (l.note ? `  -- ${l.note}` : "")
                 : "Choose a family, size, instance, goal and solver.";
+            path.title = path.textContent;
         }
         function choose(c, k) {
             var _a;
@@ -1580,16 +1777,21 @@ var Viz;
             render();
         }
         function open() {
+            var _a;
             const l = leaf();
             if (!l)
                 return;
             dialog.close();
-            loadExample(list[l.example], l.solution);
+            loadExample(list[l.example], l.solution, list[(_a = l.from) !== null && _a !== void 0 ? _a : l.example]);
         }
         // the columns take the keyboard focus (tabindex in index.html): rows can't,
         // and with focus on Cancel, Enter would cancel
         const colsBox = dialog.querySelector(".clara-cols");
         button.addEventListener("click", () => {
+            if (!built) {
+                tree = Viz.claraTree(list, Viz.planValuer(list, typeof VIZ_DOMAINS === "undefined" ? [] : VIZ_DOMAINS));
+                built = true;
+            }
             render();
             dialog.showModal();
             colsBox.focus();
@@ -1678,6 +1880,15 @@ var Viz;
         pf.addEventListener("change", () => readInto(pf, (n, t) => loadProblem(n, t, true)));
         df.addEventListener("change", () => readInto(df, (n, t) => loadDomain(n, t, "user")));
         sf.addEventListener("change", () => readInto(sf, loadPlan));
+        const pseudo = $("pseudo-goals");
+        pseudo.parentElement.title =
+            `When the problem gives its goals no utility, count ${PSEUDO_GOAL_UTILITY} for each goal achieved. ` +
+                `For display only: it is not the problem's utility.`;
+        pseudo.addEventListener("change", () => {
+            pseudo.blur(); // give the arrow keys back to stepping through the plan
+            if (app.problem)
+                renderUtility();
+        });
         $("first").addEventListener("click", () => go(0));
         $("prev").addEventListener("click", () => go(app.step - 1));
         $("next").addEventListener("click", () => go(app.step + 1));

@@ -43,7 +43,12 @@
         <div id="goals" class="goals"><p class="empty">No problem loaded.</p></div>
       </section>
       <section class="panel">
-        <h2>Utility so far</h2>
+        <div class="panel-head">
+          <h2>Utility so far</h2>
+          <label class="pseudo-toggle"><!-- its tooltip is set by app.ts, with PSEUDO_GOAL_UTILITY -->
+            <input type="checkbox" id="pseudo-goals"> Pseudo Goal Utility
+          </label>
+        </div>
         <div id="utility" class="utility"><p class="empty">No problem loaded.</p></div>
       </section>
       <section class="panel solution-panel">

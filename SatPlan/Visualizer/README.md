@@ -58,7 +58,14 @@ reopen the dialog in the last folder used.)
   - **Total**: Goals + Costs.
 
   At the end of a FiFO solution, the unachieved preference weights plus the
-  cost equal the answer's `*OBJECTIVE*`.
+  cost equal the answer's `*OBJECTIVE*`. Hover over a number for where it
+  comes from.
+
+  **Pseudo Goal Utility** (the checkbox): for a problem that weights no goals,
+  count 20 for each distinct goal literal achieved in the displayed state, so
+  Goals and Total show progress toward the goal. It is for display only -- the
+  problem's own utility is unchanged, and the CLARA browser's plan values never
+  include it. A problem with goal utilities is shown as it is.
 - **Solution.** The actions by step. ◀ ▶ (or the arrow keys, Home and End)
   step through it; clicking a step jumps there. The map shows the state at the
   current step, and the drives about to be taken are drawn in their vehicle's
@@ -108,10 +115,11 @@ The button opens a column browser, read from CLARA's file names
 | Size | `gridNxM-` | `5×5` |
 | Instance | the seed `K` of `gridNxM-K` | `1` |
 | Goal | `goals/gridNxM-K-<goal>.pddl`, plus the problem itself (`original problem`) and `recognition/` (`recognition problem`) | `pkg1 at p2-4, pkg2 at p3-4, pkg3 at p4-3` |
-| Solver | `-eval.answer` (EvalMaxSAT), `-tt.answer` (tt-open-wbo-inc), or the problem alone | `EvalMaxSAT · evidence plan` |
+| Solver | `-eval.answer` (EvalMaxSAT, exact), `-tt.answer` (tt-open-wbo-inc, anytime), or the problem alone | `EvalMaxSAT - exact (−5)` |
 
-`<goal>.answer`, the plan CLARA cut the evidence from, is a copy of one of
-the two; it is not listed again, but marks that one `· evidence plan`. (A
+`<goal>.answer` is a copy of one of the two (the one CLARA cut its evidence
+files from; the plan itself involves no evidence), so it is not listed again.
+Nothing in the browser involves evidence. (A
 problem whose name is not `gridNxM-K` would be placed by its directory: Size
 the subdirectory, Instance the file name.) A solver with no plan file for that goal (it
 timed out, or was stopped) is grayed, and so is a goal with no plan at all;
@@ -119,6 +127,26 @@ either can still be opened, to show the problem alone, as can
 "no solution (problem only)". Choosing a row fills the next column; Open, a
 double click or Enter loads the problem, its domain and the solution. The
 arrow keys move within and between columns.
+
+Each plan's row ends with its **value** in parentheses, e.g.
+`EvalMaxSAT - exact (−5)`: the Total the main page shows at the plan's last
+step with Pseudo Goal Utility off -- the weights of the preferences achieved
+minus the cost, so minus the cost for CLARA's problems, which weight no goals.
+It is computed as the page computes Total (the problem, its domain and the
+plan, parsed when the browser first opens).
+
+The **original problem** lists its own plans if CLARA has any
+(`gridNxM-K-eval.answer` and so on). CLARA makes none, so otherwise it offers,
+under its solver's name, the best of the plans for its goals: the one of
+highest value for the original problem -- valued against the original
+problem's goal utilities, if it has any, not the goal problem's -- which is the
+lowest-cost one when it weights no goals; the exact solver's on a tie; and only
+a plan that achieves the original problem's hard goal. That is what solving the
+original problem directly would usually find, but not certainly: each goal plan
+is optimal only at its own goal's shortest horizon (and an anytime plan is not
+proven optimal at all). The footer names the goal the plan was found for. The
+recognition problem (the same goal at the recognition horizon) gets no such
+plan. A plan whose problem has neither costs nor goal utilities shows no value.
 
 ## The circuit visualizer
 

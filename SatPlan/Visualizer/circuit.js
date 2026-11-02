@@ -663,17 +663,31 @@ var Viz;
     }
     Viz.formulaHolds = formulaHolds;
     /** The running utility at STEP: achieved preference weights, minus the cost
-     *  of the actions taken before STEP. */
-    function utilityAt(problem, domain, plan, step) {
+     *  of the actions taken before STEP.  With PSEUDO (a number) and a problem
+     *  that gives its goals no utility, each distinct hard-goal literal that
+     *  holds counts PSEUDO instead -- a display aid, not the problem's utility. */
+    function utilityAt(problem, domain, plan, step, pseudo) {
         const state = plan ? plan.states[step] : { at: new Map(problem.initAt), inside: new Map(problem.initIn) };
         let goals;
         let undecided = 0;
+        let isPseudo = false;
         if (problem.preferences.length > 0) {
             goals = 0;
             for (const p of problem.preferences) {
                 const v = formulaHolds(p.formula, state);
                 if (v === true)
                     goals += p.weight;
+                else if (v === undefined)
+                    undecided++;
+            }
+        }
+        else if (pseudo !== undefined && problem.goalLiterals.length > 0) {
+            isPseudo = true;
+            goals = 0;
+            for (const lit of problem.goalLiterals) {
+                const v = literalHolds(lit, state);
+                if (v === true)
+                    goals += pseudo;
                 else if (v === undefined)
                     undecided++;
             }
@@ -693,7 +707,7 @@ var Viz;
                 }
             }
         }
-        return { goals, costs, costsExact, total: (goals !== null && goals !== void 0 ? goals : 0) - (costs !== null && costs !== void 0 ? costs : 0), undecided };
+        return { goals, costs, costsExact, total: (goals !== null && goals !== void 0 ? goals : 0) - (costs !== null && costs !== void 0 ? costs : 0), undecided, pseudo: isPseudo };
     }
     Viz.utilityAt = utilityAt;
     /** Whether goal literal LIT holds in STATE; undefined for a predicate the

@@ -310,6 +310,74 @@ namespace VizTest {
     check("the same plan as a plain list has the same cost",
           Viz.utilityAt(p5, plain, plainList, plainList.steps.length).costs === u5.costs);
 
+    // pseudo goal utility: oracle = the goal's (at pkg place) literals in the
+    // PDDL text that the answer's last HOLDS slice reports
+    const slices = [...a5text.matchAll(/^\(HOLDS .* (\d+)\)$/gm)].map((m) => Number(m[1]));
+    const lastSlice = Math.max(...slices);
+    const goalText = t5.slice(t5.indexOf("(:goal"));
+    const lits = [...new Set([...goalText.matchAll(/\(at (pkg\d+) (p\d+-\d+)\)/g)].map((m) => `${m[1]} ${m[2]}`))];
+    const held = lits.filter((l) => a5text.toUpperCase().includes(`(HOLDS (AT ${l.toUpperCase()}) ${lastSlice})`));
+    const ps5 = Viz.utilityAt(p5, plain, planA, planA.steps.length, 20);
+    const ps0 = Viz.utilityAt(p5, plain, planA, 0, 20);
+    check(`pseudo goal utility: 20 per goal achieved (${held.length} of ${lits.length} at the end, none at the start), in Total too`,
+          held.length > 0 && ps5.pseudo && ps5.goals === 20 * held.length && ps5.total === 20 * held.length - u5.costs! &&
+          ps0.goals === 0 && ps0.pseudo, `${ps5.goals} vs ${20 * held.length}; start ${ps0.goals}`);
+    const ps6 = Viz.utilityAt(p6, handling, a6, end6, 20);
+    check("pseudo goal utility leaves a problem with goal utilities as it is; off by default",
+          !ps6.pseudo && ps6.goals === u6.goals && ps6.total === u6.total && !u5.pseudo && u5.goals === undefined);
+
+    // the CLARA browser's plan values: the main page's Total at the plan's end
+    const ex = (file: string, text: string, sols: [string, string][], dom?: [string, string]): Viz.Example =>
+      ({ problem: { file, text }, domain: dom && { file: dom[0], text: dom[1] }, solutions: sols.map(([f, t]) => ({ file: f, text: t })) });
+    const hand: [string, string] = ["clara-logistics-handling.pddl", read("clara-logistics-handling.pddl")];
+    const vexs = [
+      ex("F/grid6x6-1.pddl", t6, [], hand),                                    // weights its goals
+      // its goal problem weights none (the preferences stripped), as CLARA's goals/ do
+      ex("F/goals/grid6x6-1-pkg1-p1-1.pddl", t6.replace(/\(preference [^()]+ \(at [^()]+\) \d+\)/g, ""),
+         [["F/goals/grid6x6-1-pkg1-p1-1-eval.answer", a6text]], hand),
+      ex("F/grid5x5-1.pddl", t5, [["F/grid5x5-1-eval.answer", a5text]], ["clara-logistics.pddl", read("clara-logistics.pddl")]),
+    ];
+    const value = Viz.planValuer(vexs);
+    check(`plan value: no goal utilities, minus FiFO's objective (${-objective(a5text)})`,
+          value(2, 2, 0) === -objective(a5text), String(value(2, 2, 0)));
+    // with goal utilities: their total weight minus FiFO's objective (the
+    // unachieved weight plus the cost); without them, that less the achieved weight
+    const withW = totalW - objective(a6text);
+    check(`plan value with goal utilities: total weight minus the objective (${withW}); the goal problem's own: ${withW - achievedW}`,
+          value(0, 1, 0) === withW && value(1, 1, 0) === withW - achievedW && achievedW > 0,
+          `${value(0, 1, 0)} ${value(1, 1, 0)}`);
+    const vt = Viz.claraTree(vexs, value);
+    const six = vt[0].children.find((s) => s.label === "6×6")!.children[0].children;
+    const vorig = six.find((g) => g.label === "original problem")!.leaves!;
+    const vgoal = six.find((g) => g.label !== "original problem")!.leaves!;
+    check("a borrowed goal plan is valued against the ORIGINAL problem's goal utilities, not the goal problem's",
+          vorig[0].from === 1 && vorig[0].value === withW && vorig[0].label === `EvalMaxSAT - exact (${Viz.showValue(withW)})` &&
+          vgoal[0].label === `EvalMaxSAT - exact (${Viz.showValue(withW - achievedW)})`,
+          `${vorig[0].label} / ${vgoal[0].label}`);
+
+    // review fixes: a borrowed plan must achieve the original's hard goal; no
+    // costs and no goal utilities is no value; priced with the page's domain
+    const firstTwo = read("grid5x5-air.plan").split("\n").filter((l: string) => l.startsWith("(")).slice(0, 2).join("\n");
+    const tiny = "(define (problem m) (:domain zz) (:objects a b - place t - truck) (:init (at t a) (road a b)) (:goal (at t b)))";
+    const handOn5: [string, string] = hand;   // named clara-logistics-handling; the 5x5 problem names clara-logistics
+    const rexs = [
+      ex("G/grid5x5-1.pddl", t5, [], handOn5),
+      ex("G/goals/grid5x5-1-pkg1-p3-3.pddl", t5, [["G/goals/grid5x5-1-pkg1-p3-3-eval.answer", firstTwo],
+                                                  ["G/goals/grid5x5-1-pkg1-p3-3-tt.answer", a5text]], handOn5),
+      ex("G/grid3x3-1.pddl", tiny, [["G/grid3x3-1-eval.answer", "(drive t a b)"]]),
+    ];
+    const lib = [{ name: "clara-logistics", text: read("clara-logistics.pddl") }];
+    const rv = Viz.planValuer(rexs, lib);
+    check("a borrowed plan that stops short of the original problem's goal has no value; its own row still does",
+          rv(0, 1, 0) === undefined && rv(1, 1, 0) !== undefined && rv(0, 1, 1) !== undefined,
+          `${rv(0, 1, 0)} ${rv(1, 1, 0)} ${rv(0, 1, 1)}`);
+    check("a problem with neither costs nor goal utilities: no value (no '(0)' to rank by)", rv(2, 2, 0) === undefined,
+          String(rv(2, 2, 0)));
+    const noLib = Viz.planValuer(rexs);
+    check(`priced as the page prices it: a bundled domain of another name gives way to the library's (${-objective(a5text)})`,
+          rv(0, 1, 1) === -objective(a5text) && noLib(0, 1, 1) !== -objective(a5text),
+          `${rv(0, 1, 1)} vs without the library ${noLib(0, 1, 1)}`);
+
     // the standard PDDL3 forms: a weight in the metric, a cost from a function of the action's arguments
     const pm = Viz.parseProblem(`(define (problem m) (:domain d)
       (:objects a b c - place t - truck k - package)
@@ -384,48 +452,77 @@ namespace VizTest {
         ["TwoPackage/goals/grid10x10-2-pkg1-p2-3-eval.answer", "E"],
         ["TwoPackage/goals/grid10x10-2-pkg1-p2-3.answer", "E"]),
       P("TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4.pddl",
-        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4-tt.answer", "T"],
-        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4.answer", "X"]),
+        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4-tt.answer", "(*OBJECTIVE* 5) T"],
+        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4.answer", "(*OBJECTIVE* 9) X"]),
       P("TwoPackage/recognition/grid3x3-1.pddl"),
       P("TwoPackage/grid3x3-1.pddl"),
-      P("TwoPackage/grid3x3-10.pddl"),
+      P("TwoPackage/grid3x3-11.pddl"),
       P("TwoPackage/grid3x3-2.pddl"),
       P("AAAI-2010-Benchmarks/BlockWords/pb1.pddl", ["AAAI-2010-Benchmarks/BlockWords/pb1.answer", "A"]),
       P("TwoPackage/goals/grid3x3-1-pkg2-p1-1.pddl"),   // a goal neither solver planned
+      // grid3x3-1's cheapest: a tie at 5 between ex 1's anytime plan (met first)
+      // and this exact one -- the exact one is taken
+      P("TwoPackage/goals/grid3x3-1-pkg2-p3-3.pddl",
+        ["TwoPackage/goals/grid3x3-1-pkg2-p3-3-eval.answer", "(*OBJECTIVE* 5) E"],
+        ["TwoPackage/goals/grid3x3-1-pkg2-p3-3-tt.answer", "(*OBJECTIVE* 8) T"]),
+      // grid3x3-2's: a strictly cheaper anytime plan beats an exact one
+      P("TwoPackage/goals/grid3x3-2-pkg1-p1-1.pddl", ["TwoPackage/goals/grid3x3-2-pkg1-p1-1-eval.answer", "(*OBJECTIVE* 6)"]),
+      P("TwoPackage/goals/grid3x3-2-pkg1-p1-2.pddl", ["TwoPackage/goals/grid3x3-2-pkg1-p1-2-tt.answer", "(*OBJECTIVE* 4)"]),
+      // grid3x3-10 has its own plan: it is listed, nothing is borrowed
+      P("TwoPackage/grid3x3-10.pddl", ["TwoPackage/grid3x3-10-eval.answer", "(*OBJECTIVE* 12)"]),
+      P("TwoPackage/goals/grid3x3-10-pkg1-p1-1.pddl", ["TwoPackage/goals/grid3x3-10-pkg1-p1-1-tt.answer", "(*OBJECTIVE* 2)"]),
     ];
-    const tree = Viz.claraTree(exs);
+    const tree = Viz.claraTree(exs, Viz.objectiveValuer(exs));   // the fixtures have no problem texts
     const labels = (ns: { label: string }[]) => ns.map((n) => n.label).join(" | ");
     const two = tree.find((n) => n.label === "TwoPackage")!;
     check("families sorted; sizes by number (3×3 before 10×10)",
           labels(tree) === "AAAI-2010-Benchmarks | TwoPackage" && labels(two.children) === "3×3 | 10×10",
           labels(tree) + " / " + labels(two.children));
     const g3 = two.children[0];
-    check("instances by number (1, 2, 10)", labels(g3.children) === "1 | 2 | 10", labels(g3.children));
+    check("instances by number (1, 2, 10, 11)", labels(g3.children) === "1 | 2 | 10 | 11", labels(g3.children));
     const goals = g3.children[0].children;
     check("goals: the original problem, its recognition version, then each goal by name",
-          labels(goals) === "original problem | recognition problem | pkg1 at p2-4, pkg2 at p3-4 | pkg2 at p1-1",
+          labels(goals) === "original problem | recognition problem | pkg1 at p2-4, pkg2 at p3-4 | pkg2 at p1-1 | pkg2 at p3-3",
           labels(goals));
-    check("a goal with no solution file is grayed (the problem and its recognition version too); one with a plan is not",
-          goals.map((g) => g.missing).join() === "true,true,false,true", goals.map((g) => g.missing).join());
+    check("a goal with no solution file is grayed (the recognition problem too); the original problem borrows one",
+          goals.map((g) => g.missing).join() === "false,true,false,true,false", goals.map((g) => g.missing).join());
     const leafStr = (ls: Viz.ClaraLeaf[]) =>
-      ls.map((l) => `${l.label}=${l.example}:${l.missing ? "~" : l.solution ?? "-"}`).join(" | ");
+      ls.map((l) => `${l.label}=${l.from !== undefined ? l.from + ">" : ""}${l.example}:${l.missing ? "~" : l.solution ?? "-"}`).join(" | ");
     check("an unplanned goal lists both solvers grayed, and can still be opened alone",
-          leafStr(goals[3].leaves!) === "EvalMaxSAT=7:~ | tt-open-wbo-inc=7:~ | no solution (problem only)=7:-",
+          leafStr(goals[3].leaves!) === "EvalMaxSAT - exact=7:~ | tt-open-wbo - anytime=7:~ | no solution (problem only)=7:-",
           leafStr(goals[3].leaves!));
     const g10 = two.children[1].children[0].children[0].leaves!;
-    check("solvers: <goal>.answer folds into the plan it copies; then the problem alone",
-          leafStr(g10) === "EvalMaxSAT · evidence plan=0:1 | tt-open-wbo-inc=0:0 | no solution (problem only)=0:-", leafStr(g10));
+    check("solvers: <goal>.answer folds into the plan it copies; then the problem alone (no objective: no value)",
+          leafStr(g10) === "EvalMaxSAT - exact=0:1 | tt-open-wbo - anytime=0:0 | no solution (problem only)=0:-",
+          leafStr(g10));
     const gx = goals[2].leaves!;
-    check("a <goal>.answer that copies neither plan is listed itself, first; the solver with no file is grayed",
-          leafStr(gx) === "evidence plan=1:1 | EvalMaxSAT=1:~ | tt-open-wbo-inc=1:0 | no solution (problem only)=1:-",
+    check("a <goal>.answer that copies neither plan is listed by its file name, never as evidence; the solver with no file is grayed; values shown",
+          leafStr(gx) === "EvalMaxSAT - exact=1:~ | tt-open-wbo - anytime (−5)=1:0 | grid3x3-1-pkg1-p2-4-pkg2-p3-4.answer (−9)=1:1 | no solution (problem only)=1:-",
           leafStr(gx));
+    check("the original problem's best (here: cheapest) goal plan: on a tie, the exact solver's",
+          leafStr(goals[0].leaves!) === "EvalMaxSAT - exact (−5)=8>3:0 | no solution (problem only)=3:-",
+          leafStr(goals[0].leaves!));
+    const orig2 = g3.children[1].children[0].leaves!;
+    check("a strictly cheaper anytime plan beats an exact one",
+          leafStr(orig2) === "tt-open-wbo - anytime (−4)=10>5:0 | no solution (problem only)=5:-",
+          leafStr(orig2));
+    const orig10 = g3.children[2].children[0].leaves!;
+    const orig11 = g3.children[3].children[0].leaves!;
+    check("an original problem with a plan of its own lists it and borrows none; one with no goal plans borrows none",
+          leafStr(orig10) === "EvalMaxSAT - exact (−12)=11:0 | no solution (problem only)=11:-" &&
+          leafStr(orig11) === "no solution (problem only)=4:-", leafStr(orig10) + " / " + leafStr(orig11));
+    check("answerObjective reads (*OBJECTIVE* N), and refuses text without one",
+          Viz.answerObjective("(x)\n(*OBJECTIVE* 17)\n") === 17 && Viz.answerObjective("(*objective* 2.5)") === 2.5 &&
+          Viz.answerObjective("(OCCURS (drive t a b) 1)") === undefined);
     const aaai = tree[0];
     check("a non-grid benchmark: Size is its directory, Instance its name",
           labels(aaai.children) === "BlockWords" && labels(aaai.children[0].children) === "pb1" &&
-          leafStr(aaai.children[0].children[0].children[0].leaves!) === "pb1.answer=6:0 | no solution (problem only)=6:-");
+          leafStr(aaai.children[0].children[0].children[0].leaves!) === "pb1.answer=6:0 | no solution (problem only)=6:-",
+          leafStr(aaai.children[0].children[0].children[0].leaves!));
     const all: string[] = [];
     const walk = (ns: Viz.ClaraNode[]) => ns.forEach((n) => {
-      n.leaves?.forEach((l) => { if (!l.missing) all.push(`${l.example}:${l.solution ?? "-"}`); });
+      // a borrowed plan (FROM) is another problem's, counted there
+      n.leaves?.forEach((l) => { if (!l.missing && l.from === undefined) all.push(`${l.example}:${l.solution ?? "-"}`); });
       walk(n.children);
     });
     walk(tree);

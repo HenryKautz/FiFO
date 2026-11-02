@@ -58,18 +58,20 @@ namespace Viz {
   }
 
   function num(x: number | undefined): string {
-    if (x === undefined) return "–";
-    const r = Math.round(x * 1000) / 1000;
-    return (r < 0 ? "−" + Math.abs(r) : String(r));
+    return x === undefined ? "–" : showValue(x);   // one format for the page and the CLARA browser
   }
 
   function renderUtility() {
     const p = app.problem!;
-    const u = utilityAt(p, app.domain, app.plan, app.step);
+    const pseudoBox = $("pseudo-goals") as HTMLInputElement;
+    const u = utilityAt(p, app.domain, app.plan, app.step, pseudoBox.checked ? PSEUDO_GOAL_UTILITY : undefined);
     const goalsNote = u.goals === undefined
       ? "the problem gives its goals no utility"
-      : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
-        (u.undecided ? `; ${u.undecided} not tracked` : "");
+      : u.pseudo
+        ? `pseudo: ${PSEUDO_GOAL_UTILITY} per goal achieved, for display only` +
+          (u.undecided ? `; ${u.undecided} not tracked` : "")
+        : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
+          (u.undecided ? `; ${u.undecided} not tracked` : "");
     const costsNote = u.costs === undefined
       ? "the problem has no action costs"
       : !app.plan
@@ -78,14 +80,19 @@ namespace Viz {
           : app.domain ? "some costs unknown or conditional (not counted)"
             : "estimated: load the domain for exact costs";
     $("utility").innerHTML =
-      `<div class="u-item"><span class="u-label">Goals</span><span class="u-value">${num(u.goals)}</span>` +
-      `<span class="u-note">${esc(goalsNote)}</span></div>` +
-      `<div class="u-item"><span class="u-label">Costs</span>` +
-      `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span>` +
-      `<span class="u-note">${esc(costsNote)}</span></div>` +
-      `<div class="u-item total"><span class="u-label">Total</span><span class="u-value">${num(u.total)}</span>` +
-      `<span class="u-note">Goals + Costs</span></div>`;
+      // no captions under the numbers: what each one means is its tooltip
+      `<div class="u-item${u.pseudo ? " pseudo" : ""}" title="${esc(goalsNote)}">` +
+      `<span class="u-label">Goals${u.pseudo ? " (pseudo)" : ""}</span>` +
+      `<span class="u-value">${num(u.goals)}</span></div>` +
+      `<div class="u-item" title="${esc(costsNote)}"><span class="u-label">Costs</span>` +
+      `<span class="u-value${u.costs !== undefined && !u.costsExact ? " estimated" : ""}">${num(u.costs === undefined ? undefined : -u.costs)}</span></div>` +
+      `<div class="u-item total${u.pseudo ? " pseudo" : ""}" title="Goals + Costs${u.pseudo ? ", with pseudo goal utility" : ""}">` +
+      `<span class="u-label">Total</span><span class="u-value">${num(u.total)}</span></div>`;
   }
+
+  /** what the "Pseudo Goal Utility" box gives each achieved goal of a problem
+   *  that weights none */
+  const PSEUDO_GOAL_UTILITY = 20;
 
   function renderSolution() {
     const box = $("solution");
@@ -130,9 +137,18 @@ namespace Viz {
       (p.airplanes.length ? ` · ${p.airplanes.length} airplane${p.airplanes.length === 1 ? "" : "s"}` : "") +
       ` · ${p.packages.length} package${p.packages.length === 1 ? "" : "s"}`;
     const dom = app.domain ? ` · domain ${app.domainFile}` : "";
-    const sol = app.plan
-      ? ` · solution ${app.planFile} (${app.plan.format}${app.plan.objective ? ", objective " + app.plan.objective : ""})`
-      : "";
+    // the plan's value: the Total at its last step, pseudo goal utility off --
+    // not FiFO's *OBJECTIVE*, which is minimized (the cost plus the weights of
+    // unachieved preferences) and so is minus the value only when no goal is
+    // weighted.  ≈ when some cost was estimated or a preference not tracked;
+    // none when the problem has neither costs nor goal utilities.
+    let sol = "";
+    if (app.plan) {
+      const end = utilityAt(p, app.domain, app.plan, app.plan.steps.length);
+      const known = end.goals !== undefined || end.costs !== undefined;
+      const approx = (end.costs !== undefined && !end.costsExact) || end.undecided > 0;
+      sol = ` · solution ${app.planFile}` + (known ? ` (value ${approx ? "≈" : ""}${num(end.total)})` : "");
+    }
     $("summary").textContent = `${p.name} · ${counts}${dom}${sol}`;
   }
 
@@ -266,10 +282,11 @@ namespace Viz {
    *  when there is a local CLARA checkout: the CLARA button's browser. */
   declare const VIZ_CLARA_EXAMPLES: Example[] | undefined;
 
-  /** load example EX with its solution J (none if undefined), clearing the
+  /** load example EX with its solution J (none if undefined) -- or solution J
+   *  of example FROM, for a plan borrowed from another problem -- clearing the
    *  file choosers and any domain loaded before */
-  function loadExample(ex: Example, j: number | undefined) {
-    const s = j === undefined ? undefined : ex.solutions[j];
+  function loadExample(ex: Example, j: number | undefined, from: Example = ex) {
+    const s = j === undefined ? undefined : from.solutions[j];
     for (const id of ["problem-file", "domain-file", "solution-file"]) ($(id) as HTMLInputElement).value = "";
     app.domain = undefined;
     app.domainSource = undefined;
@@ -291,7 +308,10 @@ namespace Viz {
     const dialog = $("clara-dialog") as HTMLDialogElement;
     const cols = [...dialog.querySelectorAll(".clara-col ul")] as HTMLElement[];
     const openBtn = $("clara-open") as HTMLButtonElement;
-    const tree = claraTree(list);
+    // built on the first click, not at page load: valuing every plan parses
+    // them all (about half a second for the whole of CLARA)
+    let tree: ClaraNode[] = [];
+    let built = false;
     const chosen: number[] = [];   // chosen[c]: the chosen row of column c
     let active = 0;                // the column the arrow keys move in
 
@@ -324,11 +344,14 @@ namespace Viz {
       });
       const l = leaf();
       openBtn.disabled = !l;
-      $("clara-path").textContent = l
+      const path = $("clara-path");
+      path.textContent = l
         ? list[l.example].problem.file + (l.solution !== undefined
-          ? "  +  " + list[l.example].solutions[l.solution].file.split("/").pop()
-          : l.missing ? `  (no ${l.label} plan: the problem alone)` : "")
+          ? "  +  " + list[l.from ?? l.example].solutions[l.solution].file.split("/").pop()
+          : l.missing ? `  (no ${l.label} plan: the problem alone)` : "") +
+          (l.note ? `  -- ${l.note}` : "")
         : "Choose a family, size, instance, goal and solver.";
+      path.title = path.textContent;
     }
     function choose(c: number, k: number) {
       if (k < 0 || k >= rows(c).length) return;
@@ -350,13 +373,17 @@ namespace Viz {
       const l = leaf();
       if (!l) return;
       dialog.close();
-      loadExample(list[l.example], l.solution);
+      loadExample(list[l.example], l.solution, list[l.from ?? l.example]);
     }
 
     // the columns take the keyboard focus (tabindex in index.html): rows can't,
     // and with focus on Cancel, Enter would cancel
     const colsBox = dialog.querySelector(".clara-cols") as HTMLElement;
     button.addEventListener("click", () => {
+      if (!built) {
+        tree = claraTree(list, planValuer(list, typeof VIZ_DOMAINS === "undefined" ? [] : VIZ_DOMAINS));
+        built = true;
+      }
       render();
       dialog.showModal();
       colsBox.focus();
@@ -435,6 +462,14 @@ namespace Viz {
     pf.addEventListener("change", () => readInto(pf, (n, t) => loadProblem(n, t, true)));
     df.addEventListener("change", () => readInto(df, (n, t) => loadDomain(n, t, "user")));
     sf.addEventListener("change", () => readInto(sf, loadPlan));
+    const pseudo = $("pseudo-goals") as HTMLInputElement;
+    (pseudo.parentElement as HTMLElement).title =
+      `When the problem gives its goals no utility, count ${PSEUDO_GOAL_UTILITY} for each goal achieved. ` +
+      `For display only: it is not the problem's utility.`;
+    pseudo.addEventListener("change", () => {
+      pseudo.blur();   // give the arrow keys back to stepping through the plan
+      if (app.problem) renderUtility();
+    });
     $("first").addEventListener("click", () => go(0));
     $("prev").addEventListener("click", () => go(app.step - 1));
     $("next").addEventListener("click", () => go(app.step + 1));

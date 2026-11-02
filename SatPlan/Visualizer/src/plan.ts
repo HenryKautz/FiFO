@@ -258,19 +258,34 @@ namespace Viz {
     total: number;
     /** preferences whose truth could not be decided (not counted) */
     undecided: number;
+    /** GOALS is a pseudo utility: the problem weights no goal, so each goal
+     *  literal achieved counts PSEUDO (for display only) */
+    pseudo: boolean;
   }
 
   /** The running utility at STEP: achieved preference weights, minus the cost
-   *  of the actions taken before STEP. */
-  export function utilityAt(problem: Problem, domain: Domain | undefined, plan: Plan | undefined, step: number): Utility {
+   *  of the actions taken before STEP.  With PSEUDO (a number) and a problem
+   *  that gives its goals no utility, each distinct hard-goal literal that
+   *  holds counts PSEUDO instead -- a display aid, not the problem's utility. */
+  export function utilityAt(problem: Problem, domain: Domain | undefined, plan: Plan | undefined, step: number,
+                            pseudo?: number): Utility {
     const state = plan ? plan.states[step] : { at: new Map(problem.initAt), inside: new Map(problem.initIn) };
     let goals: number | undefined;
     let undecided = 0;
+    let isPseudo = false;
     if (problem.preferences.length > 0) {
       goals = 0;
       for (const p of problem.preferences) {
         const v = formulaHolds(p.formula, state);
         if (v === true) goals += p.weight;
+        else if (v === undefined) undecided++;
+      }
+    } else if (pseudo !== undefined && problem.goalLiterals.length > 0) {
+      isPseudo = true;
+      goals = 0;
+      for (const lit of problem.goalLiterals) {
+        const v = literalHolds(lit, state);
+        if (v === true) goals += pseudo;
         else if (v === undefined) undecided++;
       }
     }
@@ -288,7 +303,7 @@ namespace Viz {
         }
       }
     }
-    return { goals, costs, costsExact, total: (goals ?? 0) - (costs ?? 0), undecided };
+    return { goals, costs, costsExact, total: (goals ?? 0) - (costs ?? 0), undecided, pseudo: isPseudo };
   }
 
   /** Whether goal literal LIT holds in STATE; undefined for a predicate the
