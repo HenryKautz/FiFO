@@ -1109,6 +1109,147 @@ var Viz;
     }
     Viz.renderMap = renderMap;
 })(Viz || (Viz = {}));
+// The CLARA browser's catalogue: the problems of clara-examples.js (bundled
+// from a CLARA checkout by build-clara-examples.sh) sorted into the columns
+// Family / Size / Instance / Goal / Solver, from CLARA's file names:
+//
+//   <Family>/gridNxM-K.pddl                  the problem: goal "original problem"
+//   <Family>/recognition/gridNxM-K.pddl      its recognition version
+//   <Family>/goals/gridNxM-K-<goal>.pddl     one hypothesis as the hard goal,
+//       <goal> = pkg1-p2-3 or pkg1-p2-4-pkg2-p3-4-... (object, place, ...)
+//   <goal>-eval.answer, <goal>-tt.answer     EvalMaxSAT's and tt-open-wbo-inc's plans
+//   <goal>.answer                            the plan the evidence was cut from: a
+//       copy of one of those two, so it is shown as that one's "evidence plan"
+//
+// Anything else (the AAAI-2010 benchmarks) is placed by its directory: Size is
+// the subdirectory, Instance the file name.
+var Viz;
+(function (Viz) {
+    const SOLVERS = { eval: "EvalMaxSAT", tt: "tt-open-wbo-inc" };
+    /** "pkg1-p2-4-pkg2-p3-4" -> "pkg1 at p2-4, pkg2 at p3-4"; undefined if it is not that shape */
+    function claraGoalLabel(suffix) {
+        const parts = suffix.match(/[a-z]+\d+-p\d+-\d+/gi);
+        if (!parts || parts.join("-") !== suffix)
+            return undefined;
+        return parts.map((p) => p.replace(/^([a-z]+\d+)-/i, "$1 at ")).join(", ");
+    }
+    Viz.claraGoalLabel = claraGoalLabel;
+    function place(file) {
+        var _a;
+        const parts = file.split("/");
+        const family = parts[0];
+        const base = parts[parts.length - 1].replace(/\.pddl$/i, "");
+        const sub = parts.slice(1, -1).join("/");
+        const g = /^grid(\d+)x(\d+)-(\d+)(?:-(.+))?$/i.exec(base);
+        if (g && (sub === "" || sub === "goals" || sub === "recognition")) {
+            const goal = g[4] === undefined
+                ? (sub === "recognition" ? "recognition problem" : "original problem")
+                : ((_a = claraGoalLabel(g[4])) !== null && _a !== void 0 ? _a : g[4]);
+            return {
+                family, size: `${g[1]}×${g[2]}`, sizeKey: [Number(g[1]), Number(g[2])], instance: g[3],
+                goal, goalRank: g[4] === undefined ? (sub === "recognition" ? 1 : 0) : 2,
+            };
+        }
+        return { family, size: sub || "—", sizeKey: [], instance: base, goal: "original problem", goalRank: 0 };
+    }
+    /** the Solver rows of one problem: its solutions, a <goal>.answer folded into
+     *  the -eval/-tt plan it copies, and last "no solution" (the problem alone).
+     *  For a goals/ problem (GOAL), each of SOLVERS appears even without a plan
+     *  file -- CLARA ran both on every goal -- marked missing. */
+    function solverLeaves(ex, i, goal) {
+        const stem = ex.problem.file.replace(/\.pddl$/i, "");
+        const named = [];
+        let chosen;
+        ex.solutions.forEach((s, j) => {
+            const rest = s.file.slice(stem.length);
+            const m = /^-([a-z0-9]+)\.answer$/i.exec(rest);
+            if (rest === ".answer")
+                chosen = j;
+            else if (m && SOLVERS[m[1]])
+                named.push({ label: SOLVERS[m[1]], j, rank: m[1] === "eval" ? 0 : 1 });
+            else
+                named.push({ label: s.file.split("/").pop(), j, rank: 2 });
+        });
+        if (chosen !== undefined) {
+            // beside -eval/-tt plans (CLARA's goals/), <goal>.answer is the evidence
+            // plan; anywhere else (AAAI) it is just a solution, listed by name
+            const same = named.find((n) => n.rank < 2 && ex.solutions[n.j].text === ex.solutions[chosen].text);
+            if (same)
+                same.label += " · evidence plan";
+            else if (named.some((n) => n.rank < 2))
+                named.push({ label: "evidence plan", j: chosen, rank: -1 });
+            else
+                named.push({ label: ex.solutions[chosen].file.split("/").pop(), j: chosen, rank: 2 });
+        }
+        const rows = named;
+        if (goal) {
+            for (const [key, label] of Object.entries(SOLVERS)) {
+                if (!named.some((n) => n.label.startsWith(label)))
+                    rows.push({ label, rank: key === "eval" ? 0 : 1 });
+            }
+        }
+        rows.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
+        return [...rows.map((n) => n.j === undefined ? { label: n.label, example: i, missing: true }
+                : { label: n.label, example: i, solution: n.j }),
+            { label: "no solution (problem only)", example: i }];
+    }
+    function cmpKey(a, b) {
+        var _a, _b;
+        for (let k = 0; k < Math.max(a.length, b.length); k++) {
+            const d = ((_a = a[k]) !== null && _a !== void 0 ? _a : -1) - ((_b = b[k]) !== null && _b !== void 0 ? _b : -1);
+            if (d !== 0)
+                return d;
+        }
+        return 0;
+    }
+    /** the catalogue as a tree: families, then sizes, instances, goals; each goal
+     *  node's leaves are the Solver column */
+    function claraTree(examples) {
+        const families = new Map();
+        examples.forEach((ex, i) => {
+            const p = place(ex.problem.file);
+            if (!families.has(p.family))
+                families.set(p.family, new Map());
+            const sizes = families.get(p.family);
+            if (!sizes.has(p.size))
+                sizes.set(p.size, { key: p.sizeKey, inst: new Map() });
+            const insts = sizes.get(p.size).inst;
+            if (!insts.has(p.instance))
+                insts.set(p.instance, new Map());
+            const goals = insts.get(p.instance);
+            // two problems with one goal label (should not happen) stay apart
+            let label = p.goal;
+            for (let n = 2; goals.has(label); n++)
+                label = `${p.goal} (${n})`;
+            goals.set(label, { rank: p.goalRank, leaves: solverLeaves(ex, i, p.goalRank === 2) });
+        });
+        const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+        return [...families.keys()].sort(byName).map((fam) => {
+            const sizes = families.get(fam);
+            return {
+                label: fam,
+                children: [...sizes.keys()].sort((a, b) => cmpKey(sizes.get(a).key, sizes.get(b).key) || byName(a, b)).map((sz) => {
+                    const insts = sizes.get(sz).inst;
+                    return {
+                        label: sz,
+                        children: [...insts.keys()].sort(byName).map((k) => {
+                            const goals = insts.get(k);
+                            return {
+                                label: k,
+                                children: [...goals.keys()].sort((a, b) => goals.get(a).rank - goals.get(b).rank || byName(a, b))
+                                    .map((gl) => {
+                                    const leaves = goals.get(gl).leaves;
+                                    return { label: gl, children: [], leaves, missing: leaves.every((l) => l.solution === undefined) };
+                                }),
+                            };
+                        }),
+                    };
+                }),
+            };
+        });
+    }
+    Viz.claraTree = claraTree;
+})(Viz || (Viz = {}));
 // The page: choose a problem and optionally a domain and a solution, draw the
 // map, show the goal formula, the running utility and the solution, and step
 // through the solution.
@@ -1122,7 +1263,7 @@ var Viz;
         return e;
     }
     function esc(s) {
-        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
     function currentState() {
         if (!app.problem)
@@ -1239,9 +1380,40 @@ var Viz;
         app.errors.push(`${where}: ${e instanceof Error ? e.message : String(e)}`);
         showMessages();
     }
-    function loadProblem(name, text) {
+    /** a problem loaded without the domain it names gets the library's, as FiFO
+     *  falls back to its pddl/.  Kept instead:
+     *   - ANY domain the user chose or dropped (even one of another name, which is
+     *     then warned about, or one that failed to parse): never replaced behind
+     *     their back;
+     *   - the domain loaded WITH the problem (an example's, or load()'s caller's)
+     *     or the library's own, when it has the problem's name.
+     *  A domain left over from an earlier example gives way when the user then
+     *  loads a problem (MANUAL): examples/ has its own copies of some library
+     *  domains, older ones, and their costs would be silently wrong. */
+    function adoptLibraryDomain(problem, manual) {
+        var _a;
+        if (!problem.domain || app.domainSource === "user" || typeof VIZ_DOMAINS === "undefined")
+            return;
+        if (((_a = app.domain) === null || _a === void 0 ? void 0 : _a.name) === problem.domain && (app.domainSource === "library" || !manual))
+            return;
+        const lib = VIZ_DOMAINS.find((d) => d.name === problem.domain);
+        if (!lib)
+            return;
+        try {
+            app.domain = Viz.parseDomain(lib.text);
+            app.domainFile = `${lib.file} (FiFO's library)`;
+            app.domainSource = "library";
+            $("domain-file").value = "";
+        }
+        catch (e) {
+            fail(lib.file, e);
+        }
+    }
+    /** MANUAL: the user chose or dropped this problem (see adoptLibraryDomain) */
+    function loadProblem(name, text, manual = false) {
         try {
             const problem = Viz.parseProblem(text);
+            adoptLibraryDomain(problem, manual);
             app.problem = problem;
             app.problemFile = name;
             app.plan = undefined;
@@ -1256,7 +1428,10 @@ var Viz;
             return false;
         }
     }
-    function loadDomain(name, text) {
+    /** SOURCE: "user" when chosen or dropped, "given" when it comes with the
+     *  problem (an example, or load()'s caller) -- see adoptLibraryDomain */
+    function loadDomain(name, text, source = "given") {
+        app.domainSource = source;
         try {
             app.domain = Viz.parseDomain(text);
             app.domainFile = name;
@@ -1317,10 +1492,154 @@ var Viz;
         app.errors = [];
         readText(file).then((f) => then(f.name, f.text), (e) => fail(file.name, e));
     }
+    /** load example EX with its solution J (none if undefined), clearing the
+     *  file choosers and any domain loaded before */
+    function loadExample(ex, j) {
+        var _a, _b;
+        const s = j === undefined ? undefined : ex.solutions[j];
+        for (const id of ["problem-file", "domain-file", "solution-file"])
+            $(id).value = "";
+        app.domain = undefined;
+        app.domainSource = undefined;
+        app.domainFile = undefined;
+        load(ex.problem.file, ex.problem.text, s === null || s === void 0 ? void 0 : s.file, s === null || s === void 0 ? void 0 : s.text, 0, (_a = ex.domain) === null || _a === void 0 ? void 0 : _a.file, (_b = ex.domain) === null || _b === void 0 ? void 0 : _b.text);
+    }
+    /** The CLARA button: a column browser, Family / Size / Instance / Goal /
+     *  Solver.  Choosing a row fills the next column (a column of one row is
+     *  chosen at once); Open, a double click or Enter on a Solver row loads it.
+     *  Arrow keys move within and between columns. */
+    function initClara() {
+        const button = $("clara-button");
+        const list = typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES;
+        if (list.length === 0) {
+            button.hidden = true;
+            return;
+        }
+        const dialog = $("clara-dialog");
+        const cols = [...dialog.querySelectorAll(".clara-col ul")];
+        const openBtn = $("clara-open");
+        const tree = Viz.claraTree(list);
+        const chosen = []; // chosen[c]: the chosen row of column c
+        let active = 0; // the column the arrow keys move in
+        /** the rows of column c, given the choices to its left */
+        function rows(c) {
+            var _a;
+            let nodes = tree;
+            for (let k = 0; k < c; k++) {
+                const n = nodes[chosen[k]];
+                if (!n)
+                    return [];
+                if (k === 3)
+                    return (_a = n.leaves) !== null && _a !== void 0 ? _a : [];
+                nodes = n.children;
+            }
+            return nodes;
+        }
+        function leaf() {
+            return rows(4)[chosen[4]];
+        }
+        function render() {
+            // a column of one row needs no choice
+            for (let c = 0; c < 5; c++) {
+                const r = rows(c);
+                if (chosen[c] === undefined && r.length === 1)
+                    chosen[c] = 0;
+            }
+            cols.forEach((ul, c) => {
+                ul.innerHTML = rows(c).map((r, k) => `<li data-col="${c}" data-row="${k}" class="${k === chosen[c] ? "chosen" : ""}${c === active && k === chosen[c] ? " active" : ""}` +
+                    `${r.missing ? " missing" : ""}" title="${esc(r.label)}${r.missing ? " (no solution file)" : ""}">${esc(r.label)}</li>`).join("");
+                const cur = ul.querySelector("li.chosen");
+                if (cur)
+                    cur.scrollIntoView({ block: "nearest" });
+            });
+            const l = leaf();
+            openBtn.disabled = !l;
+            $("clara-path").textContent = l
+                ? list[l.example].problem.file + (l.solution !== undefined
+                    ? "  +  " + list[l.example].solutions[l.solution].file.split("/").pop()
+                    : l.missing ? `  (no ${l.label} plan: the problem alone)` : "")
+                : "Choose a family, size, instance, goal and solver.";
+        }
+        function choose(c, k) {
+            var _a;
+            if (k < 0 || k >= rows(c).length)
+                return;
+            if (chosen[c] === k) {
+                // the same row again: move the keyboard mark without rebuilding the
+                // lists, so the row clicked stays in the page and a double click on it
+                // reaches the dblclick listener
+                active = c;
+                dialog.querySelectorAll("li.active").forEach((li) => li.classList.remove("active"));
+                (_a = cols[c].querySelector("li.chosen")) === null || _a === void 0 ? void 0 : _a.classList.add("active");
+                return;
+            }
+            chosen.length = c; // a new choice clears the columns to its right
+            chosen[c] = k;
+            active = c;
+            render();
+        }
+        function open() {
+            const l = leaf();
+            if (!l)
+                return;
+            dialog.close();
+            loadExample(list[l.example], l.solution);
+        }
+        // the columns take the keyboard focus (tabindex in index.html): rows can't,
+        // and with focus on Cancel, Enter would cancel
+        const colsBox = dialog.querySelector(".clara-cols");
+        button.addEventListener("click", () => {
+            render();
+            dialog.showModal();
+            colsBox.focus();
+        });
+        dialog.addEventListener("click", (ev) => {
+            // the backdrop: a click outside the dialog's box (its own padding is
+            // inside, though the event's target is the dialog there too)
+            const r = dialog.getBoundingClientRect();
+            if (ev.target === dialog &&
+                (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) {
+                dialog.close();
+                return;
+            }
+            const li = ev.target.closest("li[data-col]");
+            if (li) {
+                choose(Number(li.dataset.col), Number(li.dataset.row));
+                colsBox.focus();
+            }
+        });
+        dialog.addEventListener("dblclick", (ev) => {
+            const li = ev.target.closest("li[data-col]");
+            if (li && li.dataset.col === "4")
+                open();
+        });
+        dialog.addEventListener("keydown", (ev) => {
+            var _a, _b;
+            if (ev.target.tagName === "BUTTON" && ev.key === "Enter")
+                return;
+            const k = (_a = chosen[active]) !== null && _a !== void 0 ? _a : -1;
+            if (ev.key === "ArrowDown")
+                choose(active, k + 1);
+            else if (ev.key === "ArrowUp")
+                choose(active, Math.max(0, k - 1));
+            else if (ev.key === "ArrowRight" && active < 4 && chosen[active] !== undefined)
+                choose(active + 1, (_b = chosen[active + 1]) !== null && _b !== void 0 ? _b : 0);
+            else if (ev.key === "ArrowLeft" && active > 0) {
+                active--;
+                render();
+            }
+            else if (ev.key === "Enter")
+                open();
+            else
+                return;
+            ev.preventDefault();
+        });
+        openBtn.addEventListener("click", open);
+        $("clara-cancel").addEventListener("click", () => dialog.close());
+    }
     function initExamples() {
         const sel = $("examples");
-        const list = (typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES)
-            .concat(typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES);
+        const list = typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES;
         if (list.length === 0) {
             sel.parentElement.hidden = true;
             return;
@@ -1341,28 +1660,22 @@ var Viz;
             sel.appendChild(group);
         });
         sel.addEventListener("change", () => {
-            var _a, _b;
             if (!sel.value)
                 return;
             const [i, j] = sel.value.split(":").map(Number);
-            const ex = list[i];
-            const s = j === undefined ? undefined : ex.solutions[j];
-            for (const id of ["problem-file", "domain-file", "solution-file"])
-                $(id).value = "";
-            app.domain = undefined;
-            app.domainFile = undefined;
-            load(ex.problem.file, ex.problem.text, s === null || s === void 0 ? void 0 : s.file, s === null || s === void 0 ? void 0 : s.text, 0, (_a = ex.domain) === null || _a === void 0 ? void 0 : _a.file, (_b = ex.domain) === null || _b === void 0 ? void 0 : _b.text);
+            loadExample(list[i], j);
             sel.value = "";
             sel.blur();
         });
     }
     function init() {
         initExamples();
+        initClara();
         const pf = $("problem-file");
         const df = $("domain-file");
         const sf = $("solution-file");
-        pf.addEventListener("change", () => readInto(pf, loadProblem));
-        df.addEventListener("change", () => readInto(df, loadDomain));
+        pf.addEventListener("change", () => readInto(pf, (n, t) => loadProblem(n, t, true)));
+        df.addEventListener("change", () => readInto(df, (n, t) => loadDomain(n, t, "user")));
         sf.addEventListener("change", () => readInto(sf, loadPlan));
         $("first").addEventListener("click", () => go(0));
         $("prev").addEventListener("click", () => go(app.step - 1));
@@ -1377,6 +1690,8 @@ var Viz;
             const tag = ev.target.tagName;
             if (tag === "INPUT" || tag === "SELECT")
                 return;
+            if (document.querySelector("dialog[open]"))
+                return; // the CLARA browser has the keys
             // leave browser shortcuts (Cmd/Alt+arrows navigate) and, with nothing to
             // step through, ordinary scrolling alone
             if (!app.plan || ev.metaKey || ev.ctrlKey || ev.altKey)
@@ -1407,8 +1722,8 @@ var Viz;
                 const prob = texts.find((t) => isPddl(t) && t !== dom);
                 const sol = texts.find((t) => t !== dom && t !== prob);
                 if (dom)
-                    loadDomain(dom.name, dom.text);
-                if (prob && !loadProblem(prob.name, prob.text))
+                    loadDomain(dom.name, dom.text, "user");
+                if (prob && !loadProblem(prob.name, prob.text, true))
                     return;
                 if (sol)
                     loadPlan(sol.name, sol.text);

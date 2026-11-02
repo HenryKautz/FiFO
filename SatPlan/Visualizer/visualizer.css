@@ -154,6 +154,47 @@ aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .solution li.current { background: var(--current); }
 .solution li .noop { color: var(--muted); font-style: italic; }
 
+/* the CLARA button and its column browser */
+.clara-button, .clara-foot button {
+  font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+}
+.clara-button { font-weight: 650; align-self: flex-end; }
+.clara-foot button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.clara-foot button:disabled { opacity: .45; cursor: default; }
+.clara-dialog {
+  width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); color: var(--text);
+}
+.clara-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.clara-dialog h2 { font-size: 15px; margin: 0 0 8px; }
+.clara-cols {
+  display: grid; grid-template-columns: 1.3fr 0.8fr 0.6fr 2.2fr 1.4fr;
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  height: min(60vh, 520px);
+}
+.clara-cols:focus { outline: none; }
+.clara-cols:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.clara-col { display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--border); }
+.clara-col:first-child { border-left: none; }
+.clara-col h3 {
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  margin: 0; padding: 5px 8px; border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.clara-col ul { list-style: none; margin: 0; padding: 2px 0; overflow: auto; flex: 1; font-size: 13px; }
+.clara-col li { padding: 3px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clara-col li:hover { background: var(--bg); }
+.clara-col li.chosen { background: var(--current); font-weight: 600; }
+.clara-col li.missing { color: var(--muted); opacity: .6; font-style: italic; }
+.clara-col li.chosen.active { outline: 2px solid #2563eb; outline-offset: -2px; }
+.clara-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.clara-path { flex: 1; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 800px) {
+  .clara-cols { grid-template-columns: repeat(5, minmax(7em, 1fr)); overflow-x: auto; }
+}
+
 /* circuit visualizer: observed actions and goal probabilities on the map */
 .map-caption { font-size: 12px; color: var(--muted); padding: 2px 6px 0; }
 .obs-move line { stroke-width: 3.5; opacity: .8; }

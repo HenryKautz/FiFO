@@ -8,6 +8,17 @@ from the **Examples** menu, or choose a problem -- and optionally its domain
 anywhere on the page (a domain file is told from a problem by its contents). Nothing is uploaded
 and no server is needed. It does not run a planner (yet).
 
+A problem names its domain, `(:domain clara-logistics)`, but a page opened
+from a file can read only the files it is given, so it cannot look the domain
+up beside the problem as FiFO does. Instead it carries FiFO's domain library,
+`pddl/` (bundled into `domains.js`): a problem whose domain is there gets it
+automatically, as FiFO's last resort does, and its costs are exact. Choose or
+drop a domain file only for a domain the library lacks, or to override it.
+(The domain holds no prices: it says which function prices which action,
+`(increase (total-cost) (drive-cost))`, and the problem's `:init` gives the
+values, which is where ppgen's `--drive-cost` etc. go. Without a domain the
+costs are guessed from the action names and marked ≈.)
+
 (A web page cannot choose the folder its file dialog opens in -- browsers don't
 allow it -- which is why the examples have a menu of their own. Most browsers
 reopen the dialog in the last folder used.)
@@ -75,6 +86,39 @@ each problem alone and with each solution whose file name starts with the
 problem's name followed by `.` or `-`, and loads the problem's domain with it.
 To add an example, put its files in `examples/` and run `build.sh`.
 
+With a CLARA checkout beside FiFO (or its path as the argument, or in
+`CLARA_DIR`), `bash SatPlan/Visualizer/build-clara-examples.sh` adds a **CLARA** button
+left of the Examples menu: it mirrors SimpleGrid, TwoPackage,
+TwoPackageOneway, ThreePackage, FourPackage (with their `goals/` and
+`recognition/`) and AAAI-2010-Benchmarks into `clara-examples/` as symbolic
+links, and `build.sh` bundles that into `clara-examples.js`, which the page
+loads after `examples.js` (about 1,100 problems, 17 MB). Both are git-ignored,
+since they depend on the local checkout; rerun the script after pulling CLARA.
+Without them the button is hidden.
+In a tree, a problem's domain is the one beside it, else the nearest parent
+directory's, and its solutions are those in its own directory.
+
+The button opens a column browser, read from CLARA's file names
+(`src/clara.ts`):
+
+| Column | From | Example |
+|---|---|---|
+| Family | the top directory | `ThreePackage` |
+| Size | `gridNxM-` | `5×5` |
+| Instance | the seed `K` of `gridNxM-K` | `1` |
+| Goal | `goals/gridNxM-K-<goal>.pddl`, plus the problem itself (`original problem`) and `recognition/` (`recognition problem`) | `pkg1 at p2-4, pkg2 at p3-4, pkg3 at p4-3` |
+| Solver | `-eval.answer` (EvalMaxSAT), `-tt.answer` (tt-open-wbo-inc), or the problem alone | `EvalMaxSAT · evidence plan` |
+
+`<goal>.answer`, the plan CLARA cut the evidence from, is a copy of one of
+the two; it is not listed again, but marks that one `· evidence plan`. The
+AAAI benchmarks are not grids: their Size is the benchmark's directory and
+their Instance the file name. A solver with no plan file for that goal (it
+timed out, or was stopped) is grayed, and so is a goal with no plan at all;
+either can still be opened, to show the problem alone, as can
+"no solution (problem only)". Choosing a row fills the next column; Open, a
+double click or Enter loads the problem, its domain and the solution. The
+arrow keys move within and between columns.
+
 ## The circuit visualizer
 
 `circuit.html` is a second page, for **plan recognition over a compiled
@@ -118,8 +162,8 @@ the parsing, the refusals and the HTTP routes.
 ## Code
 
 TypeScript in `src/`, compiled to the single script `visualizer.js`; the
-examples are bundled into `examples.js` (a page opened from a file may not read
-other files itself). Both are checked in, so the page works without building:
+examples are bundled into `examples.js` and FiFO's domain library into `domains.js` (a page opened from a file may not read
+other files itself). All three are checked in, so the page works without building:
 
 | File | Contents |
 |---|---|
@@ -128,17 +172,18 @@ other files itself). Both are checked in, so the page works without building:
 | `src/domain.ts` | a domain's action parameters and costs; the cost of a ground action |
 | `src/plan.ts` | the three solution formats, plan simulation, goal evaluation, running utility |
 | `src/render.ts` | the map as SVG |
-| `src/app.ts` | the page: file loading, panels, stepping; `Viz.load(...)` for programmatic use |
+| `src/clara.ts` | the CLARA browser's columns, from CLARA's file names |
+| `src/app.ts` | the page: file loading, panels, stepping, the CLARA browser; `Viz.load(...)` for programmatic use |
 | `src/circuit-app.ts` | the circuit visualizer page (built into `circuit.js` with the shared modules) |
 | `server/circuit_server.py` | the circuit visualizer's HTTP server, sessions, evidence files; drives the Lisp |
 | `server/circuit-server.lisp` | the Lisp side: load a circuit, find the hypotheses, clamp and evaluate |
-| `tools/bundle-examples.ts` | writes `examples.js` from `examples/` |
+| `tools/bundle-examples.ts` | writes `examples.js` from `examples/`, `clara-examples.js` from `clara-examples/`, and `domains.js` from `pddl/` |
 
-After changing anything in `src/` or `examples/`, rebuild and test:
+After changing anything in `src/`, `examples/` or `pddl/`, rebuild and test:
 
 ```sh
-bash SatPlan/Visualizer/build.sh      # writes visualizer.js, circuit.js and examples.js
-bash tests/run-test-visualizer.sh     # also fails if visualizer.js or examples.js is stale
+bash SatPlan/Visualizer/build.sh      # writes visualizer.js, circuit.js, examples.js, domains.js
+bash tests/run-test-visualizer.sh     # also fails if visualizer.js, examples.js or domains.js is stale
 bash tests/run-test-circuit-viz.sh    # the circuit visualizer; fails if circuit.js is stale
 ```
 

@@ -360,6 +360,84 @@ namespace VizTest {
           exs.every((e) => e.problem.text === read(e.problem.file) && e.solutions.every((s) => s.text === read(s.file))));
   }
 
+  console.log("=== the domain library (domains.js) ===");
+  {
+    const LIB = path.join(process.argv[2], "..", "..", "pddl");
+    const js = fs.readFileSync(path.join(process.argv[2], "domains.js"), "utf8");
+    const doms = new Function(js + "\nreturn VIZ_DOMAINS;")() as { name: string; file: string; text: string }[];
+    const files = fs.readdirSync(LIB).filter((f: string) => f.endsWith(".pddl")).sort();
+    check(`every domain in pddl/ (${files.length}), each with its file's exact text`,
+          doms.map((d) => d.file).join() === files.map((f: string) => "pddl/" + f).join() &&
+          doms.every((d) => d.text === fs.readFileSync(path.join(LIB, d.file.slice(5)), "utf8")),
+          doms.map((d) => d.file).join());
+    check("each is named by its (define (domain NAME)), as the parser reads it",
+          doms.every((d) => Viz.parseDomain(d.text).name === d.name) && doms.some((d) => d.name === "clara-logistics"));
+  }
+
+  console.log("=== the CLARA browser's columns (clara.ts) ===");
+  {
+    const P = (file: string, ...sols: [string, string][]): Viz.Example =>
+      ({ problem: { file, text: "" }, solutions: sols.map(([f, t]) => ({ file: f, text: t })) });
+    const exs = [
+      P("TwoPackage/goals/grid10x10-2-pkg1-p2-3.pddl",
+        ["TwoPackage/goals/grid10x10-2-pkg1-p2-3-tt.answer", "T"],
+        ["TwoPackage/goals/grid10x10-2-pkg1-p2-3-eval.answer", "E"],
+        ["TwoPackage/goals/grid10x10-2-pkg1-p2-3.answer", "E"]),
+      P("TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4.pddl",
+        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4-tt.answer", "T"],
+        ["TwoPackage/goals/grid3x3-1-pkg1-p2-4-pkg2-p3-4.answer", "X"]),
+      P("TwoPackage/recognition/grid3x3-1.pddl"),
+      P("TwoPackage/grid3x3-1.pddl"),
+      P("TwoPackage/grid3x3-10.pddl"),
+      P("TwoPackage/grid3x3-2.pddl"),
+      P("AAAI-2010-Benchmarks/BlockWords/pb1.pddl", ["AAAI-2010-Benchmarks/BlockWords/pb1.answer", "A"]),
+      P("TwoPackage/goals/grid3x3-1-pkg2-p1-1.pddl"),   // a goal neither solver planned
+    ];
+    const tree = Viz.claraTree(exs);
+    const labels = (ns: { label: string }[]) => ns.map((n) => n.label).join(" | ");
+    const two = tree.find((n) => n.label === "TwoPackage")!;
+    check("families sorted; sizes by number (3×3 before 10×10)",
+          labels(tree) === "AAAI-2010-Benchmarks | TwoPackage" && labels(two.children) === "3×3 | 10×10",
+          labels(tree) + " / " + labels(two.children));
+    const g3 = two.children[0];
+    check("instances by number (1, 2, 10)", labels(g3.children) === "1 | 2 | 10", labels(g3.children));
+    const goals = g3.children[0].children;
+    check("goals: the original problem, its recognition version, then each goal by name",
+          labels(goals) === "original problem | recognition problem | pkg1 at p2-4, pkg2 at p3-4 | pkg2 at p1-1",
+          labels(goals));
+    check("a goal with no solution file is grayed (the problem and its recognition version too); one with a plan is not",
+          goals.map((g) => g.missing).join() === "true,true,false,true", goals.map((g) => g.missing).join());
+    const leafStr = (ls: Viz.ClaraLeaf[]) =>
+      ls.map((l) => `${l.label}=${l.example}:${l.missing ? "~" : l.solution ?? "-"}`).join(" | ");
+    check("an unplanned goal lists both solvers grayed, and can still be opened alone",
+          leafStr(goals[3].leaves!) === "EvalMaxSAT=7:~ | tt-open-wbo-inc=7:~ | no solution (problem only)=7:-",
+          leafStr(goals[3].leaves!));
+    const g10 = two.children[1].children[0].children[0].leaves!;
+    check("solvers: <goal>.answer folds into the plan it copies; then the problem alone",
+          leafStr(g10) === "EvalMaxSAT · evidence plan=0:1 | tt-open-wbo-inc=0:0 | no solution (problem only)=0:-", leafStr(g10));
+    const gx = goals[2].leaves!;
+    check("a <goal>.answer that copies neither plan is listed itself, first; the solver with no file is grayed",
+          leafStr(gx) === "evidence plan=1:1 | EvalMaxSAT=1:~ | tt-open-wbo-inc=1:0 | no solution (problem only)=1:-",
+          leafStr(gx));
+    const aaai = tree[0];
+    check("a non-grid benchmark: Size is its directory, Instance its name",
+          labels(aaai.children) === "BlockWords" && labels(aaai.children[0].children) === "pb1" &&
+          leafStr(aaai.children[0].children[0].children[0].leaves!) === "pb1.answer=6:0 | no solution (problem only)=6:-");
+    const all: string[] = [];
+    const walk = (ns: Viz.ClaraNode[]) => ns.forEach((n) => {
+      n.leaves?.forEach((l) => { if (!l.missing) all.push(`${l.example}:${l.solution ?? "-"}`); });
+      walk(n.children);
+    });
+    walk(tree);
+    // all but 0:2, the grid10x10 <goal>.answer folded into its identical -eval
+    const want = exs.flatMap((e, i) => [`${i}:-`, ...e.solutions.map((_, j) => `${i}:${j}`)])
+      .filter((x) => x !== "0:2").sort();
+    check("every problem and solution (but a folded copy) is reachable exactly once",
+          all.sort().join() === want.join(), all.join());
+    check("claraGoalLabel refuses a name that is not object-place pairs",
+          Viz.claraGoalLabel("pkg1-p2-3x") === undefined && Viz.claraGoalLabel("truck1-p8-4") === "truck1 at p8-4");
+  }
+
   console.log(`\n=== summary: ${passed} passed, ${failed} failed ===`);
   process.exit(failed === 0 ? 0 : 1);
 }

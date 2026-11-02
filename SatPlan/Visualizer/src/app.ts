@@ -8,6 +8,9 @@ namespace Viz {
     problemFile?: string;
     domain?: Domain;
     domainFile?: string;
+    /** where the domain (or a failed attempt at one) came from: the user's
+     *  chooser or a drop, the caller with the problem, or FiFO's library */
+    domainSource?: "user" | "given" | "library";
     plan?: Plan;
     planFile?: string;
     step: number;
@@ -25,7 +28,7 @@ namespace Viz {
   }
 
   function esc(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   function currentState(): State | undefined {
@@ -144,9 +147,40 @@ namespace Viz {
     showMessages();
   }
 
-  function loadProblem(name: string, text: string): boolean {
+  /** domains.js (written by build.sh from FiFO's pddl/) defines this: the
+   *  domain library, by name. */
+  declare const VIZ_DOMAINS: { name: string; file: string; text: string }[] | undefined;
+
+  /** a problem loaded without the domain it names gets the library's, as FiFO
+   *  falls back to its pddl/.  Kept instead:
+   *   - ANY domain the user chose or dropped (even one of another name, which is
+   *     then warned about, or one that failed to parse): never replaced behind
+   *     their back;
+   *   - the domain loaded WITH the problem (an example's, or load()'s caller's)
+   *     or the library's own, when it has the problem's name.
+   *  A domain left over from an earlier example gives way when the user then
+   *  loads a problem (MANUAL): examples/ has its own copies of some library
+   *  domains, older ones, and their costs would be silently wrong. */
+  function adoptLibraryDomain(problem: Problem, manual: boolean) {
+    if (!problem.domain || app.domainSource === "user" || typeof VIZ_DOMAINS === "undefined") return;
+    if (app.domain?.name === problem.domain && (app.domainSource === "library" || !manual)) return;
+    const lib = VIZ_DOMAINS.find((d) => d.name === problem.domain);
+    if (!lib) return;
+    try {
+      app.domain = parseDomain(lib.text);
+      app.domainFile = `${lib.file} (FiFO's library)`;
+      app.domainSource = "library";
+      ($("domain-file") as HTMLInputElement).value = "";
+    } catch (e) {
+      fail(lib.file, e);
+    }
+  }
+
+  /** MANUAL: the user chose or dropped this problem (see adoptLibraryDomain) */
+  function loadProblem(name: string, text: string, manual = false): boolean {
     try {
       const problem = parseProblem(text);
+      adoptLibraryDomain(problem, manual);
       app.problem = problem;
       app.problemFile = name;
       app.plan = undefined;
@@ -161,7 +195,10 @@ namespace Viz {
     }
   }
 
-  function loadDomain(name: string, text: string) {
+  /** SOURCE: "user" when chosen or dropped, "given" when it comes with the
+   *  problem (an example, or load()'s caller) -- see adoptLibraryDomain */
+  function loadDomain(name: string, text: string, source: "user" | "given" = "given") {
+    app.domainSource = source;
     try {
       app.domain = parseDomain(text);
       app.domainFile = name;
@@ -224,20 +261,143 @@ namespace Viz {
   /** examples.js (written by build.sh from examples/) defines this: each
    *  example problem, its domain if examples/ has it, and the solutions whose
    *  file names start with the problem's name. */
-  interface Example {
-    problem: { file: string; text: string };
-    domain?: { file: string; text: string };
-    solutions: { file: string; text: string }[];
-  }
   declare const VIZ_EXAMPLES: Example[] | undefined;
   /** clara-examples.js (git-ignored; build-clara-examples.sh) defines this
-   *  when there is a local CLARA checkout: its problems follow examples/'s. */
+   *  when there is a local CLARA checkout: the CLARA button's browser. */
   declare const VIZ_CLARA_EXAMPLES: Example[] | undefined;
+
+  /** load example EX with its solution J (none if undefined), clearing the
+   *  file choosers and any domain loaded before */
+  function loadExample(ex: Example, j: number | undefined) {
+    const s = j === undefined ? undefined : ex.solutions[j];
+    for (const id of ["problem-file", "domain-file", "solution-file"]) ($(id) as HTMLInputElement).value = "";
+    app.domain = undefined;
+    app.domainSource = undefined;
+    app.domainFile = undefined;
+    load(ex.problem.file, ex.problem.text, s?.file, s?.text, 0, ex.domain?.file, ex.domain?.text);
+  }
+
+  /** The CLARA button: a column browser, Family / Size / Instance / Goal /
+   *  Solver.  Choosing a row fills the next column (a column of one row is
+   *  chosen at once); Open, a double click or Enter on a Solver row loads it.
+   *  Arrow keys move within and between columns. */
+  function initClara() {
+    const button = $("clara-button") as HTMLButtonElement;
+    const list = typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES;
+    if (list.length === 0) {
+      button.hidden = true;
+      return;
+    }
+    const dialog = $("clara-dialog") as HTMLDialogElement;
+    const cols = [...dialog.querySelectorAll(".clara-col ul")] as HTMLElement[];
+    const openBtn = $("clara-open") as HTMLButtonElement;
+    const tree = claraTree(list);
+    const chosen: number[] = [];   // chosen[c]: the chosen row of column c
+    let active = 0;                // the column the arrow keys move in
+
+    /** the rows of column c, given the choices to its left */
+    function rows(c: number): { label: string; missing?: boolean }[] {
+      let nodes: ClaraNode[] = tree;
+      for (let k = 0; k < c; k++) {
+        const n = nodes[chosen[k]];
+        if (!n) return [];
+        if (k === 3) return n.leaves ?? [];
+        nodes = n.children;
+      }
+      return nodes;
+    }
+    function leaf(): ClaraLeaf | undefined {
+      return (rows(4) as ClaraLeaf[])[chosen[4]];
+    }
+    function render() {
+      // a column of one row needs no choice
+      for (let c = 0; c < 5; c++) {
+        const r = rows(c);
+        if (chosen[c] === undefined && r.length === 1) chosen[c] = 0;
+      }
+      cols.forEach((ul, c) => {
+        ul.innerHTML = rows(c).map((r, k) =>
+          `<li data-col="${c}" data-row="${k}" class="${k === chosen[c] ? "chosen" : ""}${c === active && k === chosen[c] ? " active" : ""}` +
+          `${r.missing ? " missing" : ""}" title="${esc(r.label)}${r.missing ? " (no solution file)" : ""}">${esc(r.label)}</li>`).join("");
+        const cur = ul.querySelector("li.chosen") as HTMLElement | null;
+        if (cur) cur.scrollIntoView({ block: "nearest" });
+      });
+      const l = leaf();
+      openBtn.disabled = !l;
+      $("clara-path").textContent = l
+        ? list[l.example].problem.file + (l.solution !== undefined
+          ? "  +  " + list[l.example].solutions[l.solution].file.split("/").pop()
+          : l.missing ? `  (no ${l.label} plan: the problem alone)` : "")
+        : "Choose a family, size, instance, goal and solver.";
+    }
+    function choose(c: number, k: number) {
+      if (k < 0 || k >= rows(c).length) return;
+      if (chosen[c] === k) {
+        // the same row again: move the keyboard mark without rebuilding the
+        // lists, so the row clicked stays in the page and a double click on it
+        // reaches the dblclick listener
+        active = c;
+        dialog.querySelectorAll("li.active").forEach((li) => li.classList.remove("active"));
+        cols[c].querySelector("li.chosen")?.classList.add("active");
+        return;
+      }
+      chosen.length = c;   // a new choice clears the columns to its right
+      chosen[c] = k;
+      active = c;
+      render();
+    }
+    function open() {
+      const l = leaf();
+      if (!l) return;
+      dialog.close();
+      loadExample(list[l.example], l.solution);
+    }
+
+    // the columns take the keyboard focus (tabindex in index.html): rows can't,
+    // and with focus on Cancel, Enter would cancel
+    const colsBox = dialog.querySelector(".clara-cols") as HTMLElement;
+    button.addEventListener("click", () => {
+      render();
+      dialog.showModal();
+      colsBox.focus();
+    });
+    dialog.addEventListener("click", (ev) => {
+      // the backdrop: a click outside the dialog's box (its own padding is
+      // inside, though the event's target is the dialog there too)
+      const r = dialog.getBoundingClientRect();
+      if (ev.target === dialog &&
+          (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) {
+        dialog.close();
+        return;
+      }
+      const li = (ev.target as HTMLElement).closest("li[data-col]") as HTMLElement | null;
+      if (li) {
+        choose(Number(li.dataset.col), Number(li.dataset.row));
+        colsBox.focus();
+      }
+    });
+    dialog.addEventListener("dblclick", (ev) => {
+      const li = (ev.target as HTMLElement).closest("li[data-col]") as HTMLElement | null;
+      if (li && li.dataset.col === "4") open();
+    });
+    dialog.addEventListener("keydown", (ev) => {
+      if ((ev.target as HTMLElement).tagName === "BUTTON" && ev.key === "Enter") return;
+      const k = chosen[active] ?? -1;
+      if (ev.key === "ArrowDown") choose(active, k + 1);
+      else if (ev.key === "ArrowUp") choose(active, Math.max(0, k - 1));
+      else if (ev.key === "ArrowRight" && active < 4 && chosen[active] !== undefined) choose(active + 1, chosen[active + 1] ?? 0);
+      else if (ev.key === "ArrowLeft" && active > 0) { active--; render(); }
+      else if (ev.key === "Enter") open();
+      else return;
+      ev.preventDefault();
+    });
+    openBtn.addEventListener("click", open);
+    $("clara-cancel").addEventListener("click", () => dialog.close());
+  }
 
   function initExamples() {
     const sel = $("examples") as HTMLSelectElement;
-    const list = (typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES)
-      .concat(typeof VIZ_CLARA_EXAMPLES === "undefined" ? [] : VIZ_CLARA_EXAMPLES);
+    const list = typeof VIZ_EXAMPLES === "undefined" ? [] : VIZ_EXAMPLES;
     if (list.length === 0) {
       (sel.parentElement as HTMLElement).hidden = true;
       return;
@@ -260,12 +420,7 @@ namespace Viz {
     sel.addEventListener("change", () => {
       if (!sel.value) return;
       const [i, j] = sel.value.split(":").map(Number);
-      const ex = list[i];
-      const s = j === undefined ? undefined : ex.solutions[j];
-      for (const id of ["problem-file", "domain-file", "solution-file"]) ($(id) as HTMLInputElement).value = "";
-      app.domain = undefined;
-      app.domainFile = undefined;
-      load(ex.problem.file, ex.problem.text, s?.file, s?.text, 0, ex.domain?.file, ex.domain?.text);
+      loadExample(list[i], j);
       sel.value = "";
       sel.blur();
     });
@@ -273,11 +428,12 @@ namespace Viz {
 
   function init() {
     initExamples();
+    initClara();
     const pf = $("problem-file") as HTMLInputElement;
     const df = $("domain-file") as HTMLInputElement;
     const sf = $("solution-file") as HTMLInputElement;
-    pf.addEventListener("change", () => readInto(pf, loadProblem));
-    df.addEventListener("change", () => readInto(df, loadDomain));
+    pf.addEventListener("change", () => readInto(pf, (n, t) => loadProblem(n, t, true)));
+    df.addEventListener("change", () => readInto(df, (n, t) => loadDomain(n, t, "user")));
     sf.addEventListener("change", () => readInto(sf, loadPlan));
     $("first").addEventListener("click", () => go(0));
     $("prev").addEventListener("click", () => go(app.step - 1));
@@ -290,6 +446,7 @@ namespace Viz {
     document.addEventListener("keydown", (ev) => {
       const tag = (ev.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "SELECT") return;
+      if (document.querySelector("dialog[open]")) return;   // the CLARA browser has the keys
       // leave browser shortcuts (Cmd/Alt+arrows navigate) and, with nothing to
       // step through, ordinary scrolling alone
       if (!app.plan || ev.metaKey || ev.ctrlKey || ev.altKey) return;
@@ -313,8 +470,8 @@ namespace Viz {
         const dom = texts.find((t) => isPddl(t) && isDomainText(t.text));
         const prob = texts.find((t) => isPddl(t) && t !== dom);
         const sol = texts.find((t) => t !== dom && t !== prob);
-        if (dom) loadDomain(dom.name, dom.text);
-        if (prob && !loadProblem(prob.name, prob.text)) return;
+        if (dom) loadDomain(dom.name, dom.text, "user");
+        if (prob && !loadProblem(prob.name, prob.text, true)) return;
         if (sol) loadPlan(sol.name, sol.text);
       }, (e) => fail("dropped files", e));
     });
