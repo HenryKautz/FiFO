@@ -166,7 +166,9 @@ It needs a server, which holds the circuit in FiFO's Lisp:
 python3 SatPlan/Visualizer/server/circuit_server.py --open
     # the bundled example (circuit-examples/: CLARA TwoPackage grid3x3-1)
 python3 SatPlan/Visualizer/server/circuit_server.py --clara ~/Programming/CLARA --open
-    # CLARA's circuits, in the page's CLARA browser (below)
+    # CLARA's circuits, in the page's CLARA browser (below); the same as
+bash SatPlan/Visualizer/run-circuit-clara.sh
+    # which finds CLARA as build-clara-examples.sh does; more options go to the server
 python3 SatPlan/Visualizer/server/circuit_server.py \
     --session PROBLEM.pddl CIRCUIT.dnnf EVIDENCE-DIR-or-FILES... --open
 ```
