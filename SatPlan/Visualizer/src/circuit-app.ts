@@ -195,19 +195,61 @@ namespace Viz {
     return state;
   }
 
-  /** Each goal literal's P(h | E) by its label, for the literals that are
-   *  hypotheses; empty without a usable reply. */
+  /** A hypothesis's conjuncts as texts: "(and A B)" gives [A, B]; anything
+   *  else is its own one conjunct. */
+  export function conjuncts(goal: string): string[] {
+    try {
+      const f = readAll(goal)[0];
+      if (isList(f) && f[0] === "and") return f.slice(1).map((x) => (isList(x) ? show(x) : String(x)));
+      return [isList(f) ? show(f) : String(f)];
+    } catch {
+      return [goal];
+    }
+  }
+
+  /** Whether no two of the GOALS (hypotheses) can hold together because they
+   *  put one object at two places: each pair has an (at o p) and an (at o q),
+   *  p ≠ q.  CLARA's ThreePackage hypotheses -- each places every package --
+   *  are; then, the goal requiring one of them, a destination's probability
+   *  is the sum over the hypotheses that include it. */
+  export function mutuallyExclusive(goals: string[]): boolean {
+    const places = goals.map((g) => {
+      const m = new Map<string, string>();
+      for (const c of conjuncts(g)) {
+        const x = /^\(at (\S+) (\S+)\)$/.exec(c);
+        if (x) m.set(x[1], x[2]);
+      }
+      return m;
+    });
+    return places.every((a, i) => places.every((b, j) =>
+      j <= i || [...a].some(([o, p]) => b.has(o) && b.get(o) !== p)));
+  }
+
+  /** Each goal literal's P(h | E) by its label: a literal that is itself a
+   *  hypothesis gets the hypothesis's; with conjunctions as the hypotheses
+   *  (the recognition problem's, the page drawing the top-level problem's
+   *  destinations), a destination gets the sum over the hypotheses that
+   *  include it -- only when they are mutually exclusive, so that sum is its
+   *  probability.  Empty without a usable reply. */
   function goalProbs(): Map<string, number> {
     const prob = new Map<string, number>();
     const p = cs.problem;
     const c = cs.circuit;
     const r = cs.reply;
-    if (p && c && r && !r.unsat && r.marginal) {
+    if (!(p && c && r && !r.unsat && r.marginal)) return prob;
+    const compound = c.hypotheses.some((h) => conjuncts(h.goal).length > 1);
+    if (compound && !mutuallyExclusive(c.hypotheses.map((h) => h.goal))) return prob;
+    for (const lit of p.goalLiterals) {
+      let sum = 0;
+      let any = false;
       c.hypotheses.forEach((h, i) => {
-        const lit = p.goalLiterals.find((g) => g.text === h.goal);
         const m = r.marginal![i];
-        if (lit && m !== null && m !== undefined) prob.set(lit.label, m);
+        if (m !== null && m !== undefined && (h.goal === lit.text || (compound && conjuncts(h.goal).includes(lit.text)))) {
+          sum += m;
+          any = true;
+        }
       });
+      if (any) prob.set(lit.label, Math.min(1, sum));
     }
     return prob;
   }
@@ -452,8 +494,8 @@ namespace Viz {
 
   /** Open a CLARA browser row: its circuit -- loaded only when it is not the
    *  one already shown, since a big circuit takes long to load -- and its
-   *  evidence with every observation applied (the row names a condition, e.g.
-   *  25% of a plan observed), or no evidence. */
+   *  goal's evidence, before the first observation (▶ steps through them, as
+   *  far as wanted), or no evidence. */
   async function openClara({ entry, file }: EvidenceChoice) {
     if (cs.sessionId !== entry.session || !cs.circuit) {
       await loadSession(entry.session!);
@@ -462,7 +504,6 @@ namespace Viz {
     }
     if (file) {
       await chooseEvidence(file);
-      if (cs.evidenceName === file) setStep(Infinity);
     } else {
       ($("evidence-file") as HTMLSelectElement).value = "";
       cs.observations = [];

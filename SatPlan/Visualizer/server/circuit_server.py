@@ -445,8 +445,18 @@ def clara_sessions(clara, start):
                     else "never compiled: d4 was stopped at a smaller size (CLARA's stop rule), "
                          "or the problem has no recognition theory")
             else:
-                s = make_session(str(start + len(sessions)), pddl, circuit,
-                                 [ev] if os.path.isdir(ev) else [], pieces=pieces or None)
+                # the problem the circuit was compiled from: recognition/<name>.pddl,
+                # the goal as ONE (or ...) of the hypotheses at the recognition
+                # horizon (compile-d4.py) -- not the top-level problem, whose goal
+                # may be several sets (ThreePackage: one (or ...) per package),
+                # which the circuit has no atoms for
+                rec_pddl = os.path.join(d, "recognition", name + ".pddl")
+                s = make_session(str(start + len(sessions)), rec_pddl if os.path.isfile(rec_pddl) else pddl,
+                                 circuit, [ev] if os.path.isdir(ev) else [], pieces=pieces or None)
+                # the page draws the top-level problem: its goal names each
+                # package's destinations, where the recognition goal's
+                # conjunctions name none the map can draw
+                s["display"] = os.path.abspath(pddl)
                 s["name"] = f"{fam}/{name}"
                 s["clara"] = True
                 sessions.append(s)
@@ -457,19 +467,19 @@ def clara_sessions(clara, start):
 
 def clara_evidence(s):
     """The CLARA browser's Evidence column for session S: "no evidence", then
-    every NAME-<goal>-obsK.txt, by goal and then K, in natural order (p5
-    before p10, 25% before 100%) -- the 25% file as well as the 100% one: they
-    are CLARA's two conditions, each opened with all its observations applied.
-    From the file NAMES only: nothing is read until a row is opened."""
+    one row per goal, labelled with the goal, in natural order (p5 before
+    p10): its fullest NAME-<goal>-obsK.txt (the 100% file).  The page steps
+    through it, so the smaller K files -- its first observations -- need no
+    rows of their own.  From the file NAMES only: nothing is read until a row
+    is opened."""
     name = os.path.splitext(os.path.basename(s["problem"]))[0]
-    obs = []
+    best = {}                                   # goal label -> (K, file)
     for e in s["evidence"]:
         o = clara_observed(name, e)
-        if o:
-            obs.append((natural_key(o[0]), o[1], {"file": os.path.basename(e),
-                                                   "label": f"{o[0]}: {o[1]}% of its plan observed"}))
-    obs.sort(key=lambda t: (t[0], t[1]))
-    return [{"file": None, "label": "no evidence"}] + [t[2] for t in obs]
+        if o and (o[0] not in best or o[1] > best[o[0]][0]):
+            best[o[0]] = (o[1], os.path.basename(e))
+    return [{"file": None, "label": "no evidence"}] + \
+        [{"file": best[g][1], "label": g} for g in sorted(best, key=natural_key)]
 
 
 # --------------------------------------------------------------------- HTTP
@@ -589,7 +599,11 @@ def make_handler(state):
                                                    "evidence": [os.path.basename(e) for e in menu],
                                                    "hidden": hidden},
                                        "problemName": os.path.basename(s["problem"]),
-                                       "problem": open(s["problem"]).read(), "circuit": reply})
+                                       # what the page draws: the session's display
+                                       # problem if it has one (CLARA's top-level
+                                       # problem), else the one the circuit scores
+                                       "problem": open(s.get("display") or s["problem"]).read(),
+                                       "circuit": reply})
             if url.path == "/api/parse-evidence":
                 items, unsupported = parse_evidence(req.get("text", ""))
                 return self.send_json({"items": items, "unsupported": unsupported})

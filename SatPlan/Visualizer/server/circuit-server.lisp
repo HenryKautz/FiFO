@@ -12,8 +12,10 @@
 ;;;;       load a circuit saved by marginals.sh --save-circuit (text or binary);
 ;;;;       take the problem's hypotheses by recognize.sh's rule (the disjuncts of
 ;;;;       the goal's one (or ...), recognition-goal.lisp) and resolve each to
-;;;;       (HOLDS <hypothesis> H), H the highest slice of any HOLDS atom in the
-;;;;       circuit; evaluate once without evidence (Z and every atom's
+;;;;       (HOLDS <hypothesis> H) -- a compound one, (and ...), to the atom
+;;;;       recognize.sh created for it, (HOLDS (RECHYP<i>) H) -- H the highest
+;;;;       slice of any HOLDS atom in the circuit; evaluate once without
+;;;;       evidence (Z and every atom's
 ;;;;       true-weight, kept for P(E|h)).
 ;;;;   (cv-actions)
 ;;;;       the OCCURS atoms the circuit keeps, for entering evidence by hand.
@@ -181,6 +183,18 @@ signals for this."
 shown with its own probability, and the uniform-prior column normalizes within each line"
                         (substitute #\Space #\Newline (princ-to-string e))))))))
 
+(defun cv--derived-atom (i h a2i)
+  "The atom recognize.sh created for hypothesis I of the goal's ONE set, at
+slice H, if the circuit has it: (HOLDS (RECHYP<i>) H), the prefix lengthened
+by X as rg-prepare lengthens it when the domain already uses the name.  This
+is how a compound hypothesis -- (and ...), (not ...) -- is scored: through a
+derived atom defined by a biconditional, so it holds at H exactly when the
+formula does."
+  (loop for p = "RECHYP" then (concatenate 'string p "X")
+        repeat 4
+        for atom = (list 'holds (list (intern (format nil "~A~D" p i) (symbol-package 'holds))) h)
+        when (gethash atom a2i) return atom))
+
 (defun cv-load (path problem)
   "Load the circuit at PATH and the hypotheses of PROBLEM.  Everything is
 computed first; the globals change only once all of it has succeeded, so a
@@ -192,14 +206,22 @@ failed load leaves the previous circuit in place, whole."
          (h (let ((*cv* circuit)) (cv--horizon)))
          (a2i (ddnnf-a2i circuit))
          (proj (ddnnf-projected circuit))
+         (one-set (null (rest lines)))     ; recognize.sh's rule: its atoms apply
          (hyps (loop for line in lines for group from 0
-                     nconc (loop for g in line
-                                 ;; an atom hypothesis is (HOLDS atom H), a negated
-                                 ;; one its complement; a compound one --
-                                 ;; recognize.sh gives it a derived atom -- is not
-                                 ;; looked up
+                     nconc (loop for g in line for i from 0
+                                 ;; an atom hypothesis is (HOLDS atom H); any other
+                                 ;; -- (and ...), (not ...) -- is the derived atom
+                                 ;; recognize.sh created for it (cv--derived-atom),
+                                 ;; which is also tried for an atom it was given
+                                 ;; one for (--create-hypothesis-atoms); failing
+                                 ;; that, a negated literal is its atom's complement
                                  collect (multiple-value-bind (a neg) (cv--literal-atom g)
-                                           (let* ((atom (and h a (list 'holds a h)))
+                                           (let* ((plain (and h a (not neg) (list 'holds a h)))
+                                                  (derived (and h one-set
+                                                                (not (and plain (gethash plain a2i)))
+                                                                (cv--derived-atom i h a2i)))
+                                                  (atom (or derived plain (and h a (list 'holds a h))))
+                                                  (neg (and neg (not derived)))
                                                   (v (and atom (gethash atom a2i))))
                                              (list (cv--text g) atom
                                                    (and v (or (null proj) (= 1 (sbit proj v))) v)

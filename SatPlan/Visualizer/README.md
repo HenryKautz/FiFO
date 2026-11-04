@@ -179,9 +179,9 @@ then open http://127.0.0.1:8765/ (`--open` does it).
 With `--clara`, a **CLARA** button opens a column browser -- Family, Size,
 Instance, Evidence -- over every original problem of SimpleGrid, TwoPackage,
 TwoPackageOneway, ThreePackage and FourPackage. Evidence is "no evidence" or
-one of CLARA's two conditions for each goal, 25% or 100% of a plan for it
-observed (`<goal>-obs25.txt`, `-obs100.txt`), opened with all of its
-observations applied (step back with ◀). Choosing other evidence for the
+a goal: the whole of the plan for it (`<goal>-obs100.txt`), opened before
+its first observation -- step through it with ▶ as far as wanted (CLARA's 25%
+file is just its start). Choosing other evidence for the
 circuit already open does not reload it. A problem whose circuit is on disk
 opens; one whose circuit failed to compile, or was never compiled (its
 family's `results/compile-d4.jsonl`), is grayed and cannot be opened, and the
@@ -190,6 +190,16 @@ circuit committed in `.part-*` pieces is joined into its git-ignored whole
 file when opened, and joined again whenever a piece is newer (after a pull),
 as CLARA's `reassemble.sh` would. The Session menu then lists only sessions
 given with `--session`.
+
+A CLARA session scores the problem its circuit was compiled from,
+`recognition/<name>.pddl`: the goal as ONE `(or ...)` of hypotheses. A
+hypothesis that is not a single literal -- ThreePackage's are conjunctions,
+one destination per package -- is the atom `recognize.sh` created for it,
+`(HOLDS (RECHYP<i>) H)`. The map and the Goal panel draw the top-level problem,
+whose goal names each package's destinations; when the hypotheses are
+conjunctions that put some object at different places (so no two can hold
+at once, and the goal requires one), a destination's probability is the sum
+over the hypotheses that include it.
 
 Once a circuit is loaded, a line under the header gives its size: the file's
 bytes and its nodes. The nodes are those of the circuit as FiFO saves and loads

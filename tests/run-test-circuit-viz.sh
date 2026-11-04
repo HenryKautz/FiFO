@@ -352,13 +352,14 @@ assert "never compiled" in by["grid4x4-1"]["reason"] and "missing" in by["grid3x
 assert by["grid3x3-2"]["bytes"] == len(data) == by["grid3x3-1"]["bytes"], (by["grid3x3-2"]["bytes"], len(data))
 assert (by["grid4x4-1"]["size"], by["grid4x4-1"]["instance"], by["grid4x4-1"]["sizeKey"]) == ("4×4", "1", [4, 4])
 assert all(s["clara"] for s in sessions) and [bool(s["pieces"]) for s in sessions] == [False, True, False], sessions
+# one row per goal, its 100% file (the page steps through it; the 25% file,
+# its start, has no row), labelled with the goal alone, p5 before p10
 rows = S.clara_evidence(sessions[0])
 assert [(r["label"], r["file"]) for r in rows] == [
     ("no evidence", None),
-    ("pkg1 at p1-3: 25% of its plan observed", "grid3x3-1-pkg1-p1-3-obs25.txt"),
-    ("pkg1 at p1-3: 100% of its plan observed", "grid3x3-1-pkg1-p1-3-obs100.txt"),
-    ("pkg1 at p5-3: 100% of its plan observed", "grid3x3-1-pkg1-p5-3-obs100.txt"),
-    ("pkg1 at p10-3: 100% of its plan observed", "grid3x3-1-pkg1-p10-3-obs100.txt")], rows
+    ("pkg1 at p1-3", "grid3x3-1-pkg1-p1-3-obs100.txt"),
+    ("pkg1 at p5-3", "grid3x3-1-pkg1-p5-3-obs100.txt"),
+    ("pkg1 at p10-3", "grid3x3-1-pkg1-p10-3-obs100.txt")], rows
 assert S.clara_goal_label("pkg1-p2-4-pkg2-p3-4") == "pkg1 at p2-4, pkg2 at p3-4"
 assert S.clara_goal_label("truck1-p8-4") == "truck1 at p8-4" and S.clara_goal_label("odd-name") == "odd-name"
 # reassemble: joins exactly; again is a no-op; a whole file changed here is refused
@@ -415,7 +416,7 @@ try:
     get = lambda p: json.loads(urllib.request.urlopen(url + p, timeout=120).read())
     api = get("api/clara")
     assert [(e["name"], e["session"] is not None, len(e["evidence"])) for e in api] == \
-        [("TwoPackage/grid3x3-1", True, 5), ("TwoPackage/grid3x3-2", True, 3), ("TwoPackage/grid3x3-3", False, 0),
+        [("TwoPackage/grid3x3-1", True, 4), ("TwoPackage/grid3x3-2", True, 2), ("TwoPackage/grid3x3-3", False, 0),
          ("TwoPackage/grid3x3-4", False, 0), ("TwoPackage/grid3x3-5", True, 1), ("TwoPackage/grid4x4-1", False, 0)], api
     assert all(s["clara"] for s in get("api/sessions"))
     sid = next(e["session"] for e in api if e["name"].endswith("grid3x3-2"))
