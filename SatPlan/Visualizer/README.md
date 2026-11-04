@@ -61,9 +61,10 @@ reopen the dialog in the last folder used.)
   cost equal the answer's `*OBJECTIVE*`. Hover over a number for where it
   comes from.
 
-  **Pseudo Goal Utility** (the checkbox): for a problem that weights no goals,
-  count 20 for each distinct goal literal achieved in the displayed state, so
-  Goals and Total show progress toward the goal. It is for display only -- the
+  **Pseudo Goal Utility** (a whole number, typed or stepped with − and +;
+  0, the default, is off): for a problem that weights no goals, count that much
+  for each distinct goal literal achieved in the displayed state, so Goals and
+  Total show progress toward the goal. It is for display only -- the
   problem's own utility is unchanged, and the CLARA browser's plan values never
   include it. A problem with goal utilities is shown as it is.
 - **Solution.** The actions by step. ◀ ▶ (or the arrow keys, Home and End)

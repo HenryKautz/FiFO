@@ -45,9 +45,12 @@
       <section class="panel">
         <div class="panel-head">
           <h2>Utility so far</h2>
-          <label class="pseudo-toggle"><!-- its tooltip is set by app.ts, with PSEUDO_GOAL_UTILITY -->
-            <input type="checkbox" id="pseudo-goals"> Pseudo Goal Utility
-          </label>
+          <div class="pseudo-toggle" title="When the problem gives its goals no utility, count this much for each goal achieved (0: off). For display only: it is not the problem's utility.">
+            <label for="pseudo-goals">Pseudo Goal Utility</label>
+            <button id="pseudo-minus" class="pseudo-step" title="One less" aria-label="one less">−</button>
+            <input type="number" id="pseudo-goals" value="0" step="1" inputmode="numeric" aria-label="pseudo goal utility">
+            <button id="pseudo-plus" class="pseudo-step" title="One more" aria-label="one more">+</button>
+          </div>
         </div>
         <div id="utility" class="utility"><p class="empty">No problem loaded.</p></div>
       </section>

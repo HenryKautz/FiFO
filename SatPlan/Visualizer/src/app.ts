@@ -59,12 +59,12 @@ namespace Viz {
 
   function renderUtility() {
     const p = app.problem!;
-    const pseudoBox = $("pseudo-goals") as HTMLInputElement;
-    const u = utilityAt(p, app.domain, app.plan, app.step, pseudoBox.checked ? PSEUDO_GOAL_UTILITY : undefined);
+    const per = pseudoGoalUtility();
+    const u = utilityAt(p, app.domain, app.plan, app.step, per !== 0 ? per : undefined);
     const goalsNote = u.goals === undefined
       ? "the problem gives its goals no utility"
       : u.pseudo
-        ? `pseudo: ${PSEUDO_GOAL_UTILITY} per goal achieved, for display only` +
+        ? `pseudo: ${per} per goal achieved, for display only` +
           (u.undecided ? `; ${u.undecided} not tracked` : "")
         : `${p.preferences.length} weighted preference${p.preferences.length === 1 ? "" : "s"}` +
           (u.undecided ? `; ${u.undecided} not tracked` : "");
@@ -86,9 +86,13 @@ namespace Viz {
       `<span class="u-label">Total</span><span class="u-value">${num(u.total)}</span></div>`;
   }
 
-  /** what the "Pseudo Goal Utility" box gives each achieved goal of a problem
-   *  that weights none */
-  const PSEUDO_GOAL_UTILITY = 20;
+  /** The "Pseudo Goal Utility" box: what each achieved goal of a problem that
+   *  weights none counts, a whole number; 0 (the default) is off.  Anything
+   *  typed that is not a number reads as 0, a fraction as the nearest integer. */
+  function pseudoGoalUtility(): number {
+    const v = Math.round(Number(($("pseudo-goals") as HTMLInputElement).value));
+    return Number.isFinite(v) ? v : 0;
+  }
 
   function renderSolution() {
     const box = $("solution");
@@ -372,14 +376,21 @@ namespace Viz {
     pf.addEventListener("change", () => readInto(pf, (n, t) => loadProblem(n, t, true)));
     df.addEventListener("change", () => readInto(df, (n, t) => loadDomain(n, t, "user")));
     sf.addEventListener("change", () => readInto(sf, loadPlan));
+    // the Pseudo Goal Utility box: typed (shown as it is typed; tidied to a
+    // whole number when done), or stepped by its − and + buttons
     const pseudo = $("pseudo-goals") as HTMLInputElement;
-    (pseudo.parentElement as HTMLElement).title =
-      `When the problem gives its goals no utility, count ${PSEUDO_GOAL_UTILITY} for each goal achieved. ` +
-      `For display only: it is not the problem's utility.`;
-    pseudo.addEventListener("change", () => {
-      pseudo.blur();   // give the arrow keys back to stepping through the plan
-      if (app.problem) renderUtility();
+    const showPseudo = () => { if (app.problem) renderUtility(); };
+    const setPseudo = (v: number) => {
+      pseudo.value = String(v);
+      showPseudo();
+    };
+    pseudo.addEventListener("input", showPseudo);
+    pseudo.addEventListener("change", () => setPseudo(pseudoGoalUtility()));
+    pseudo.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") pseudo.blur();   // done: the arrow keys step the plan again
     });
+    $("pseudo-minus").addEventListener("click", () => setPseudo(pseudoGoalUtility() - 1));
+    $("pseudo-plus").addEventListener("click", () => setPseudo(pseudoGoalUtility() + 1));
     $("first").addEventListener("click", () => go(0));
     $("prev").addEventListener("click", () => go(app.step - 1));
     $("next").addEventListener("click", () => go(app.step + 1));
