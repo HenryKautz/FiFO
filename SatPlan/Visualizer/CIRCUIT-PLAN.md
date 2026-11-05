@@ -137,7 +137,14 @@ starts like another, and so is every file named one by one.  The menu is
 worked out when a session is first loaded, not at startup; a file left out of
 it still opens by name (`?evidence=FILE`).  A self-contained small example ships in
 `SatPlan/Visualizer/circuit-examples/` so the page and the tests work without
-CLARA.
+CLARA: CLARA TwoPackage `grid3x3-1` under the current `clara-logistics` domain
+(regenerated 2026-11-04) -- its recognition problem as `grid3x3-1.pddl`, the
+d4 circuit CLARA compiled for it (`circuits/grid3x3-1.dnnf`, count verified),
+`grid3x3-1.wff` (+ `satplan.wff`), which instantiates to exactly the clauses
+that circuit was compiled from, and evidence files cut by `evgen.sh` from
+CLARA's goal plans (`-obs1`, `-obs5`: the first 1 or 5 observed actions;
+`-ord1`: an ordering form).  Beside it, `grid3x3-1-pairs.*`: the same world
+with a goal of four conjunctions, the test of compound hypotheses (§5).
 
 ## 3. The page
 
@@ -182,7 +189,8 @@ process) show in the page's message strip, as in the plan visualizer.
       build.sh                 also builds circuit.js
       server/circuit_server.py the HTTP server (stdlib), SBCL child, sessions
       server/circuit-server.lisp  the Lisp side: load, hypotheses, query
-      circuit-examples/        a small problem, its circuit, evidence files
+      circuit-examples/        a small problem, its circuit, theory, evidence files;
+                               grid3x3-1-pairs.*, the compound-hypothesis test
       CIRCUIT-PLAN.md          this file
     tests/run-test-circuit-viz.sh   the suite (below)
 
@@ -197,6 +205,14 @@ process) show in the page's message strip, as in the plan visualizer.
    `.wff`, with the evidence and h as unit clauses; and its posterior must equal
    P(h|E)/P(h) normalized, to 1e-9.  (ADDMC, the first choice, did not finish
    this theory in 10 minutes.)
+   **Compound hypotheses**: `grid3x3-1-pairs`, whose goal is one `(or ...)` of
+   four `(and ...)`s, compiled by d4 projected onto the actions and the four
+   `(rechyp<i>)` atoms `recognize.sh` creates for them -- the circuit keeps no
+   `(holds (at ..) 8)` atom, so the server can be right only through its
+   hypothesis-to-atom mapping (`cv--derived-atom`).  For six evidence sets each
+   conjunction's P(h | E) must equal Z(E, a, b) / Z(E), a and b its OWN
+   conjuncts, never the rechyp atom, so the mapping is checked independently
+   (a mutation rotating the rechyp index fails it).
 2. **Unsat**: contradictory evidence reports `unsat`, not a division by zero.
 3. **Refusals**: an ordering form, a non-unit formula, an atom not in the
    circuit — each refused with its reason, and the session still answers.

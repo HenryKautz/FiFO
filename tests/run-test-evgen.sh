@@ -25,10 +25,9 @@ EVGEN="$REPO/SatPlan/evgen.sh"
 PPGEN="$REPO/SatPlan/ppgen.sh"
 export REPO
 PLANNER="$REPO/bin/planner.sh"
-# The cases below are calibrated to this domain's plans (observed actions, slices
-# and costs of a fixed-seed fixture): the clara-logistics of before load/unload
-# had a cost and transfer was removed.  It accepts ppgen's handle-cost line.
-DOMAIN="$REPO/pddl/clara-logistics-old.pddl"
+# The cases below are calibrated (2026-11-04) to this domain's plans -- load and
+# unload cost (handle-cost) = 1, no transfer -- on the fixed-seed fixture below.
+DOMAIN="$REPO/pddl/clara-logistics.pddl"
 SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
@@ -53,21 +52,44 @@ everr() { bash "$EVGEN" --problem "$PROB" --domain "$DOMAIN" --solution "$SRC" "
 
 # ---------------------------------------------------------------- fixture ---
 
+# Seed 37 (it was 23 under the old domain, whose optimal plan flew; under
+# clara-logistics seed 23's plan has no flight).  The cases need a flight and an
+# (in ..) within slices 2-4, exactly one load/fly at each of slices 3 and 4, and
+# a same-slice tie in 1-3; seed 37 is the first that has all three.  Its optimum
+# (EvalMaxSAT, 7 slices) costs 24 = 5 drives + 1 flight (3) + 4 loads + 4
+# unloads + the violated preferences 4 + 3 + 1:
+#   1 drive truck1 c1-p2 c1-air | drive truck2 c2-p2 c2-p1 | load pkg1 plane1 c1-air
+#   2 fly plane1 c1-air c2-air | load pkg3 truck2 c2-p1
+#   3 drive truck2 c2-p1 c2-air | load pkg2 truck1 c1-air | unload pkg1 plane1 c2-air
+#   4 load pkg1 truck2 c2-air | unload pkg3 truck2 c2-air
+#   5 drive truck1 c1-air c1-p2 | drive truck2 c2-air c2-p1
+#   6 unload pkg1 truck2 c2-p1 | unload pkg2 truck1 c1-p2
 PROB="$TMP/pb.pddl"
 bash "$PPGEN" --style clique --clique-size 3 --number-cliques 2 --packages 3 \
      --trucks 2 --airplanes 1 --preferences 1 6 --destinations 2 \
-     --seed 23 -o "$PROB" 2>/dev/null
+     --seed 37 -o "$PROB" 2>/dev/null
 ANSWER="$TMP/pb.answer"
 
-if command -v "$SOLVER" >/dev/null 2>&1; then
-  WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
-      --maxslices 12 >"$TMP/plan.log" 2>&1
-fi
-if [[ ! -f "$ANSWER" ]]; then
-  echo "  (skipping: could not solve the fixture problem -- no MaxSAT solver '$SOLVER'?)"
+# Skip only when the solver is really absent -- checked the way every CLI checks
+# it (bin/fifo-solvers.sh: known name, MaxSAT kind, installed).  Any OTHER failure
+# to solve the fixture is a FAIL: a missing or broken domain once read here as
+# "no MaxSAT solver" and the whole suite skipped, exit 0.
+if ! WHY="$(/bin/bash -c "FIFO_LISP='$FIFO_LISP'; source '$REPO/bin/fifo-solvers.sh';
+              _fifo_require_solver '$SOLVER' maxsat run-test-evgen.sh" 2>&1 >/dev/null)"; then
+  echo "  (skipping: MaxSAT solver '$SOLVER' is not available: $(echo "$WHY" | head -1))"
   echo
   echo "=== summary: 0 passed, 0 failed (skipped) ==="
   exit 0
+fi
+WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
+    --maxslices 12 >"$TMP/plan.log" 2>&1
+if [[ ! -f "$ANSWER" ]] || ! grep -q '(\*OBJECTIVE\* ' "$ANSWER"; then
+  name "the fixture problem solves"
+  fail "planner.sh found no plan with $SOLVER"
+  sed 's/^/      | /' "$TMP/plan.log" | tail -15
+  echo
+  echo "=== summary: $PASS passed, $FAIL failed ==="
+  exit 1
 fi
 # planner.sh rewrites <problem>.answer on every run, and the binding cases below
 # run it WITH evidence -- so keep a pristine copy and generate from that, or a
@@ -287,8 +309,11 @@ run_cost() {  # run_cost <evidence-file>
 if [[ "$(run_cost "$TMP/a.txt")" == "$BASE_COST" ]]; then pass
 else fail "conditioning on the real plan changed its cost"; fi
 
-name "the evidence binds: a shifted observation costs more"
-# move one observed action to a different slice; the plan must now work around it
+name "the evidence binds: a shifted observation costs more or is impossible"
+# move one observed action to a different slice; the plan must now work around it.
+# Here it is the flight, slice 2 -> 1, on the fixture's critical path (and o.txt
+# also pins (in pkg1 plane1) at 2): no plan of this horizon holds it, so the
+# answer is an explicit UNSAT verdict.  Ignored evidence would give the base cost.
 python3 - "$TMP/o.txt" "$TMP/bad.txt" <<'EOF'
 import sys,re
 t=open(sys.argv[1]).read()
@@ -297,9 +322,13 @@ assert m, "fixture has no observed action to shift"
 t=t.replace(m.group(0), "(occurs %s 1)" % m.group(1), 1)
 open(sys.argv[2],'w').write(t)
 EOF
-BAD_COST="$(run_cost "$TMP/bad.txt")"
-if [[ -n "$BAD_COST" && "$BAD_COST" -gt "$BASE_COST" ]]; then pass
-else fail "shifted observation gave cost '$BAD_COST' vs base $BASE_COST"; fi
+BAD_OUT="$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
+             --numslices "$HORIZON" --evidence-file "$TMP/bad.txt" 2>&1)"
+BAD_COST="$(echo "$BAD_OUT" | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')"
+if [[ -n "$BAD_COST" && "$BAD_COST" -gt "$BASE_COST" ]] \
+   || { [[ -z "$BAD_COST" ]] && echo "$BAD_OUT" | grep -q '^UNSATISFIABLE'; }; then pass
+else fail "shifted observation gave cost '$BAD_COST' vs base $BASE_COST"
+     echo "$BAD_OUT" | tail -2 | sed 's/^/      | /'; fi
 
 # ---------------------------------------------------- recognition mode -----
 
@@ -307,7 +336,12 @@ echo
 echo "=== --recognition (for bin/recognize.sh) ==="
 
 name "--recognition 1 emits exactly ONE form"
-ev --evidence "$TMP/r.txt" --slices "1-3" --observe "drive,fly,load" --recognition 1 >/dev/null
+# Slices 1-2, flights and loads: (load pkg1 plane1 c1-air) 1, (fly plane1 c1-air
+# c2-air) 2, (load pkg3 truck2 c2-p1) 2 -- all on the critical path, so EVERY
+# optimal plan has them and their negation must cost more (the not-comply case
+# below).  truck1's actions are left out: truck1 has slack, so an equally cheap
+# plan moves them and c(notO) would tie c(O).
+ev --evidence "$TMP/r.txt" --slices "1-2" --observe "fly,load" --recognition 1 >/dev/null
 NF=$(sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil) (n 0))
        (with-open-file (i \"$TMP/r.txt\") (loop for f = (read i nil :eof) until (eq f :eof) do (incf n)))
        (princ n))" 2>/dev/null | tr -dc '0-9')
@@ -317,7 +351,7 @@ if [[ "$NF" == "1" ]] && grep -q '^(and$' "$TMP/r.txt"; then pass
 else fail "$NF top-level form(s)"; fi
 
 name "the default is still one literal per line"
-ev --evidence "$TMP/rd.txt" --slices "1-3" --observe "drive,fly,load" >/dev/null
+ev --evidence "$TMP/rd.txt" --slices "1-2" --observe "fly,load" >/dev/null
 NF=$(sbcl --noinform --non-interactive --eval "(let ((*read-eval* nil) (n 0))
        (with-open-file (i \"$TMP/rd.txt\") (loop for f = (read i nil :eof) until (eq f :eof) do (incf n)))
        (princ n))" 2>/dev/null | tr -dc '0-9')
@@ -379,16 +413,25 @@ else fail "did not replay"; fi
 
 name "recognize.sh's negation of it is a valid formula"
 # The mechanism, without the 3n planner runs a full recognize.sh does: comply
-# must reproduce the plan's cost, not-comply must differ.
+# must reproduce the plan's cost, not-comply must differ.  r.txt's literals are
+# on the fixture's critical path, in EVERY plan of this horizon (not just every
+# optimal one), so not-comply has no plan: c(notO) is infinite.  That must come
+# back as the planner's UNSAT verdict -- an error reading the negated file would
+# give no cost either, so "no cost" alone is not enough.
 { echo "(not"; grep -v '^[[:space:]]*;;' "$TMP/r.txt"; echo ")"; } > "$TMP/rneg.txt"
 CO="$(run_cost "$TMP/r.txt")"
-CN="$(run_cost "$TMP/rneg.txt")"
+CNOUT="$(WEIGHTED_SOLVER="$SOLVER" bash "$PLANNER" "$PROB" --domain "$DOMAIN" \
+           --numslices "$HORIZON" --evidence-file "$TMP/rneg.txt" 2>&1)"
+CN="$(echo "$CNOUT" | grep -oE 'cost [0-9]+' | tail -1 | grep -oE '[0-9]+')"
+[[ -z "$CN" ]] && echo "$CNOUT" | grep -q '^UNSATISFIABLE' && CN=inf
 if [[ "$CO" == "$BASE_COST" && -n "$CN" && "$CN" != "$CO" ]]; then pass
-else fail "c(O)=$CO (want $BASE_COST), c(notO)=$CN"; fi
+else fail "c(O)=$CO (want $BASE_COST), c(notO)=$CN"
+     echo "$CNOUT" | tail -2 | sed 's/^/      | /'; fi
 
 name "and the not-comply case is the more expensive one"
-# c(notO) > c(O) is what makes this hypothesis' likelihood exceed one half.
-if [[ "$CN" -gt "$CO" ]]; then pass
+# c(notO) > c(O) is what makes this hypothesis' likelihood exceed one half
+# (infinite: likelihood 1).
+if [[ "$CN" == inf ]] || [[ -n "$CN" && "$CN" -gt "$CO" ]]; then pass
 else fail "c(notO)=$CN is not above c(O)=$CO"; fi
 
 # --------------------------------------------------- recognize.sh guards ---

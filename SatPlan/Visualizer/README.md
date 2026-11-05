@@ -87,9 +87,14 @@ both exist they are compared, and any disagreement is shown as a warning, as
 are actions naming objects the problem does not have.
 
 `examples/` has a 6×6 problem (two trucks, four packages, a 12-way disjunctive
-goal) with its FiFO answer, and a 5×5 problem with two airports and an
-airplane, whose goal is a conjunction of three disjunctions, with its solution
-in all three formats, and the two domains they name. The Examples menu lists
+goal with 12 weighted preferences, drives costing 2) with its FiFO answer
+(objective 96: 11 unachieved preferences of 8, plus 3 drives and a load and an
+unload), and a 5×5 problem with two airports and an airplane, whose goal is a
+conjunction of three disjunctions, with its solution in all three formats
+(cost 23: 17 drives, 3 loads, 3 unloads). Both use FiFO's `clara-logistics`
+domain (a copy is bundled): every load and unload costs `(handle-cost)`, set to
+1 in each problem's `:init`. The solutions are EvalMaxSAT's proved optima at the
+shortest horizon (14 and 6 slices). The Examples menu lists
 each problem alone and with each solution whose file name starts with the
 problem's name followed by `.` or `-`, and loads the problem's domain with it.
 To add an example, put its files in `examples/` and run `build.sh`.
@@ -217,9 +222,18 @@ the compiled circuit, so a query is two passes over it (milliseconds for a
 projected circuit dropped would need a recompile per change and are refused
 with the reason.
 
+The bundled example, `circuit-examples/`, is CLARA TwoPackage `grid3x3-1` under
+the current `clara-logistics` domain: its recognition problem, the d4 circuit
+CLARA compiled for it, the theory as a self-contained `.wff`, and evidence files
+cut by `evgen.sh` from CLARA's goal plans (`-obs1`/`-obs5`, the first 1 or 5
+observed actions; `-ord1`, an ordering form, which the page refuses). Beside it
+is `grid3x3-1-pairs`, the same world with four conjunctions as its hypotheses,
+for the test of compound hypotheses.
+
 `tests/run-test-circuit-viz.sh` checks the numbers against SharpSAT-TD counting
-the example's theory (regenerated from its `.wff`) with the same evidence, plus
-the parsing, the refusals and the HTTP routes.
+the example's theory (regenerated from its `.wff`) with the same evidence -- for
+`grid3x3-1-pairs` with each conjunction's own literals, not the atom the server
+reads for it -- plus the parsing, the refusals and the HTTP routes.
 
 ## Code
 

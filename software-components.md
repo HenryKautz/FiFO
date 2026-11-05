@@ -571,7 +571,9 @@ lines that regenerate the file byte for byte. `--knockout`, `--oneway`,
 `--mindist` and `--maxdist` are recorded only when set. A file made before load
 and unload got a cost (commit 4947c7d) has no `(= (handle-cost) …)` line or
 `--handle-cost` setting, so it replays only with that era's ppgen
-(`git show 4947c7d^:SatPlan/ppgen.lisp`), and plans with `clara-logistics-old`.
+(`git show 4947c7d^:SatPlan/ppgen.lisp`), and plans only with that era's
+domain, `clara-logistics-old`, which is no longer in the library (deleted in
+ffdc377; `git show ffdc377^:pddl/clara-logistics-old.pddl`).
 
 **Planning it.** The problem names `(:domain clara-logistics)`, which is in the
 domain library, so `planner.sh problem.pddl` finds the domain from any directory

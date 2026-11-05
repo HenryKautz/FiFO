@@ -2,7 +2,7 @@
 ;; reports a domain that fails to parse (drop it on the page together with
 ;; examples/grid6x6-1.pddl).  The :action load below is never closed.
 
-(define (domain clara-logistics-handling)
+(define (domain clara-logistics)
   (:requirements :strips :typing :action-costs)
 
   (:types
@@ -11,7 +11,8 @@
 
   (:functions
         (total-cost)
-        (drive-cost))
+        (drive-cost)
+        (handle-cost))
 
   (:action load
         :parameters
@@ -21,4 +22,4 @@
         :effect
                 (and    (not (at ?obj ?loc))
                         (in ?obj ?veh)
-                        (increase (total-cost) 1))
+                        (increase (total-cost) (handle-cost)))

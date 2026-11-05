@@ -114,7 +114,7 @@ namespace VizTest {
   const lastSlice = Math.max(...(ans.match(/^\(HOLDS .* (\d+)\)$/gm) ?? []).map((l: string) => Number(/(\d+)\)$/.exec(l)![1])));
   const firstSlice = Math.min(...(ans.match(/^\(HOLDS .* (\d+)\)$/gm) ?? []).map((l: string) => Number(/(\d+)\)$/.exec(l)![1])));
   {
-    check("answer: recognized as FiFO's format, cost read", planA.format === "answer" && planA.objective === "17");
+    check("answer: recognized as FiFO's format, cost read", planA.format === "answer" && planA.objective === "23");
     check(`answer: one state per slice ${firstSlice}..${lastSlice}`,
           planA.states.length === lastSlice - firstSlice + 1 && planA.steps.length === lastSlice - firstSlice &&
           planA.firstStep === firstSlice);
@@ -272,12 +272,14 @@ namespace VizTest {
     const objective = (t: string) => Number(/\(\*OBJECTIVE\* (\d+)\)/.exec(t)![1]);
     const violated = (t: string) => new Set((t.match(/^\(PREF-VIOLATED (\S+)\)$/gm) ?? [])
       .map((l: string) => /\(PREF-VIOLATED (\S+)\)/.exec(l)![1].toLowerCase()));
-    const handling = Viz.parseDomain(read("clara-logistics-handling.pddl"));
+    // examples/clara-logistics.pddl is FiFO's pddl/clara-logistics.pddl: load and
+    // unload cost (handle-cost), drive (drive-cost), fly (fly-cost), all set by
+    // the problem's :init
     const plain = Viz.parseDomain(read("clara-logistics.pddl"));
     const a6text = read("grid6x6-1.answer");
     const a6 = Viz.parsePlan(a6text, p6);
     const end6 = a6.steps.length;
-    const u6 = Viz.utilityAt(p6, handling, a6, end6);
+    const u6 = Viz.utilityAt(p6, plain, a6, end6);
     const totalW = p6.preferences.reduce((s, p) => s + p.weight, 0);
     const v6 = violated(a6text);
     const achievedW = p6.preferences.filter((p) => !v6.has(p.name)).reduce((s, p) => s + p.weight, 0);
@@ -289,14 +291,21 @@ namespace VizTest {
           totalW - (u6.goals ?? NaN) + (u6.costs ?? NaN) === objective(a6text) && u6.costsExact,
           `${totalW} - ${u6.goals} + ${u6.costs}`);
     check("6x6: Total = Goals - Costs", u6.total === (u6.goals ?? 0) - (u6.costs ?? 0));
-    const run = a6.states.map((_, k) => Viz.utilityAt(p6, handling, a6, k).costs ?? NaN);
+    const run = a6.states.map((_, k) => Viz.utilityAt(p6, plain, a6, k).costs ?? NaN);
     check("costs run from 0 at step 0 and never fall",
           run[0] === 0 && run.every((c, k) => k === 0 || c >= run[k - 1]), JSON.stringify(run));
     const load = { name: "load", args: ["pkg1", "truck2", "p2-4"], text: "(load pkg1 truck2 p2-4)" };
+    const unload = { name: "unload", args: ["pkg1", "truck2", "p1-3"], text: "(unload pkg1 truck2 p1-3)" };
     const drive = { name: "drive", args: ["truck2", "p2-3", "p2-4"], text: "(drive truck2 p2-3 p2-4)" };
-    check("the domain prices actions: a load 1 and a drive (drive-cost) = 2 in the handling domain, a load 0 in the plain one",
-          Viz.actionCost(p6, handling, load).cost === 1 && Viz.actionCost(p6, handling, drive).cost === 2 &&
-          Viz.actionCost(p6, plain, load).cost === 0 && Viz.actionCost(p6, plain, load).exact);
+    // the problem sets the prices: the same domain charges a load what the
+    // problem's (= (handle-cost) N) says, so a problem with N = 3 pays 3
+    const p6h3 = Viz.parseProblem(t6.replace("(= (handle-cost) 1)", "(= (handle-cost) 3)"));
+    check("the domain prices actions by the problem's values: load/unload (handle-cost) = 1, drive (drive-cost) = 2; handle-cost 3 makes a load 3",
+          t6.includes("(= (handle-cost) 1)") &&
+          Viz.actionCost(p6, plain, load).cost === 1 && Viz.actionCost(p6, plain, unload).cost === 1 &&
+          Viz.actionCost(p6, plain, drive).cost === 2 && Viz.actionCost(p6, plain, load).exact &&
+          Viz.actionCost(p6h3, plain, load).cost === 3 && Viz.actionCost(p6h3, plain, drive).cost === 2,
+          `${Viz.actionCost(p6, plain, load).cost} ${Viz.actionCost(p6, plain, drive).cost} ${Viz.actionCost(p6h3, plain, load).cost}`);
     const est = Viz.utilityAt(p6, undefined, a6, end6);
     check("without a domain, costs are estimated from the problem's drive-cost (and say so)",
           est.costs === 2 * a6.steps.flat().filter((a) => a.name === "drive").length && !est.costsExact);
@@ -322,14 +331,14 @@ namespace VizTest {
     check(`pseudo goal utility: 20 per goal achieved (${held.length} of ${lits.length} at the end, none at the start), in Total too`,
           held.length > 0 && ps5.pseudo && ps5.goals === 20 * held.length && ps5.total === 20 * held.length - u5.costs! &&
           ps0.goals === 0 && ps0.pseudo, `${ps5.goals} vs ${20 * held.length}; start ${ps0.goals}`);
-    const ps6 = Viz.utilityAt(p6, handling, a6, end6, 20);
+    const ps6 = Viz.utilityAt(p6, plain, a6, end6, 20);
     check("pseudo goal utility leaves a problem with goal utilities as it is; off by default",
           !ps6.pseudo && ps6.goals === u6.goals && ps6.total === u6.total && !u5.pseudo && u5.goals === undefined);
 
     // the CLARA browser's plan values: the main page's Total at the plan's end
     const ex = (file: string, text: string, sols: [string, string][], dom?: [string, string]): Viz.Example =>
       ({ problem: { file, text }, domain: dom && { file: dom[0], text: dom[1] }, solutions: sols.map(([f, t]) => ({ file: f, text: t })) });
-    const hand: [string, string] = ["clara-logistics-handling.pddl", read("clara-logistics-handling.pddl")];
+    const hand: [string, string] = ["clara-logistics.pddl", read("clara-logistics.pddl")];
     const vexs = [
       ex("F/grid6x6-1.pddl", t6, [], hand),                                    // weights its goals
       // its goal problem weights none (the preferences stripped), as CLARA's goals/ do
@@ -359,7 +368,11 @@ namespace VizTest {
     // costs and no goal utilities is no value; priced with the page's domain
     const firstTwo = read("grid5x5-air.plan").split("\n").filter((l: string) => l.startsWith("(")).slice(0, 2).join("\n");
     const tiny = "(define (problem m) (:domain zz) (:objects a b - place t - truck) (:init (at t a) (road a b)) (:goal (at t b)))";
-    const handOn5: [string, string] = hand;   // named clara-logistics-handling; the 5x5 problem names clara-logistics
+    // a bundled domain of ANOTHER name that prices handling differently (free):
+    // the 5x5 problem names clara-logistics, so the library's must win
+    const handOn5: [string, string] = ["free-handling.pddl", read("clara-logistics.pddl")
+      .replace("(domain clara-logistics)", "(domain clara-logistics-free-handling)")
+      .replace(/\(increase \(total-cost\) \(handle-cost\)\)/g, "(increase (total-cost) 0)")];
     const rexs = [
       ex("G/grid5x5-1.pddl", t5, [], handOn5),
       ex("G/goals/grid5x5-1-pkg1-p3-3.pddl", t5, [["G/goals/grid5x5-1-pkg1-p3-3-eval.answer", firstTwo],
@@ -418,7 +431,7 @@ namespace VizTest {
     check(`one entry per example problem (${pddl.length}), domains left out`,
           exs.map((e) => e.problem.file).join() === pddl.join());
     check("each example has the domain its problem names",
-          exs.find((e) => e.problem.file === "grid6x6-1.pddl")!.domain?.file === "clara-logistics-handling.pddl" &&
+          exs.find((e) => e.problem.file === "grid6x6-1.pddl")!.domain?.file === "clara-logistics.pddl" &&
           exs.find((e) => e.problem.file === "grid5x5-air.pddl")!.domain?.file === "clara-logistics.pddl");
     const air = exs.find((e) => e.problem.file === "grid5x5-air.pddl");
     check("grid5x5-air has its three solutions; grid6x6-1 its one",

@@ -54,13 +54,36 @@ size-modulated features.
 
 ## 3. Regression tests to update for the new clara-logistics (2026-10-30) — DONE
 
-Done 2026-10-30 by way (a): `clara-logistics-old.pddl` declares `(handle-cost)`
-(never charged) so it accepts ppgen's current output, and both suites now plan
-against it (evgen 110/110, evidence 42/42).  `SatPlan/pb1.pddl` has its
-`handle-cost` line and the new proved optimum (10 slices, cost 20).  The
-visualizer example and CLARA SimpleGrid/TwoPackage items below remain.
+**Done 2026-11-04 by way (b)**, after `pddl/clara-logistics-old.pddl` was
+deleted (ffdc377) so that FiFO has one logistics domain: everything was
+re-derived from fresh EvalMaxSAT optima under `clara-logistics`, each case
+mutation-checked (the work of REGENERATE-clara-logistics.md, deleted with it):
 
-The original note:
+- `run-test-evidence.sh` (42/42): the windowed occur-in-order block, same
+  seed-23 fixture; its C is now a drive (the plan no longer flies), the window
+  cases run at 7 slices, and the strict/non-strict pair is two unloads that
+  must share a slice at 6 (strict: UNSAT, where serializing two loads used to
+  cost +1).
+- `run-test-evgen.sh` (110/110): fixture seed 37 (seed 23's plan has no
+  flight); the skip is now only for a solver `fifo-solvers.sh` says is absent,
+  any other failure to solve the fixture a FAIL.  The shifted observation and
+  the not-comply case are UNSAT on this shortest-horizon fixture, accepted as
+  an explicit UNSAT verdict.
+- The circuit visualizer's example: CLARA TwoPackage grid3x3-1 as regenerated
+  (recognition problem, CLARA's d4 circuit, a `.wff` instantiating to its
+  exact clauses, evgen evidence), plus `grid3x3-1-pairs`, a compound-hypothesis
+  case checked against SharpSAT-TD on each conjunction's own literals.
+- The plan visualizer's examples: `clara-logistics-handling.pddl` retired,
+  both problems remade by ppgen with `--handle-cost 1` and re-planned (5x5
+  cost 23, was 17; 6x6 96, unchanged), `test.ts` recalibrated (91/91).
+
+Earlier, 2026-10-30, way (a) had been taken: `clara-logistics-old.pddl`
+declared `(handle-cost)` (never charged) so it accepted ppgen's current output,
+and both suites planned against it.  `SatPlan/pb1.pddl` got its `handle-cost`
+line and the new proved optimum (10 slices, cost 20).  CLARA was regenerated
+under `clara-logistics` on 2026-10-31.
+
+The original note (it names `pddl/clara-logistics-old.pddl`, now deleted):
 
 `pddl/clara-logistics.pddl` changed: `load` and `unload` now cost `(handle-cost)`
 each (ppgen `--handle-cost`, default 1) and `transfer` is gone (a package changes

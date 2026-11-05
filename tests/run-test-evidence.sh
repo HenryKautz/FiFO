@@ -405,25 +405,36 @@ echo "=== occur-in-order as a windowed trajectory constraint ==="
 
 if command -v "${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" >/dev/null 2>&1; then
   CDIR="$TMP/cio"; mkdir -p "$CDIR"; cd "$CDIR"
-  # the cases are calibrated to clara-logistics-old's plans (free handling,
-  # transfer): the slices and costs quoted below are that domain's
+  # Calibrated (2026-11-04) to clara-logistics's plans: load/unload cost
+  # (handle-cost) = 1, no transfer.  The optimum, proved by EvalMaxSAT, at
+  # --numslices 6 (actions at slices 1-5) and 7 alike costs 23 = 3 drives +
+  # 3 loads + 3 unloads + the violated preferences 3 + 6 + 5:
+  #   1 (load pkg2 truck1 c1-air)       1 (load pkg3 truck2 c2-p1)
+  #   2 (drive truck1 c1-air c1-p2)     2 (drive truck2 c2-p1 c2-air)
+  #   3 (load pkg1 truck1 c1-p2)
+  #   4 (drive truck1 c1-p2 c1-p1)
+  #   5 (unload pkg1 truck1 c1-p1)  (unload pkg2 truck1 c1-p1)  (unload pkg3 truck2 c2-air)
+  # truck1's five actions fill slices 1-5 at --numslices 6 and leave one slice
+  # of slack at 7.
   sed 's/:disjunctive-preconditions/:constraints :disjunctive-preconditions/' \
-      "$REPO/pddl/clara-logistics-old.pddl" > dom.pddl
+      "$REPO/pddl/clara-logistics.pddl" > dom.pddl
   bash "$REPO/SatPlan/ppgen.sh" --style clique --clique-size 3 --number-cliques 2 \
        --packages 3 --trucks 2 --airplanes 1 --preferences 1 6 \
        --destinations 2 --seed 23 -o base.pddl 2>/dev/null
-  # the plan puts A at slice 1, B at 2, C at 4; unconstrained cost 16
-  A='(load pkg2 truck1 c1-air)'; B='(drive truck1 c1-air c1-p2)'; C='(fly plane1 c2-air c1-air)'
+  # the plan puts A at slice 1, B at 2, C at 4; unconstrained cost 23.  The
+  # window cases run at --numslices 7, where truck1 has a slice of slack: a
+  # window can then exclude the plan without the horizon alone doing it.
+  A='(load pkg2 truck1 c1-air)'; B='(drive truck1 c1-air c1-p2)'; C='(drive truck1 c1-p2 c1-p1)'
   mkprob() {   # mkprob <file> <constraint>
     python3 -c "
 import sys
 s=open('base.pddl').read(); i=s.index('  (:goal')
 open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])" "$1" "$2"
   }
-  cio() {   # cio <constraint> -> cost or UNSAT
+  cio() {   # cio <constraint> [numslices, default 7] -> cost or UNSAT
     mkprob "$CDIR/c.pddl" "$1"
     WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/c.pddl" \
-      --domain "$CDIR/dom.pddl" --numslices 6 2>&1 \
+      --domain "$CDIR/dom.pddl" --numslices "${2:-7}" 2>&1 \
       | grep -oE 'cost [0-9]+|UNSATISFIABLE' | tail -1
   }
   BASE="$(cio '(and (always (at pkg1 c1-p2)))' >/dev/null; cio "(and (occur-in-order $A $B $C))")"
@@ -431,14 +442,16 @@ open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])"
   printf '  %-52s ... ' "the three arities agree when the window is the whole plan"
   M1="$(cio "(and (occur-in-order 1 $A $B $C))")"
   M2="$(cio "(and (occur-in-order 1 -1 $A $B $C))")"
-  if [[ "$BASE" == "cost 16" && "$M1" == "$BASE" && "$M2" == "$BASE" ]]; then pass
+  if [[ "$BASE" == "cost 23" && "$M1" == "$BASE" && "$M2" == "$BASE" ]]; then pass
   else fail "bare=$BASE  M=$M1  M,N=$M2"; fi
 
   printf '  %-52s ... ' "a window containing the plan leaves the cost alone"
-  if [[ "$(cio "(and (occur-in-order 1 5 $A $B $C))")" == "cost 16" ]]; then pass
+  if [[ "$(cio "(and (occur-in-order 1 5 $A $B $C))")" == "cost 23" ]]; then pass
   else fail "window [1,5] should not constrain this plan"; fi
 
   printf '  %-52s ... ' "a window starting after the first observation is UNSAT"
+  # A, then B, load pkg1, C and the unloads: started at slice 3 they would need
+  # slice 7, past the last action slice (6) of --numslices 7
   if [[ "$(cio "(and (occur-in-order 3 -1 $A $B $C))")" == "UNSATISFIABLE" ]]; then pass
   else fail "the first action is at slice 1, so [3,-1] cannot hold it"; fi
 
@@ -455,13 +468,14 @@ open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])"
   printf '  %-52s ... ' "negation with a window flips exactly that window"
   NIN="$(cio "(and (not (occur-in-order 1 5 $A $B $C)))")"
   NOUT="$(cio "(and (not (occur-in-order 3 -1 $A $B $C)))")"
-  # not(embeds in [1,5]) must force a deviation; not(embeds in [3,-1]) is already true
-  if [[ "$NIN" != "cost 16" && "$NIN" != "UNSATISFIABLE" && "$NOUT" == "cost 16" ]]; then pass
+  # not(embeds in [1,5]) must force a deviation (EvalMaxSAT: cost 24, neither the
+  # optimum nor UNSAT); not(embeds in [3,-1]) is already true
+  if [[ "$NIN" != "cost 23" && "$NIN" != "UNSATISFIABLE" && "$NOUT" == "cost 23" ]]; then pass
   else fail "negated in=$NIN out=$NOUT"; fi
 
   cioerr() {   # cioerr <constraint> -> first matching error text
     mkprob "$CDIR/e.pddl" "$1"
-    bash "$PLANNER" "$CDIR/e.pddl" --domain "$CDIR/dom.pddl" --numslices 6 2>&1 \
+    bash "$PLANNER" "$CDIR/e.pddl" --domain "$CDIR/dom.pddl" --numslices 7 2>&1 \
       | grep -oE "occur-in-order[^\"]{0,70}" | head -1
   }
   printf '  %-52s ... ' "an empty window [5,2] is refused"
@@ -482,36 +496,40 @@ open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])"
 
   printf '  %-52s ... ' "the same three arities work as --pddl-evidence"
   ev3() { WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/base.pddl" \
-            --domain "$CDIR/dom.pddl" --numslices 6 --pddl-evidence "$1" 2>&1 \
+            --domain "$CDIR/dom.pddl" --numslices "${2:-7}" --pddl-evidence "$1" 2>&1 \
           | grep -oE 'cost [0-9]+|UNSATISFIABLE' | tail -1; }
-  if [[ "$(ev3 "(occur-in-order $A $C)")" == "cost 16" \
-     && "$(ev3 "(occur-in-order 1 $A $C)")" == "cost 16" \
-     && "$(ev3 "(occur-in-order 1 5 $A $C)")" == "cost 16" \
+  if [[ "$(ev3 "(occur-in-order $A $C)")" == "cost 23" \
+     && "$(ev3 "(occur-in-order 1 $A $C)")" == "cost 23" \
+     && "$(ev3 "(occur-in-order 1 5 $A $C)")" == "cost 23" \
      && "$(ev3 "(occur-in-order 3 -1 $A $C)")" == "UNSATISFIABLE" ]]; then pass
   else fail "the windowed form should work in evidence too"; fi
 
   # --- occur-in-nonstrict-order: observations may share a slice ------------
-  # The plan does A and B in PARALLEL at slice 1.  Strict ordering forces them
-  # apart, claiming an order the plan never asserted; non-strict does not.
-  PA='(load pkg2 truck1 c1-air)'; PB='(load pkg3 truck2 c2-p1)'
+  # Every plan at --numslices 6 does PA and PB in PARALLEL, at slice 5 (truck1
+  # has no slack there).  Strict ordering forces them apart, claiming an order
+  # the plan never asserted, which that horizon cannot hold; non-strict does
+  # not.  (Under the old domain -- free handling, transfer -- two loads at
+  # slice 1 cost +1 to serialize; under clara-logistics delaying either load
+  # is free, so the pair is now the two unloads that end truck1's chain.)
+  PA='(unload pkg1 truck1 c1-p1)'; PB='(unload pkg2 truck1 c1-p1)'
 
   printf '  %-52s ... ' "strict ordering serializes parallel observations"
-  if [[ "$(cio "(and (occur-in-order $PA $PB))")" == "cost 17" ]]; then pass
-  else fail "expected the +1 of serializing what the plan did at once"; fi
+  if [[ "$(cio "(and (occur-in-order $PA $PB))" 6)" == "UNSATISFIABLE" ]]; then pass
+  else fail "the two unloads must share slice 5 at this horizon"; fi
 
   printf '  %-52s ... ' "non-strict lets them stay in the same slice"
-  if [[ "$(cio "(and (occur-in-nonstrict-order $PA $PB))")" == "cost 16" ]]; then pass
+  if [[ "$(cio "(and (occur-in-nonstrict-order $PA $PB))" 6)" == "cost 23" ]]; then pass
   else fail "non-strict should cost what the unconstrained plan does"; fi
 
   printf '  %-52s ... ' "and the plan really does keep them together"
   mkprob "$CDIR/ns.pddl" "(and (occur-in-nonstrict-order $PA $PB))"
   WEIGHTED_SOLVER="${WEIGHTED_SOLVER:-EvalMaxSAT_bin}" bash "$PLANNER" "$CDIR/ns.pddl" \
     --domain "$CDIR/dom.pddl" --numslices 6 >/dev/null 2>&1
-  # NOTE the sed: the action names carry digits of their own (PKG2, TRUCK1,
-  # C1-AIR), so only the trailing slice number may be taken.
-  SA=$(grep -oE '\(OCCURS \(LOAD PKG2 TRUCK1 C1-AIR\) [0-9]+\)' "$CDIR/ns.answer" \
+  # NOTE the sed: the action names carry digits of their own (PKG1, TRUCK1,
+  # C1-P1), so only the trailing slice number may be taken.
+  SA=$(grep -oE '\(OCCURS \(UNLOAD PKG1 TRUCK1 C1-P1\) [0-9]+\)' "$CDIR/ns.answer" \
        | sed 's/.*) \([0-9]*\))/\1/')
-  SB=$(grep -oE '\(OCCURS \(LOAD PKG3 TRUCK2 C2-P1\) [0-9]+\)' "$CDIR/ns.answer" \
+  SB=$(grep -oE '\(OCCURS \(UNLOAD PKG2 TRUCK1 C1-P1\) [0-9]+\)' "$CDIR/ns.answer" \
        | sed 's/.*) \([0-9]*\))/\1/')
   if [[ -n "$SA" && "$SA" == "$SB" ]]; then pass
   else fail "landed at slices $SA and $SB, so nothing was gained"; fi
@@ -519,24 +537,27 @@ open(sys.argv[1],'w').write(s[:i]+'  (:constraints '+sys.argv[2]+')\n\n'+s[i:])"
   printf '  %-52s ... ' "two identical observations still need two occurrences"
   # Occurs is boolean per (action, slice) -- there is no "twice at s" -- so one
   # occurrence must not satisfy two adjacent identical observations.  Without
-  # the adjacent-duplicate rule the single load at slice 1 would satisfy both.
+  # the adjacent-duplicate rule the single unload would satisfy both.  (At
+  # --numslices 7: a second unload of pkg1 cannot be fitted there either.)
   if [[ "$(cio "(and (occur-in-nonstrict-order $PA $PA))")" == "UNSATISFIABLE" ]]; then pass
   else fail "one occurrence satisfied two observations"; fi
 
   printf '  %-52s ... ' "one observation of it is of course fine"
-  if [[ "$(cio "(and (occur-in-nonstrict-order $PA))")" == "cost 16" ]]; then pass
+  if [[ "$(cio "(and (occur-in-nonstrict-order $PA))" 6)" == "cost 23" ]]; then pass
   else fail "a single non-strict observation should not constrain"; fi
 
   printf '  %-52s ... ' "non-strict takes the same window and negation"
-  NSW="$(cio "(and (occur-in-nonstrict-order 1 5 $PA $PB))")"
-  NSL="$(cio "(and (occur-in-nonstrict-order 3 -1 $PA $PB))")"
-  NSN="$(cio "(and (not (occur-in-nonstrict-order 1 5 $PA $PB)))")"
-  if [[ "$NSW" == "cost 16" && "$NSL" == "UNSATISFIABLE" && "$NSN" != "cost 16" ]]; then pass
+  # at --numslices 6 both unloads are at slice 5: [1,5] holds them, [1,4]
+  # cannot, and the negation of [1,5] excludes every plan
+  NSW="$(cio "(and (occur-in-nonstrict-order 1 5 $PA $PB))" 6)"
+  NSL="$(cio "(and (occur-in-nonstrict-order 1 4 $PA $PB))" 6)"
+  NSN="$(cio "(and (not (occur-in-nonstrict-order 1 5 $PA $PB)))" 6)"
+  if [[ "$NSW" == "cost 23" && "$NSL" == "UNSATISFIABLE" && "$NSN" == "UNSATISFIABLE" ]]; then pass
   else fail "window=$NSW late=$NSL negated=$NSN"; fi
 
   printf '  %-52s ... ' "it works as --pddl-evidence too"
-  if [[ "$(ev3 "(occur-in-nonstrict-order $PA $PB)")" == "cost 16" \
-     && "$(ev3 "(occur-in-order $PA $PB)")" == "cost 17" ]]; then pass
+  if [[ "$(ev3 "(occur-in-nonstrict-order $PA $PB)" 6)" == "cost 23" \
+     && "$(ev3 "(occur-in-order $PA $PB)" 6)" == "UNSATISFIABLE" ]]; then pass
   else fail "the two orderings should differ in evidence as in constraints"; fi
 else
   echo "  (skipping: no MaxSAT solver)"

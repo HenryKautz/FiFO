@@ -6,7 +6,7 @@
 ;;
 ;;   --problem goals/grid3x3-1-pkg1-p2-1.pddl
 ;;   --evidence evidence/grid3x3-1-pkg1-p2-1-obs1.txt
-;;   --solution goals/grid3x3-1-pkg1-p2-1-clean.answer
+;;   --solution goals/grid3x3-1-pkg1-p2-1.answer
 ;;   --domain clara-logistics.pddl
 ;;   --slices 1-1
 ;;   --observe drive,load,unload

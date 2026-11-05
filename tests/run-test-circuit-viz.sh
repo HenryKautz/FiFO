@@ -14,7 +14,10 @@
 #      hypothesis atom, Z(E,h)/Z(E), and its likelihood posterior must equal
 #      P(h|E)/P(h) normalized over the hypotheses (P(E) cancels), to 1e-9.
 #      Refuses to pass vacuously: the evidence must move some hypothesis.  The
-#      prior P(h) must equal the oracle's evidence-free marginal.
+#      prior P(h) must equal the oracle's evidence-free marginal.  Compound
+#      hypotheses likewise (grid3x3-1-pairs: four (and ...)s, scored through
+#      recognize.sh's (rechyp<i>) atoms), the oracle counting each
+#      conjunction's own literals, so the hypothesis-to-atom map is checked.
 #   4. Contradictory evidence is reported unsat; ordering forms, compound
 #      formulas and unknown atoms are refused with reasons, and the Lisp
 #      process keeps answering.  A goal recognize.sh refuses (two (or ...)
@@ -292,6 +295,89 @@ else
   fail "$(tail -3 <<<"$out")"
   name "unsat, refusals; hypotheses by FiFO rule; failed load leaves circuit whole"
   fail "see above"
+fi
+
+# ------------------------------------------------- compound hypotheses
+# grid3x3-1-pairs: the same world, its goal ONE disjunction of four
+# conjunctions (both packages' destinations).  recognize.sh scores each through
+# a derived atom it creates, (rechyp<i>), and the circuit (d4, projected onto
+# the actions and those four atoms) keeps no (holds (at ..) 8) atom at all -- so
+# the server can only get a conjunction right through cv--derived-atom's
+# mapping.  The oracle never uses the rechyp atoms: it counts the full theory
+# with the conjunction's OWN literals added, Z(E, a, b) / Z(E), so the
+# hypothesis-to-atom mapping is checked independently of it.
+cat > "$TMP/compound.py" <<'EOF'
+import json, os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import circuit_server as S
+ex, tmp, fifo_lisp = sys.argv[2], sys.argv[3], sys.argv[4]
+lisp = S.Lisp(fifo_lisp, heap_mb=2048)
+lisp.start()
+info = lisp.load(os.path.join(ex, "grid3x3-1-pairs.dnnf"), os.path.join(ex, "grid3x3-1-pairs.pddl"))
+H = info["horizon"]
+conj = [("(at pkg1 p2-3)", "(at pkg2 p3-3)"), ("(at pkg1 p2-2)", "(at pkg2 p3-3)"),
+        ("(at pkg1 p2-3)", "(at pkg2 p2-2)"), ("(at pkg1 p3-2)", "(at pkg2 p2-2)")]
+hyps = info["hypotheses"]
+assert H == 8 and info["note"] is None, info
+assert [h["goal"] for h in hyps] == [f"(and {a} {b})" for a, b in conj], hyps
+assert [h["atom"] for h in hyps] == [f"(holds (rechyp{i}) 8)" for i in range(4)], hyps
+assert all(h["present"] for h in hyps) and {h["group"] for h in hyps} == {0}, hyps
+sets = {"none": [],
+        "load pkg2 first": ["(occurs (load pkg2 truck1 p2-3) 1)"],
+        "drive first": ["(occurs (drive truck1 p2-3 p3-3) 1)"],
+        "pkg1 dropped at p2-2": ["(occurs (unload pkg1 truck1 p2-2) 7)"],
+        "negated": ["(not (occurs (load pkg2 truck1 p2-3) 1))"],
+        "two": ["(occurs (drive truck1 p2-3 p3-3) 2)", "(occurs (unload pkg2 truck1 p3-3) 3)"]}
+results = {}
+for name, ev in sets.items():
+    r = lisp.call(S.query_command(ev))
+    assert r["ok"] and not r["unsat"], (name, r)
+    results[name] = r
+lisp.stop()
+moved = max(abs(a - b) for a, b in zip(results["none"]["marginal"], results["pkg1 dropped at p2-2"]["marginal"]))
+assert moved > 0.5, ("vacuous: the evidence hardly moved any conjunction", moved)
+theory = open(os.path.join(tmp, "grid3x3-1-pairs.scnf")).read()
+WMC = os.path.join(os.path.dirname(fifo_lisp), "bin", "wmc.sh")
+counted = [0]
+def Z(units):
+    """Z of the full theory with UNITS added as unit clauses, by SharpSAT-TD."""
+    path = os.path.join(tmp, f"pz{counted[0]}.scnf")
+    counted[0] += 1
+    with open(path, "w") as f:
+        f.write(theory + "\n" + "\n".join(f"(OR {u.upper()})" for u in units) + "\n")
+    out = subprocess.run(["bash", WMC, path, "--counter", "sharpsat-td"],
+                         capture_output=True, text=True, cwd=tmp).stdout
+    m = [l for l in out.splitlines() if l.startswith("(WMC ")]
+    assert m, ("no count", out[-400:])
+    return float(m[0][5:].rstrip(")"))
+lits = [[f"(holds {a} {H})", f"(holds {b} {H})"] for a, b in conj]
+z0 = Z([])
+assert abs(results["none"]["z"] - z0) <= 1e-9 * z0, ("Z", results["none"]["z"], z0)
+prior = [Z(l) / z0 for l in lits]
+for name, ev in sets.items():
+    ze = Z(ev)
+    want = [Z(ev + l) / ze for l in lits]
+    got = results[name]
+    for i in range(4):
+        assert abs(got["marginal"][i] - want[i]) < 1e-9, (name, i, got["marginal"][i], want[i])
+        assert abs(got["prior"][i] - prior[i]) < 1e-9, (name, i, got["prior"][i], prior[i])
+    ratio = [w / p if p > 0 else 0.0 for w, p in zip(want, prior)]
+    post = [x / sum(ratio) for x in ratio]
+    for i in range(4):
+        assert abs(got["posterior"][i] - post[i]) < 1e-9, (name, i, got["posterior"][i], post[i])
+print(json.dumps({"sets": len(sets), "moved": round(moved, 3), "counts": counted[0]}))
+EOF
+name "compound hypotheses: (and ...) scored via rechyp<i>, = SharpSAT-TD on its conjuncts"
+if [ "$ORACLE" != 1 ]; then
+  skip "no sharpSAT, or the theory did not instantiate"
+else
+  cp "$EX/grid3x3-1-pairs.wff" "$TMP/"
+  if ! (cd "$TMP" && sbcl --noinform --non-interactive --eval "(load \"$FIFO_LISP/FiFO.lisp\")" \
+          --eval "(instantiate \"grid3x3-1-pairs.wff\" :scnfile \"grid3x3-1-pairs.scnf\")" >/dev/null 2>&1) \
+     || [ ! -s "$TMP/grid3x3-1-pairs.scnf" ]; then
+    fail "grid3x3-1-pairs.wff did not instantiate"
+  elif out=$(python3 "$TMP/compound.py" "$VIZ/server" "$EX" "$TMP" "$FIFO_LISP" 2>&1); then pass
+  else fail "$(tail -3 <<<"$out")"; fi
 fi
 
 # -------------------------------------------------------------------- HTTP
