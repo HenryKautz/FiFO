@@ -36,8 +36,8 @@ second hypothesis set refused), read at the final slice,
   equal to P(h | E) / P(h) normalized.  It is free: P(E | h) = Z(E ∧ h) / Z(h),
   and Z(h) comes from the one evidence-free pass made when the circuit loads.
   It removes the model's implicit prior P(h), which the marginal keeps; with
-  no evidence it is uniform by construction.  Caution, shown on the page:
-  with slice-pinned evidence and a fixed horizon it favours the goal whose
+  no evidence it is uniform by construction.  Caution (no longer shown on
+  the page; the column headers' tooltips say what each column is): with slice-pinned evidence and a fixed horizon it favours the goal whose
   plans have the least slack (an on-time action is nearly certain under it),
   and a short horizon overemphasizes this.  On TwoPackage/grid6x6-4, whose
   recognition horizon 14 is exactly G2's shortest plan, P(E | G2) = 1 for
@@ -167,7 +167,8 @@ Same layout and style as the plan visualizer:
 - **Hypotheses**: one row per hypothesis, in label order (G1, G2, …): its
   label and literal in its package's color, P(h), a bar and the number
   P(h|E), and the uniform-prior share; the most probable highlighted.
-  Underneath, what the columns mean, P(E) and the query time.
+  Underneath, one line: P(E) and the query time.  The panel is only as tall
+  as the table and that line.
 - **Evidence** (right, bottom — where the Solution panel was): the list of
   observations with ◀ ▶ ⏮ ⏭ to step through them (step k applies the first k;
   a chosen file starts at step 0, before any observation),

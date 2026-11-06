@@ -1404,20 +1404,6 @@ var Viz;
                         bar(m, col) + bar(post, col, " post") + `</tr>`;
                 }).join("") +
                 `</tbody></table>` +
-                `<p class="hint"><b>P(h | E)</b> is the probability that goal h is reached, given the ` +
-                `evidence, under the model: every plan weighted by its cost.  With no evidence it is ` +
-                `<b>P(h)</b>, the prior the model implies -- a goal with more and cheaper plans gets more.  ` +
-                `Goals can be reached together, so these need not sum to 1.</p>` +
-                `<p class="hint"><b>Uniform prior</b> asks instead how well the evidence fits each goal, ` +
-                `P(E | h), and normalizes${groups > 1 ? " within each goal line" : ""}: the posterior if every ` +
-                `goal were equally likely beforehand.  It is P(h | E) / P(h), normalized.  With no evidence ` +
-                `it is uniform.</p>` +
-                `<p class="hint"><b>Caution:</b> the horizon${c.horizon !== null ? ` (${c.horizon} slices)` : ""} ` +
-                `is fixed, and the evidence pins actions to slices.  A goal whose plans fill the horizon has ` +
-                `little slack, so every on-time action is nearly certain under it, while a goal with spare ` +
-                `slices could also have waited or detoured.  The uniform-prior column then favours the goal ` +
-                `with the least slack, and a short horizon overemphasizes this: a goal that needs the whole ` +
-                `horizon has P(E | h) = 1 for any evidence on its one plan.</p>` +
                 ((r === null || r === void 0 ? void 0 : r.pe) !== undefined
                     ? `<p class="hint">Probability of the evidence under the model: P(E) = ${fmt(r.pe, 4)}` +
                         // the reply's own evidence count: cs.step may already be ahead of it
